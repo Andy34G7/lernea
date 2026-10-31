@@ -15,15 +15,21 @@ from pathlib import Path
 import sys
 from typing import List, Optional
 
-from tokenisers.benchmarks.report import render_colab, render_intrinsic, render_throughput, render_tokka
+from tokenisers.benchmarks.report import (render_colab, render_colab_compare, render_intrinsic, render_throughput,
+                                          render_tokka)
 
 ROOT = Path(__file__).resolve().parents[1]
+COLAB, COLAB_BIG = ("benchmarks/results/colab/extrinsic_bpb_results.json",
+                    "benchmarks/results/colab_big/extrinsic_bpb_results.json")
 
+# name -> (result JSON path, or a tuple of paths passed to render in order; render; module that writes it)
 SECTIONS = {
     "tokka": ("benchmarks/results/tokka/tokka_matrix.json", render_tokka, "tokenisers.benchmarks.tokka"),
     "intrinsic": ("benchmarks/results/intrinsic/intrinsic_leaderboard.json", render_intrinsic,
                   "tokenisers.benchmarks.intrinsic"),
-    "colab": ("benchmarks/results/colab/extrinsic_bpb_results.json", render_colab, "tokenisers.benchmarks.colab"),
+    "colab": (COLAB, render_colab, "tokenisers.benchmarks.colab"),
+    "colab_big": (COLAB_BIG, render_colab, "tokenisers.benchmarks.colab --preset big"),
+    "colab_compare": ((COLAB, COLAB_BIG), render_colab_compare, "tokenisers.benchmarks.colab --preset big"),
 }
 for _v in (32768, 65536):
     SECTIONS[f"tokka_v{_v}"] = (f"benchmarks/results/v{_v}/tokka/tokka_matrix.json", render_tokka,
@@ -38,15 +44,16 @@ SECTIONS["throughput_local"] = ("benchmarks/results/throughput/local/throughput.
 
 
 def render_readme(text: str, root: Path = ROOT) -> str:
-    for name, (rel, render, module) in SECTIONS.items():
+    for name, (rels, render, module) in SECTIONS.items():
         begin, end = f"<!-- BEGIN GENERATED: {name} -->", f"<!-- END GENERATED: {name} -->"
         i = text.index(begin) + len(begin)
         j = text.index(end, i)
-        path = root / rel
-        if path.is_file():
-            body = render(json.loads(path.read_text(encoding="utf-8")))
+        rels = (rels,) if isinstance(rels, str) else rels
+        missing = [rel for rel in rels if not (root / rel).is_file()]
+        if not missing:
+            body = render(*(json.loads((root / rel).read_text(encoding="utf-8")) for rel in rels))
         else:
-            body = (f"_No results committed (`{rel}` is missing). Run `uv run python -m {module}`, then "
+            body = (f"_No results committed (`{missing[0]}` is missing). Run `uv run python -m {module}`, then "
                     "`uv run python scripts/gen_readme_tables.py`._")
         text = text[:i] + "\n" + body + "\n" + text[j:]
     return text

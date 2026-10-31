@@ -10,7 +10,7 @@ import warnings
 import pytest
 
 from tokenisers.benchmarks import common
-from tokenisers.benchmarks.report import render_colab, render_intrinsic, render_tokka
+from tokenisers.benchmarks.report import render_colab, render_colab_compare, render_intrinsic, render_tokka
 
 
 def _gen_module(repo_root):
@@ -109,6 +109,22 @@ def test_leaderboards_state_data_and_backend():
     col["meta"]["backend"] = {"kind": "local", "device": "cpu", "cpu": "Some CPU"}
     assert "local CPU `Some CPU`" in render_colab(col)
     assert render_tokka({"meta": _meta(duplicates={}), "models": {}}).count("|") > 0
+
+
+def test_colab_compare_ranks_both_tiers_against_bpe_frequency():
+    """Small vs big proxy LM: rank per tier and delta to bpe_frequency ± its standard error over the seeds."""
+    def doc(bpb, gpu):  # name -> (mean, sd) over 4 seeds
+        return {"meta": {"lm": {"d_model": 8, "n_layers": 1}, "byte_budget": 10, "seeds": [0, 1, 2, 3],
+                         "backend": {"gpu": gpu}},
+                "models": {n: {"macro_val_bpb": m, "macro_val_bpb_sd": sd,
+                               "macro_val_bpb_by_seed": dict.fromkeys("0123")} for n, (m, sd) in bpb.items()}}
+    small = doc({"bpe_frequency": (2.0, 0.04), "a": (1.9, 0.03), "only_small": (5.0, 0.1)}, "T4")
+    big = doc({"bpe_frequency": (1.5, 0.0), "a": (1.6, 0.02)}, "L4")
+    md = render_colab_compare(small, big)
+    assert ("| `bpe_frequency` | 2 | reference | 1 | reference |\n"
+            "| `a` | 1 | -0.100 ± 0.025 | 2 | +0.100 ± 0.010 |") in md
+    assert "- small LM: 1 tokenizers beat `bpe_frequency`, by 0.100–0.100 BPB, i.e. 4.0–4.0 standard errors" in md
+    assert "- big LM:" not in md and "only_small" not in md
 
 
 def test_memory_preflight_refuses_runs_that_would_not_fit(monkeypatch):
