@@ -37,7 +37,8 @@ DROPOUT_VARIANT = "bpe_dropout_p0.1"
 BIG_PRESET: Dict[str, Any] = {
     "n_layers": 8, "d_model": 512, "n_heads": 8, "d_ffn": 2048, "seq_len": 512, "batch_size": 64,
     "lr": 6e-4, "weight_decay": 0.1, "warmup_frac": 0.02, "bf16": True, "byte_budget": 100_000_000,
-    "gpu": "L4", "concurrency": 3, "seeds": [0, 1, 2], "output_dir": "benchmarks/results/colab_big",
+    # concurrency 1: on the 22 GB L4, 3 and 2 concurrent runs ran out of GPU memory (one run reached 11.1 GiB).
+    "gpu": "L4", "concurrency": 1, "seeds": [0, 1, 2], "output_dir": "benchmarks/results/colab_big",
     # LM text: the train split plus an LM text pool up to 120 MB in all (budget + 10% needs 110 MB).
     # The job (~0.9 GB of ids) is kept on disk, not in a tmpfs /tmp, so a failed run can be resumed.
     "lm_text_bytes": 120_000_000, "job_dir": Path("benchmarks/results/colab_big/job"),
@@ -104,7 +105,7 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
                         help="If Colab fails, run locally and record the fallback in the results")
     parser.add_argument("--preset", choices=["small", "big"], default="small",
                         help="small: the default tier above; big: 8x512 LM, 100 MB budget, L4, 11 variants, "
-                             "concurrency 3, output benchmarks/results/colab_big (explicit flags override)")
+                             "concurrency 1, output benchmarks/results/colab_big (explicit flags override)")
     parser.add_argument("--concurrency", type=int, default=1,
                         help="(variant, seed) runs trained at once on the one GPU, as separate processes")
     parser.add_argument("--weight-decay", type=float, default=0.01)

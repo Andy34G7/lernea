@@ -33,6 +33,7 @@ def test_big_preset_resolves_and_flags_override():
     assert {k: getattr(args, k) for k in BIG_PRESET} == BIG_PRESET
     assert args.batch_size * args.seq_len == 32_768 and len(args.variants) + 1 == 11  # + bpe_dropout_p0.1
     assert not {"wordpiece_pmi", "wp_bpe_base", "wp_bpe_ft"} & set(args.variants)
+    assert (args.gpu, args.concurrency) == ("L4", 1)  # 3 and 2 concurrent runs ran out of memory on the L4
     over = parse_args(["--preset", "big", "--gpu", "A100", "--concurrency", "2", "--lr", "1e-3"])
     assert (over.gpu, over.concurrency, over.lr, over.d_model) == ("A100", 2, 1e-3, 512)
 
