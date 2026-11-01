@@ -97,6 +97,12 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
+// A value as a string argument of an inline handler: onclick="f(${jsArg(v)})". The browser decodes the attribute's
+// character references before it runs the handler, so esc alone would hand back a raw ' that closes the string
+function jsArg(v) {
+  return esc(JSON.stringify(String(v)));
+}
+
 function isNum(v) {
   return typeof v === 'number' && !Number.isNaN(v);
 }
@@ -446,6 +452,8 @@ function renderMeta() {
 // Tab Switching: ARIA tabs with roving tabindex, arrow keys, and #hash deep links
 function switchTab(tabName, focus = false) {
   if (!TABS.includes(tabName)) return;
+  // A button or link in the panel being hidden ('Details →', 'Try →', a #tab link) would drop focus to <body>
+  if (tabName !== state.activeTab && document.getElementById(`tab-${state.activeTab}`)?.contains(document.activeElement)) focus = true;
   state.activeTab = tabName;
 
   TABS.forEach((id) => {
@@ -492,11 +500,11 @@ const RESULT_LABELS = {
   proxy_small: ['Proxy LM, small', 16384, 'proxy'],
   proxy_big: ['Proxy LM, big', 16384, 'proxy'],
   proxy_compare: ['Proxy LM, small vs big', 16384, 'proxy'],
-  swap: ['GPT-2 tokeniser swap', '≈ 50k', 'swap'],
+  swap: ['GPT-2 tokeniser swap', '≈ 50k (one 32k)', 'swap'],
   'swap_lr1p8e-3': ['GPT-2 swap, peak lr 1.8e-3 (GPT-2 only)', 50257, 'swap'],
   swap_space_prefix: ['GPT-2 swap, space-prefix rerun', '≈ 50k', 'swap'],
   swap_ablation: ['GPT-2 swap, pre-split and training-text ablation', '≈ 50k', 'swap'],
-  flores: ['FLORES+ tokenisation premium', 'all three + ≈ 50k', 'flores'],
+  flores: ['FLORES+ tokenisation premium', 'all three + ≈ 50k (one 32k)', 'flores'],
 };
 
 // Best-first [key, value] pairs
@@ -637,7 +645,7 @@ function renderLeaderboard() {
         <td class="r num">${fmt(m.renyi_e_2_5)}</td>
         <td class="r num">${pct(m.morph_f1)}</td>
         <td class="r num">${fmt(m.decode_mb_per_sec, 1)}</td>
-        <td class="r"><button class="link-btn" onclick="inspectModelInPlayground('${esc(m.key)}')" title="Open in playground">Try →</button></td>
+        <td class="r"><button class="link-btn" onclick="inspectModelInPlayground(${jsArg(m.key)})" title="Open in playground">Try →</button></td>
       </tr>`;
     })
     .join('');
@@ -1310,7 +1318,7 @@ function renderSwap() {
   const space = document.getElementById('swap-caveat-space');
   if (space && g && ws.length) {
     const less = ws.map((r) => 100 * (1 - r.train_bytes_per_token / g.train_bytes_per_token));
-    space.textContent = `Our ${ws.length} whitespace-isolating tokenisers give ${range(ws.map((r) => r.val_bytes_per_token))} val bytes per token against GPT-2's ${g.val_bytes_per_token.toFixed(2)}: every space is its own token, so each step holds ${range(less, 0)}% less text. Their gap to GPT-2 mixes less text with different merges${R('swap_space_prefix').available ? '; the space-prefix rerun below separates the two' : ' until the space-prefix rerun separates the two'}.`;
+    space.textContent = `Our ${ws.length} whitespace-isolating tokenisers give ${range(ws.map((r) => r.val_bytes_per_token))} val bytes per token against GPT-2's ${g.val_bytes_per_token.toFixed(2)}: every whitespace run is its own token, so each step holds ${range(less, 0)}% less text. Their gap to GPT-2 mixes less text with different merges${R('swap_space_prefix').available ? '; the space-prefix rerun below separates the two' : ' until the space-prefix rerun separates the two'}.`;
   }
 }
 
@@ -1439,10 +1447,10 @@ function renderSpacePrefix() {
   );
 }
 
-// report.py's check that a rerun is comparable with the whitespace run, shown above its numbers when it fails
+// server.not_comparable: what differs from the whitespace run, or cannot be checked; shown above the numbers
 function notComparable(e) {
-  const line = (e.provenance || []).find((l) => l.startsWith('DIFFERENT'));
-  return line ? `<b class="delta-bad">Not comparable:</b> ${md(line)}.` : null;
+  const why = e.not_comparable || [];
+  return why.length ? `<b class="delta-bad">Not comparable with the whitespace run:</b> ${esc(why.join('; '))}.` : null;
 }
 
 // Ablation arms (server.ABLATION_ARMS): [column label, short label, the arm it changes one thing of]
@@ -1529,11 +1537,11 @@ function renderLr() {
   const facts = [];
   if (cmp.length) {
     const worse = cmp.filter((r) => r.hi > r.lo).length;
-    facts.push(`Peak lr ${isNum(peak) ? peak.toExponential(1) : '?'} instead of ${args.learning_rate ?? '?'}: GPT-2's val BPB is higher at <b>${worse} of ${cmp.length}</b> evaluations after step 0; final ${fmt(last.hi, 4)} against ${fmt(last.lo, 4)} (${signed(last.hi - last.lo, 4)}).`);
+    facts.push(`Peak lr ${isNum(peak) ? peak.toExponential(1) : '?'} instead of ${esc(args.learning_rate ?? '?')}: GPT-2's val BPB is higher at <b>${worse} of ${cmp.length}</b> evaluations after step 0; final ${fmt(last.hi, 4)} against ${fmt(last.lo, 4)} (${signed(last.hi - last.lo, 4)}).`);
   }
   if (norms.length) facts.push(`Max gradient norm after the ${warm}-step warmup: ${Math.max(...norms).toFixed(2)}.`);
   const body = rows
-    .map((r) => `<tr><td class="num">${r.step}</td><td class="r num">${fmt(r.lo, 4)}</td><td class="r num">${fmt(r.hi, 4)}</td><td class="r num"><span class="${r.hi - r.lo > 0 ? 'delta-bad' : r.hi - r.lo < 0 ? 'delta-good' : ''}">${isNum(r.lo) ? signed(r.hi - r.lo, 4) : DASH}</span></td></tr>`)
+    .map((r) => `<tr><td class="num">${esc(r.step)}</td><td class="r num">${fmt(r.lo, 4)}</td><td class="r num">${fmt(r.hi, 4)}</td><td class="r num"><span class="${r.hi - r.lo > 0 ? 'delta-bad' : r.hi - r.lo < 0 ? 'delta-good' : ''}">${isNum(r.lo) ? signed(r.hi - r.lo, 4) : DASH}</span></td></tr>`)
     .join('');
   setHtml(
     'lr-body',
@@ -1544,7 +1552,8 @@ function renderLr() {
 }
 
 // 10. FLORES+: tokenisation premium per language, in-mix vs out-of-mix
-const FLORES_TIERS = { intrinsic: 'intrinsic tier (30% multilingual training mix)', swap: 'GPT-2-swap tier (English FineWeb training text)' };
+// report._TIERS: the README's names of the tiers
+const FLORES_TIERS = { intrinsic: 'intrinsic tier (30% multilingual mix)', swap: 'GPT-2-swap tier (English-centric)' };
 
 function renderFlores() {
   const e = R('flores');
@@ -1579,7 +1588,7 @@ function renderFlores() {
     const s = 1 - (vals.indexOf(v) + vals.lastIndexOf(v)) / 2 / (vals.length - 1);
     return `background-color: color-mix(in srgb, var(--accent) ${Math.round(4 + s * 51)}%, var(--surface));`;
   };
-  const group = `<tr><th></th><th></th><th class="c" colspan="${inMix.length + 1}">In-mix (training languages)</th><th class="c" colspan="${outMix.length + 1}">Out-of-mix (in no training text)</th></tr>`;
+  const group = `<tr><th></th><th></th><th class="c" colspan="${inMix.length + 1}">In-mix (${state.floresTier === 'swap' ? "the intrinsic tier's training languages" : 'training languages'})</th><th class="c" colspan="${outMix.length + 1}">Out-of-mix (in no tokeniser's training mix)</th></tr>`;
   const head = `<tr><th>Tokeniser</th><th class="c" title="Tokens per English sentence: the premium's denominator">EN tok/sent</th>${cols.map((c) => `<th class="c">${esc(c.label)}</th>`).join('')}</tr>`;
   const body = rows
     .map((r) => `<tr><td class="model-name">${esc(r.key)}</td><td class="cell">${fmt(r.en, 1)}</td>${cols.map((c) => `<td class="cell${c.avg ? ' avg' : ''}" style="${shade(c, c.get(r))}">${fmt(c.get(r), 2)}</td>`).join('')}</tr>`)
@@ -1651,7 +1660,7 @@ function renderRadarView() {
     .map((m) => {
       const on = state.selectedRadarModels.includes(m.key);
       const dot = on ? `<span class="dot" style="--c: var(--fam-${state.radarSlots[m.key]})"></span>` : '';
-      return `<button class="chip" aria-pressed="${on}" onclick="toggleRadarModel('${esc(m.key)}')">${dot}${esc(m.display_name)}</button>`;
+      return `<button class="chip" aria-pressed="${on}" onclick="toggleRadarModel(${jsArg(m.key)})">${dot}${esc(m.display_name)}</button>`;
     })
     .join('');
 

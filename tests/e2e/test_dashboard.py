@@ -624,7 +624,7 @@ function el(id) {
       classList: { add: (c) => cls.add(c), remove: (c) => cls.delete(c), contains: (c) => cls.has(c),
                    toggle: (c, on) => ((on ?? !cls.has(c)) ? cls.add(c) : cls.delete(c)) },
       setAttribute(k, v) { this.attrs[k] = v; }, removeAttribute(k) { delete this.attrs[k]; },
-      addEventListener() {}, focus() {},
+      addEventListener() {}, focus() {}, contains: () => false,
     };
   }
   return els[id];
@@ -759,7 +759,8 @@ def test_space_prefix_rerun_that_is_not_comparable_is_flagged(tmp_path, monkeypa
     if NODE:  # the warning is on the page, above the BPB changes, not only in the collapsed provenance
         errors, html = _render(tmp_path, data, ["renderSpacePrefix()"])
         facts = _text(html["sp-body"])
-        assert errors == [] and facts.startswith("Not comparable: DIFFERENT recipe, val documents"), facts
+        assert errors == [] and facts.startswith("Not comparable with the whitespace run: different recipe; "
+                                                 "different val documents"), facts
 
     # The committed rerun: same recipe and val documents, so its steps come from the original GPT-2 curve
     shutil.copy(REAL_RESULTS / "nanogpt_swap_sp/nanogpt_swap.json", tmp_path / "benchmarks/results/nanogpt_swap_sp")
@@ -808,3 +809,108 @@ def test_table_headers_escape_labels_from_result_files(tmp_path) -> None:
     assert errors == []
     for table in ("morph-table", "flores-table", "proxy-table"):
         assert "<img" not in html[table] and "&lt;img" in html[table], table
+
+
+@needs_node
+def test_model_keys_and_lr_steps_from_result_files_cannot_run_script(tmp_path) -> None:
+    """A model key (copied verbatim from the tokka, intrinsic and proxy-LM model maps) reaches the onclick handlers
+    of the Overview 'Try' button and the radar chips as that same string, not as code; the lr run's eval steps and
+    the swap recipe's lr are text, not markup."""
+    import html as htmllib
+
+    evil = "x');globalThis.pwned=1;//\"<img src=x onerror=alert(1)>"
+    data = server_mod.load_benchmark_data()
+    data["models"][evil] = {**data["models"]["bpe_frequency"], "key": evil}
+    data["results"]["swap_lr1p8e-3"]["data"]["trainer"]["evals"][1]["step"] = evil
+    data["results"]["swap"]["data"]["meta"]["recipe"]["args"]["learning_rate"] = evil
+    errors, html = _render(tmp_path, data, ["renderLeaderboard(); renderRadarView(); renderLr()"])
+    assert errors == []
+    assert "<img" not in html["lr-body"] and html["lr-body"].count("&lt;img") == 3  # step, lr in a fact and a header
+    # The handler as the browser runs it: the attribute value with its character references decoded
+    handlers = [js for el in ("leaderboard-tbody", "radar-toggles")
+                for js in map(htmllib.unescape, re.findall(r'onclick="([^"]*)"', html[el])) if "pwned" in js]
+    assert len(handlers) == 2, handlers
+    errors, html = _render(tmp_path, data, [
+        "globalThis.got = []; inspectModelInPlayground = toggleRadarModel = (k) => got.push(k);", *handlers,
+        "document.getElementById('probe').innerHTML = JSON.stringify([globalThis.pwned ?? null, got])"])
+    assert errors == [] and json.loads(html["probe"]) == [None, [evil, evil]]
+
+
+@needs_node
+def test_switching_tab_from_inside_a_panel_moves_focus_to_the_new_tab(tmp_path) -> None:
+    """'Details →', the result-set links, 'Try →' and the Concepts link switch tabs from inside the panel that is
+    hidden: keyboard focus moves to the new tab instead of dropping to <body>."""
+    errors, html = _render(tmp_path, {}, [
+        "for (const id of ['tab-nav-summary', 'tab-nav-proxy']) "
+        "document.getElementById(id).focus = function () { document.activeElement = this; };",
+        "globalThis.btn = {}; document.getElementById('tab-summary').contains = (x) => x === btn; "
+        "document.activeElement = btn;",
+        "switchTab('summary'); document.getElementById('same').innerHTML = String(document.activeElement === btn)",
+        "switchTab('proxy'); document.getElementById('probe').innerHTML = document.activeElement.id ?? 'body'",
+    ])
+    assert errors == []
+    assert html["same"] == "true"  # the panel stays: focus stays on the button
+    assert html["probe"] == "tab-nav-proxy"
+
+
+def test_swap_rerun_whose_comparability_cannot_be_checked_is_not_comparable(tmp_path, monkeypatch) -> None:
+    """The comparability check (recipe, val documents, tokenizer training text) fails closed: a rerun or ablation
+    file without a field the check reads is flagged, not shown as comparable, even when the README renderer
+    cannot run on it."""
+    sp = json.loads((REAL_RESULTS / "nanogpt_swap_sp/nanogpt_swap.json").read_text())
+    sp["meta"]["recipe"]["args"]["learning_rate"] = 0.0018
+    del sp["meta"]["tokenizer_text"]
+    base = _sp_root(tmp_path, sp)
+    monkeypatch.setattr(server_mod, "REPO_ROOT", tmp_path)
+    e = server_mod.load_benchmark_data()["results"]["swap_space_prefix"]
+    assert e["not_comparable"] == ["different recipe", "tokenizer training text unknown (missing from a file)"]
+    assert all(r["sp"]["gpt2_equivalent_steps"] is None for r in e["pairs"]["rows"])
+    if NODE:
+        errors, html = _render(tmp_path, server_mod.load_benchmark_data(), ["renderSpacePrefix()"])
+        facts = _text(html["sp-body"])
+        assert errors == [] and facts.startswith("Not comparable with the whitespace run: different recipe; "
+                                                 "tokenizer training text unknown"), facts
+
+    # Val documents: a file without val_docs_sha256 is not taken as the same documents (no GPT-2-equivalent steps)
+    sp = json.loads((REAL_RESULTS / "nanogpt_swap_sp/nanogpt_swap.json").read_text())
+    for m in sp["models"].values():
+        del m["val_docs_sha256"]
+    _swap_fixture(tmp_path, "nanogpt_swap_sp", sp)
+    _swap_fixture(tmp_path, "nanogpt_swap_ablation", _ablation_doc(base, sp))
+    data = server_mod.load_benchmark_data()
+    e, abl = data["results"]["swap_space_prefix"], data["results"]["swap_ablation"]
+    assert e["not_comparable"] == ["val documents unknown (missing from a file)"]
+    assert all(r["sp"]["gpt2_equivalent_steps"] is None for r in e["pairs"]["rows"])
+    assert abl["not_comparable"] == ["val documents unknown (missing from a file)"]
+    if NODE:
+        errors, html = _render(tmp_path, data, ["renderAblation()"])
+        assert errors == [] and _text(html["abl-body"]).startswith("Not comparable"), html["abl-body"]
+
+    # The committed rerun passes every check
+    shutil.copy(REAL_RESULTS / "nanogpt_swap_sp/nanogpt_swap.json", tmp_path / "benchmarks/results/nanogpt_swap_sp")
+    assert server_mod.load_benchmark_data()["results"]["swap_space_prefix"]["not_comparable"] == []
+
+
+@needs_node
+def test_page_copy_matches_the_runs(tmp_path) -> None:
+    """Copy that describes the runs agrees with the result files and the README: the GPT-2-swap tier is
+    English-centric (GPT-2's WebText, TokenMonster's English and code vocabularies, English FineWeb), not "English
+    FineWeb", and did not learn the in-mix languages; the pre-tokeniser isolates whitespace runs, not each space;
+    two of the three throughput runs are on the same laptop."""
+    from tokenisers.benchmarks.report import _TIERS
+
+    data = server_mod.load_benchmark_data()
+    for tier in ("intrinsic", "swap"):
+        errors, html = _render(tmp_path, data, [f"state.floresTier = '{tier}'; renderFlores()"])
+        assert errors == [] and f"tokenisers of the {_TIERS[tier]}." in html["flores-sub"], html["flores-sub"]
+        assert ("(training languages)" in html["flores-heat"]) == (tier == "intrinsic")
+    assert "English FineWeb" not in (server_mod.STATIC_DIR / "app.js").read_text()
+
+    errors, html = _render(tmp_path, data, ["renderSwap()"])
+    assert errors == [] and "every whitespace run is its own token" in html["swap-caveat-space"]
+    page = (server_mod.STATIC_DIR / "index.html").read_text()
+    assert "split spaces into their own tokens" not in page and "learned their merges on English text only" not in page
+
+    meta = {k: data["results"][k]["data"]["meta"] for k in ("intrinsic_16384", "throughput_local")}
+    assert meta["intrinsic_16384"]["host"]["cpu"] == meta["throughput_local"]["backend"]["cpu"]
+    assert "different machines" not in page
