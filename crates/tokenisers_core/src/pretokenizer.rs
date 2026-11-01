@@ -171,7 +171,14 @@ impl HfPreTokenizer {
     // huge inputs if that matters (no cut point is safe for every config: Split regexes span any).
     fn cuts(&self, text: &str) -> std::result::Result<Vec<usize>, String> {
         let mut pre = PreTokenizedString::from(text);
-        self.pre_tokenizer.pre_tokenize(&mut pre).map_err(|e| e.to_string())?;
+        // onig panics when a Split regex backtracks past its retry limit (`(x+x+)+y` on 40 "x"s,
+        // although the probe passed): that is an error on this text.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.pre_tokenizer.pre_tokenize(&mut pre)))
+            .map_err(|panic| {
+                let msg = panic.downcast_ref::<String>().map(String::as_str);
+                format!("tokenizers panicked: {}", msg.or(panic.downcast_ref::<&str>().copied()).unwrap_or("?"))
+            })?
+            .map_err(|e| e.to_string())?;
         let bytes = text.as_bytes();
         let (mut cuts, mut pos) = (Vec::new(), 0);
         for (piece, _, _) in pre.get_splits(OffsetReferential::Normalized, OffsetType::Byte) {
@@ -326,11 +333,20 @@ impl Pretokenizer {
     }
 
     /// Non-empty segments of `bytes`; concatenated they give back `bytes`.
+    ///
+    /// `Hf` can fail on some text where `tokenizers` does (a Split regex past onig's backtracking
+    /// limit; `HfPreTokenizer::new` only checks a probe): this then unwinds with a
+    /// [`TokeniserError`] payload (`std::panic::resume_unwind`, no panic message), which the
+    /// Python binding raises as `ValueError`.
     pub fn segment_bytes(self, bytes: &[u8]) -> Vec<&[u8]> {
         match self {
             Self::Gpt2 => return gpt2_segments(bytes),
-            // `HfPreTokenizer::new` only accepts splitters, so this never fails.
-            Self::Hf(hf) => return hf.segments(bytes).unwrap_or_else(|e| panic!("HF pre-tokenizer {hf:?}: {e}")),
+            Self::Hf(hf) => {
+                return hf.segments(bytes).unwrap_or_else(|e| {
+                    let e = TokeniserError::InvalidConfiguration(format!("HF pre-tokenizer {hf:?}: {e}"));
+                    std::panic::resume_unwind(Box::new(e))
+                })
+            }
             _ => {}
         }
         // (is_whitespace, byte length) per char; each invalid UTF-8 run is one non-ws unit.
