@@ -188,7 +188,8 @@ documents: FineWeb-Edu English 50%, FineWeb-2 in 10 languages 30%, StarCoder cod
 20%; no fallback source was needed) with held-out val (3.1 MB) and test (3.1 MB) splits. Tokka and
 intrinsic results exist for V = 16,384 (sections 1 and 2) and V = 32,768 / 65,536 (section 4);
 the proxy LM (section 3) ran at V = 16,384 only, on a Colab T4 GPU with the default 10 MB byte
-budget and 3 seeds. Tokenizer training and every other step ran locally on an Intel Core Ultra 7
+budget and 3 seeds, and again at commit `6d260c2` with the big proxy LM (100 MB budget, 3 seeds) on
+a Colab L4. Tokenizer training and every other step ran locally on an Intel Core Ultra 7
 155H (22 threads, no GPU, 15 GB RAM shared with a desktop session). Runs whose arguments include
 `--skip-memory-check` started after the desktop's memory use had grown: the preflight estimate
 (4.2 GiB) exceeded the 3.0 GiB it then allowed, so they ran inside a hard 4 GiB cgroup limit
@@ -308,6 +309,129 @@ Morph F1 by language:
 | `wp_bpe_ft` | 16384 | 1.013 | 9,877,504 | 3.703 ± 0.033 | 3.710 ± 0.077 | 4.150 ± 0.098 | **3.855 ± 0.069** |
 | `wp_bpe_base` | 16384 | 1.006 | 9,945,088 | 3.734 ± 0.019 | 3.829 ± 0.021 | 4.198 ± 0.044 | **3.920 ± 0.018** |
 <!-- END GENERATED: colab -->
+
+#### Big proxy LM (Colab L4)
+<!-- BEGIN GENERATED: colab_big -->
+- requested V = 16384; real corpus: tokenizers trained on the train split (52.5 MB); evaluated on the held-out val split (3.1 MB); commit `6d260c23b6`; generated 2026-10-31T20:24:38Z
+- arguments: `--preset big --job-dir /home/andey/.cache/tokenisers/big-lm-job --resume --concurrency 1`
+- backend: Colab GPU `NVIDIA L4`
+- proxy LM: pre-LayerNorm causal Transformer (torch TransformerEncoderLayer: ReLU FFN, biases), no positional encoding of any kind (NoPE: order comes only from the causal mask), tied input/output embeddings; d_model=512, n_layers=8, n_heads=8, d_ffn=2048, max_seq_len=512
+- fixed budget 100,000,000 UTF-8 bytes of LM training text per tokenizer, drawn from the train split the tokenizers were trained on plus an LM text pool with no val or test document (each document used once; 62.1 MB of the 110.0 MB of LM text came from the pool, `meta.lm_text`); seeds [0, 1, 2] (mean ± sample sd)
+
+| Tokenizer | \|V\| | Train bytes/token | Tokens trained | english BPB (↓) | multilingual BPB (↓) | code BPB (↓) | Macro BPB (↓) |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `wp_bpe_ppig` | 16384 | 2.599 | 38,502,400 | 2.318 ± 0.005 | 2.715 ± 0.005 | 2.533 ± 0.006 | **2.522 ± 0.005** |
+| `wp_bpe_pig` | 16384 | 2.591 | 38,600,704 | 2.318 ± 0.001 | 2.723 ± 0.006 | 2.542 ± 0.005 | **2.528 ± 0.001** |
+| `wp_bpe_npmi` | 16384 | 2.529 | 39,550,976 | 2.326 ± 0.001 | 2.718 ± 0.002 | 2.549 ± 0.008 | **2.531 ± 0.003** |
+| `super_bpe` | 16384 | 3.670 | 27,262,976 | 2.253 ± 0.003 | 2.806 ± 0.006 | 2.553 ± 0.001 | **2.537 ± 0.003** |
+| `bpe_frequency` | 16384 | 2.634 | 37,978,112 | 2.341 ± 0.002 | 2.752 ± 0.002 | 2.555 ± 0.003 | **2.549 ± 0.001** |
+| `morpheme_bpe` | 16384 | 2.519 | 39,714,816 | 2.289 ± 0.005 | 2.773 ± 0.005 | 2.590 ± 0.005 | **2.551 ± 0.005** |
+| `unigram_lm` | 16384 | 2.578 | 38,830,080 | 2.308 ± 0.003 | 2.776 ± 0.005 | 2.570 ± 0.004 | **2.551 ± 0.004** |
+| `bpe_dropout_p0.1` | 16384 | 2.494 | 40,108,032 | 2.356 ± 0.006 | 2.750 ± 0.009 | 2.564 ± 0.007 | **2.557 ± 0.007** |
+| `length_penalized` | 16384 | 2.628 | 38,076,416 | 2.353 ± 0.004 | 2.760 ± 0.001 | 2.585 ± 0.004 | **2.566 ± 0.003** |
+| `mdl_bits` | 16384 | 2.398 | 41,746,432 | 2.325 ± 0.002 | 2.739 ± 0.008 | 2.664 ± 0.006 | **2.576 ± 0.005** |
+| `wp_bpe_scp` | 16384 | 1.621 | 61,702,144 | 3.015 ± 0.008 | 2.802 ± 0.009 | 3.161 ± 0.029 | **2.993 ± 0.015** |
+<!-- END GENERATED: colab_big -->
+
+Setup of this run: `--preset big --resume --concurrency 1` from commit `6d260c2` on one Colab L4 (22 GB);
+the 33 runs (11 tokenizers x 3 seeds) trained one after another. Model: 8 layers, d_model 512, 8 heads,
+FFN 2048, sequence length 512; 100 MB byte budget per run; seeds 0, 1, 2. Measured wall time: 5 h 03 min
+from launch (20:51 IST) to the result on the laptop (01:54:38 IST). Of that, uploading the job took
+7 min 20 s and training plus evaluation on the VM 17,699.8 s (4 h 55 min, `meta.lm_seconds`), a mean of
+536 s (8.9 min) per run; the run files do not record per-run time. Two earlier launches of the same job
+ran out of GPU memory, with `--concurrency 3` (processes at 9.1, 7.1 and 5.1 GiB) and with
+`--concurrency 2` (one process at 11.1 GiB, the other at 9.1 GiB and asking for 2 GiB more). The
+failing allocation is the fp32 logits of one 64 x 512 x 16,384 batch (2 GiB). The preset now defaults
+to `--concurrency 1`.
+
+##### Small vs big proxy LM
+<!-- BEGIN GENERATED: colab_compare -->
+- the 11 tokenizers both proxy-LM tiers trained; small LM: d_model=128, n_layers=2, 10,000,000-byte budget, seeds [0, 1, 2], `Tesla T4`; big LM: d_model=512, n_layers=8, 100,000,000-byte budget, seeds [0, 1, 2], `NVIDIA L4`
+- rank: by mean macro val BPB (1 = best); Δ: macro val BPB minus `bpe_frequency`'s in the same tier (negative = better) ± its standard error √(sd²/n + sd_ref²/n) over the n seeds (sample sd)
+- small LM: 4 tokenizers beat `bpe_frequency`, by 0.006–0.038 BPB, i.e. 0.6–2.3 standard errors
+- big LM: 4 tokenizers beat `bpe_frequency`, by 0.012–0.027 BPB, i.e. 6.4–23.8 standard errors
+
+| Tokenizer | Small LM rank | Small LM Δ BPB | Big LM rank | Big LM Δ BPB |
+| :--- | ---: | ---: | ---: | ---: |
+| `wp_bpe_ppig` | 2 | -0.018 ± 0.009 | 1 | -0.027 ± 0.003 |
+| `wp_bpe_pig` | 1 | -0.038 ± 0.017 | 2 | -0.022 ± 0.001 |
+| `wp_bpe_npmi` | 4 | -0.006 ± 0.010 | 3 | -0.018 ± 0.002 |
+| `super_bpe` | 3 | -0.008 ± 0.009 | 4 | -0.012 ± 0.002 |
+| `bpe_frequency` | 5 | reference | 5 | reference |
+| `morpheme_bpe` | 9 | +0.076 ± 0.009 | 6 | +0.002 ± 0.003 |
+| `unigram_lm` | 8 | +0.059 ± 0.012 | 7 | +0.002 ± 0.002 |
+| `bpe_dropout_p0.1` | 7 | +0.027 ± 0.008 | 8 | +0.008 ± 0.004 |
+| `length_penalized` | 6 | +0.017 ± 0.008 | 9 | +0.017 ± 0.002 |
+| `mdl_bits` | 10 | +0.197 ± 0.010 | 10 | +0.027 ± 0.003 |
+| `wp_bpe_scp` | 11 | +0.632 ± 0.021 | 11 | +0.444 ± 0.009 |
+<!-- END GENERATED: colab_compare -->
+
+With the small LM, the four tokenizers ahead of `bpe_frequency` are within about two standard errors
+of it, so the order of the top five is not resolved by 3 seeds. With the big LM, `wp_bpe_ppig`,
+`wp_bpe_pig`, `wp_bpe_npmi` and `super_bpe` beat `bpe_frequency` by several standard errors; among the
+three wp_bpe variants, neighbouring means differ by less than two standard errors of their difference,
+so their order is not resolved. Below `bpe_frequency` the order changes: `morpheme_bpe` and
+`unigram_lm` move from clearly worse to within one standard error of it, and `length_penalized` drops
+from 6th to 9th.
+
+#### Big proxy LM: settings and how to run
+
+`--preset big` selects a larger proxy LM (same architecture as above): 8 layers, d_model 512, 8 heads,
+FFN 2048, sequence length 512 (~25M non-embedding parameters, ~8.4M embedding parameters at V = 16,384).
+One hyperparameter set for every tokenizer: AdamW lr 6e-4, weight decay 0.1, warmup 2% of steps then
+cosine decay, gradient clip 1.0, 64 x 512 = 32,768 tokens per step, bf16 autocast when the GPU supports
+it, 100 MB byte budget per run, seeds 0/1/2. Default GPU L4; 11 variants (wordpiece_pmi, wp_bpe_base and
+wp_bpe_ft are left out); `--concurrency N` (variant, seed) runs share the GPU as separate processes, each
+writing its own result file (default 1: on the L4, 2 and 3 ran out of memory). Results go to
+`benchmarks/results/colab_big/`. Explicit flags override the preset.
+
+LM text. A 100 MB budget needs 110 MB of LM text (budget + 10%, each document used once), but the
+tokenizers stay the ones trained on the 52.5 MB default train split. The preset therefore adds an LM text
+pool (`--lm-text-bytes 120000000`, `DataPipeline.lm_pool`): the train split of the dataset with the same
+sources, revisions, seed and split rule but a 120 MB train budget (cached under its own key next to the
+default dataset), minus every default train/val/test document by sha256. The LM trains on 110.0 MB drawn
+from the train split plus the pool (62.1 MB of it from the pool). At runtime the CLI checks that this text
+shares no document with val or test, and that every variant's encoded LM text covers the budget. BPB is
+measured on the same val split as the small tier. The pool's provenance (its dataset manifest, document
+and byte counts) is in `meta.lm_text` of the results.
+
+```bash
+# 1. Locally: pool, tokenizers, encodings into the job dir; no LM training.
+uv run python -m tokenisers.benchmarks.colab --preset big --prepare-only --skip-memory-check
+# 2. On Colab (L4): uploads the job, trains, downloads each finished run as it lands.
+uv run python -m tokenisers.benchmarks.colab --preset big --resume
+```
+
+Without `--prepare-only` one command does both steps. The job (`config.json` and one compressed `.npz` of
+token ids per tokenizer) is kept in `benchmarks/results/colab_big/job/` (gitignored; `--job-dir` moves
+it). If a run fails or is interrupted, re-run it with `--resume`: no tokenizer training or encoding, and
+the finished (variant, seed) run files already downloaded are uploaded to the new session and not
+retrained. `--resume` refuses a job prepared with different model, training or data arguments;
+`--concurrency` may change (e.g. lower it after an out-of-memory error). Ctrl-C or `kill <pid>` stops
+the Colab session before the CLI exits (a job started with `&` from a script ignores SIGINT; use `kill`).
+`--gpu none` runs on a CPU runtime (for a smoke test with toy sizes).
+
+Measured on the laptop (full scale, `--prepare-only`): 372 s and 3.2 GiB peak RSS with the pool
+downloaded from Hugging Face (~3 min of that; the pool's dataset is 135 MB on disk), 254 s and 3.5 GiB
+once cached (tokenizer training 104 s, encoding 144 s). Every tokenizer reproduces the committed V = 16,384
+small-tier run exactly (validation bytes/token per domain identical). The job is 463 MB (11 files of
+41-47 MB). Smoke test on a Colab CPU runtime through the same code path (`--preset big --gpu none`,
+d_model 32, 1 layer, 200 KB budget, bpe_frequency + bpe_dropout_p0.1, 2 seeds, `--concurrency 2`): the
+first session was dropped after the two bpe_frequency runs had been downloaded; `--resume` uploaded them
+into a new session, which trained the two missing runs (11 min on the VM: one wave of two concurrent
+runs, as in the first session) and returned the full result.
+
+Upload: the job uploads these pre-encoded ids, about 5 min at ~1.5 MB/s (again after each resume into a
+new session). The alternative, uploading the LM text (~38 MB compressed) and saved tokenizers and encoding
+on the VM after building the extension there (as `benchmarks/throughput.py` does), would take ~4 min
+(~1 min build, ~2 min encoding, under a minute of upload) and needs a clean git tree and more code, so it
+is not used.
+
+GPU time: the estimate made before the run (~1.3B training tokens at ~230 MFLOP per token, about 2-4 h
+of L4 time at 20-40 TFLOPS sustained in bf16) was low. The measured run trained 1.33 billion tokens in
+4 h 55 min including evaluation (about 75,000 tokens/s) at concurrency 1. Compute units used were not
+recorded. The default `--timeout` is 6 h (this run took 5 h 03 min); a job past it stops, and
+`--resume` continues it.
 
 ### 4. Larger Vocabularies (V = 32,768 and 65,536)
 
@@ -748,7 +872,10 @@ Findings (one seed per tokenizer: the seed-to-seed spread is not measured here):
   at this scale need not carry over to real LMs. Its training documents come from the split the
   tokenizers were trained on; only the val split it is scored on is held out. With 3 seeds, the
   macro BPB of the top five (2.854–2.892) differ by about the seed-to-seed spread (sd up to 0.029),
-  so their order is not significant; the gaps to `unigram_lm` and below are larger.
+  so their order is not significant; the gaps to `unigram_lm` and below are larger. The big proxy LM
+  (8 layers, d_model = 512, 100 MB per tokenizer, 11 of the variants) separates four tokenizers from
+  `bpe_frequency` and reorders the ones below it (section 3, small vs big proxy LM); it is still a
+  proxy: ~33M parameters trained on 27-62M tokens.
 - **Morphology.** Morph F1 uses SIGMORPHON 2022 gold for 5 languages (eng, fra, hun, rus, spa).
   `morpheme_bpe` is trained with a lexicon from the SIGMORPHON train split (gold test words
   removed), i.e. with supervision the other variants do not get.

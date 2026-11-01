@@ -224,6 +224,42 @@ def test_stream_failure_is_logged_raised_and_partial_data_kept(tmp_path, monkeyp
     assert kept.manifest["complete"] is False and kept.texts("train", lang="cmn_Hani")
 
 
+def _assert_pool(pipeline, base, total_bytes):
+    """The LM text pool leaves base's splits as they were and shares no document with them."""
+    splits = {s: v["sha256"] for s, v in base.manifest["splits"].items()}
+    pool, prov = pipeline.lm_pool(base, total_bytes)
+    cfg = base.manifest["config"]
+    again = pipeline.prepare(train_bytes=cfg["train_bytes"], languages=cfg["languages"])
+    assert again.root == base.root and {s: v["sha256"] for s, v in again.manifest["splits"].items()} == splits
+    held = {d["sha256"] for s in SPLITS for d in base.docs(s)}
+    assert pool and not {_sha(t) for t in pool} & held and len(set(pool)) == len(pool)
+    lm_bytes = sum(len(t.encode()) for t in base.texts("train") + pool)
+    assert lm_bytes >= total_bytes and prov["text_bytes"] == lm_bytes - base.manifest["splits"]["train"]["text_bytes"]
+    assert prov["base"] == base.root.name and prov["dataset"]["config"]["train_bytes"] == total_bytes
+    assert prov["dataset"]["root"] != base.root.name and prov["docs"] == len(pool)
+    return pool, prov
+
+
+def test_lm_pool_is_disjoint_and_leaves_the_default_splits_unchanged(tmp_path):
+    pipeline = DataPipeline(cache_dir=tmp_path, force_offline=True)
+    base = pipeline.prepare(train_bytes=20_000)
+    pool, prov = _assert_pool(pipeline, base, 60_000)
+    assert {d["domain"] for d in prov["dataset"]["sources"]} == {"english", "multilingual", "code"}
+    assert prov["excluded_base_docs"] > 0  # base train documents are in the larger train split too
+    with pytest.raises(ValueError, match="must exceed"):
+        pipeline.lm_pool(base, 20_000)
+    with pytest.raises(ValueError, match="same sources"):  # a pool must not come from other sources
+        DataPipeline(cache_dir=tmp_path, force_offline=False).lm_pool(base, 60_000)
+
+
+def test_lm_pool_on_the_real_path_dedups_against_every_split(tmp_path, monkeypatch):
+    monkeypatch.setattr(pl, "_iter_hf_rows", _fake_hub)
+    pipeline = DataPipeline(cache_dir=tmp_path)
+    base = pipeline.prepare(train_bytes=40_000, languages=("cmn_Hani", "deu_Latn"))
+    pool, prov = _assert_pool(pipeline, base, 120_000)
+    assert SHARED_DOC not in pool and prov["dataset"]["fallbacks"] == base.manifest["fallbacks"]
+
+
 def test_sigmorphon_tsv_marks_canonical_segmentations(tmp_path):
     tsv = tmp_path / "x.tsv"
     tsv.write_text(

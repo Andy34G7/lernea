@@ -196,7 +196,8 @@ def _calls(tmp_path: Path) -> list:
 
 def _fake_colab(tmp_path: Path) -> Path:
     """A stand-in for the colab CLI: /content on the 'VM' is $FAKE_COLAB_ROOT/content. Like the real
-    0.7.5 CLI, `exec` exits 0 when the executed code raises (the traceback is only printed).
+    0.7.5 CLI, `exec` exits 0 when the executed code raises (the traceback is only printed), and
+    `upload` into a remote directory that does not exist fails.
     FAKE_COLAB_FAIL=<command> makes that command exit 1; FAKE_COLAB_VERSION sets `colab version`;
     FAKE_COLAB_DROP=n: the first n `exec` calls run the code but lose its output and exit 1
     ("Connection was lost."); FAKE_COLAB_HANG=n: the first n `exec` calls hang before running it;
@@ -206,7 +207,7 @@ def _fake_colab(tmp_path: Path) -> Path:
     fake.write_text(f"""#!{sys.executable}
 import json, os, shutil, subprocess, sys, time
 root = os.environ["FAKE_COLAB_ROOT"]
-os.makedirs(root, exist_ok=True)
+os.makedirs(os.path.join(root, "content"), exist_ok=True)
 args = sys.argv[1:]
 with open(os.path.join(root, "calls.log"), "a") as f:
     f.write(json.dumps(args) + "\\n")
@@ -226,7 +227,8 @@ if args[0] in ("upload", "download") and take(args[0] + "_drop"):
 if args[0] == "version":
     print("Version: " + os.environ.get("FAKE_COLAB_VERSION", "0.7.5"))
 elif args[0] == "upload":
-    os.makedirs(os.path.dirname(vm(args[4])), exist_ok=True)
+    if not os.path.isdir(os.path.dirname(vm(args[4]))):
+        sys.exit("FileNotFoundError: no such remote directory: " + os.path.dirname(args[4]))
     shutil.copy(args[3], vm(args[4]))
 elif args[0] == "exec":
     if take("hang"):
@@ -308,7 +310,8 @@ def test_persistent_download_failure_is_bounded(tmp_path, monkeypatch):
         colab.ColabOrchestrator(colab_bin=str(_fake_colab(tmp_path))).run_job(
             _job(tmp_path, seeds=(0,)), poll_interval=0.01, max_poll_failures=3)
     calls = _calls(tmp_path)
-    assert calls.count("download") == 3 and calls[-1] == "stop"
+    result_downloads = (tmp_path / "vm" / "calls.log").read_text().count('"/content/result.json"')  # not per-run files
+    assert result_downloads == 3 and calls[-1] == "stop"
 
 
 def test_poll_failures_and_deadline_are_bounded(tmp_path, monkeypatch):
@@ -353,6 +356,22 @@ def test_session_is_stopped_when_colab_new_times_out(monkeypatch):
         with colab.ColabOrchestrator(colab_bin="colab").managed_session("s"):
             pytest.fail("session body ran although `colab new` failed")
     assert calls == ["new", "stop"]
+
+
+def test_killed_cli_stops_its_session(tmp_path):
+    """SIGTERM (`kill <pid>`) of a CLI inside a session stops the session; it would keep billing."""
+    import subprocess
+
+    fake = _fake_colab(tmp_path)
+    code = (f"import time; from tokenisers.benchmarks.colab import ColabOrchestrator\n"
+            f"with ColabOrchestrator(colab_bin={str(fake)!r}).managed_session('s'):\n"
+            f"    print('in session', flush=True); time.sleep(60)\n")
+    proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True,
+                            env={**__import__("os").environ, "FAKE_COLAB_ROOT": str(tmp_path / "vm")})
+    assert proc.stdout.readline().strip() == "in session"
+    proc.terminate()
+    assert proc.wait(timeout=60) != 0
+    assert _calls(tmp_path) == ["new", "stop"]
 
 
 @pytest.fixture

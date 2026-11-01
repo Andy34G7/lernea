@@ -43,6 +43,17 @@ def test_real_dataset_sources_split_and_provenance(tmp_path):
             assert ds.texts(split, domain="code", lang=lang), f"no {lang} code in {split}"
 
 
+def test_real_lm_pool_is_disjoint_and_from_the_same_sources(tmp_path):
+    pipeline = DataPipeline(cache_dir=tmp_path)
+    base = pipeline.prepare(train_bytes=1_000_000)
+    pool, prov = pipeline.lm_pool(base, 2_000_000)
+    held = {d["sha256"] for s in pl.SPLITS for d in base.docs(s)}
+    assert not {pl.DeterministicSplitter().hash_document(t) for t in pool} & held
+    assert prov["text_bytes"] > 900_000 and prov["dataset"]["complete"]
+    used = lambda m: {(r["repo"], r["lang"]) for r in m["sources"] if r["docs"]["train"]}  # noqa: E731
+    assert used(prov["dataset"]) == used(base.manifest)
+
+
 @pytest.mark.parametrize("lang", ["eng", "hun", "mon"])
 def test_sigmorphon_2022_download(tmp_path, lang):
     loader = SigmorphonLoader(cache_dir=tmp_path)

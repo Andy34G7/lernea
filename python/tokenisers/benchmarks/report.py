@@ -155,17 +155,62 @@ def render_colab(doc: Dict[str, Any]) -> str:
              for d in domains]
     cols.append(("Macro BPB (↓)", lambda m: f"**{_pm(m['macro_val_bpb'], m['macro_val_bpb_sd'])}**"))
     seeds = meta.get("seeds") or []
+    lm_text = meta.get("lm_text") or {}
+    pool = lm_text.get("pool_bytes")
+    source = ("the train split the tokenizers were trained on plus an LM text pool with no val or test document"
+              if pool else "the same train split the tokenizers were trained on")
+    used = (f"each document used once; {_mb(pool)} of the {_mb(lm_text['bytes'])} of LM text came from the pool, "
+            "`meta.lm_text`" if pool else "each document used once")
     head = [
         _summary(meta),
         f"- backend: {where}" + (f" — FALLBACK after Colab failed: {fb.get('error', '')}" if fb else ""),
         f"- proxy LM: {meta.get('lm_architecture', 'architecture not recorded')}; "
         f"{', '.join(f'{k}={v}' for k, v in meta.get('lm', {}).items())}",
         f"- fixed budget {meta.get('byte_budget', 0):,} UTF-8 bytes of LM training text per tokenizer, drawn "
-        "from the same train split the tokenizers were trained on (each document used once); seeds "
+        f"from {source} ({used}); seeds "
         f"{seeds} " + ("(mean ± sample sd)" if len(seeds) > 1 else "(single seed: no sd)"),
         "",
     ]
     return "\n".join(head + _table(doc, cols, lambda m: m["macro_val_bpb"]))
+
+
+def render_colab_compare(small: Dict[str, Any], big: Dict[str, Any], ref: str = "bpe_frequency") -> str:
+    """Proxy-LM ranking of the tokenizers both tiers trained, small LM vs big LM: rank by mean macro val BPB
+    and the difference to ``ref`` in the same tier, ± its standard error over the seeds."""
+    tiers = {"small LM": small, "big LM": big}
+    dups = {**small["meta"].get("duplicates", {}), **big["meta"].get("duplicates", {})}
+    names = [n for n in big["models"] if n in small["models"] and n not in dups]
+    stats: Dict[str, Dict[str, Tuple[int, float, float]]] = {}
+    for tier, doc in tiers.items():
+        ms, r = doc["models"], doc["models"][ref]
+        order = sorted(names, key=lambda n: ms[n]["macro_val_bpb"])
+        stats[tier] = {n: (order.index(n) + 1, ms[n]["macro_val_bpb"] - r["macro_val_bpb"],
+                           math.sqrt(ms[n]["macro_val_bpb_sd"] ** 2 / len(ms[n]["macro_val_bpb_by_seed"])
+                                     + r["macro_val_bpb_sd"] ** 2 / len(r["macro_val_bpb_by_seed"])))
+                       for n in names}
+
+    def setup(doc: Dict[str, Any]) -> str:
+        meta, lm = doc["meta"], doc["meta"].get("lm", {})
+        return (f"d_model={lm.get('d_model')}, n_layers={lm.get('n_layers')}, {meta.get('byte_budget', 0):,}-byte "
+                f"budget, seeds {meta.get('seeds')}, `{meta.get('backend', {}).get('gpu')}`")
+
+    head = [f"- the {len(names)} tokenizers both proxy-LM tiers trained; small LM: {setup(small)}; "
+            f"big LM: {setup(big)}",
+            f"- rank: by mean macro val BPB (1 = best); Δ: macro val BPB minus `{ref}`'s in the same tier "
+            "(negative = better) ± its standard error √(sd²/n + sd_ref²/n) over the n seeds (sample sd)"]
+    for tier, st in stats.items():
+        better = [st[n] for n in names if st[n][1] < 0]
+        if better:
+            head.append(f"- {tier}: {len(better)} tokenizers beat `{ref}`, by {min(-d for _, d, _ in better):.3f}–"
+                        f"{max(-d for _, d, _ in better):.3f} BPB, i.e. {min(-d / se for _, d, se in better):.1f}–"
+                        f"{max(-d / se for _, d, se in better):.1f} standard errors")
+    lines = head + ["", "| Tokenizer | Small LM rank | Small LM Δ BPB | Big LM rank | Big LM Δ BPB |",
+                    "| :--- | ---: | ---: | ---: | ---: |"]
+    for n in sorted(names, key=lambda n: stats["big LM"][n][0]):
+        cells = [f"{st[n][0]} | " + ("reference" if n == ref else f"{st[n][1]:+.3f} ± {st[n][2]:.3f}")
+                 for st in stats.values()]
+        lines.append(f"| `{n}` | " + " | ".join(cells) + " |")
+    return "\n".join(lines)
 
 
 def _gib(n: Any) -> str:

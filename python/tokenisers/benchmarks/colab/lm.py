@@ -114,16 +114,21 @@ class ByteBudgetTrainer:
         lr: float = 3e-3,
         device: Optional[str] = None,
         warmup_steps: Optional[int] = None,
+        weight_decay: float = 0.01,
+        warmup_frac: Optional[float] = None,
+        bf16: bool = False,
     ) -> None:
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
         self.byte_budget = byte_budget
         self.lr = lr
         self.warmup_steps = warmup_steps
+        self.warmup_frac = warmup_frac
+        self.bf16 = bf16  # bf16 autocast for the forward pass (CUDA only)
         self.bytes_consumed = 0
         self.tokens_consumed = 0
         self.epochs = 0.0
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=0.01)
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=weight_decay)
 
     def step_batch(self, text: str) -> None:
         self.bytes_consumed += len(text.encode("utf-8"))
@@ -154,7 +159,12 @@ class ByteBudgetTrainer:
         nbytes = _token_byte_counts(ids, token_bytes, total_utf8_bytes)
         per_step = batch_size * seq_len * float(nbytes.mean())
         total_steps = max(1, math.ceil((self.byte_budget - self.bytes_consumed) / max(per_step, 1e-9)))
-        warmup = self.warmup_steps if self.warmup_steps is not None else max(1, min(200, total_steps // 10))
+        if self.warmup_steps is not None:
+            warmup = self.warmup_steps
+        elif self.warmup_frac is not None:
+            warmup = max(1, round(total_steps * self.warmup_frac))
+        else:
+            warmup = max(1, min(200, total_steps // 10))
 
         self.model.train()
         history: List[Dict[str, float]] = []
@@ -176,8 +186,9 @@ class ByteBudgetTrainer:
                 g["lr"] = lr
 
             self.optimizer.zero_grad(set_to_none=True)
-            logits = self.model(t[:, :-1])
-            loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), t[:, 1:].reshape(-1))
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=self.bf16):
+                logits = self.model(t[:, :-1])
+                loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)).float(), t[:, 1:].reshape(-1))
             loss_val = float(loss.item())
             self.step_loss(loss_val)
             loss.backward()
@@ -305,8 +316,49 @@ def backend_info(device: str) -> Dict[str, Any]:
     return info
 
 
+def _run_one(job_dir: str, name: str, seed: int, device: Optional[str] = None) -> Dict[str, Any]:
+    """Train and evaluate one (tokenizer, seed) proxy LM; writes ``runs/<name>__s<seed>.json``."""
+    job = Path(job_dir)
+    cfg = json.loads((job / "config.json").read_text())
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    tr = cfg["train"]
+    arrays = np.load(job / f"{name}.npz")
+    token_bytes = arrays["token_bytes"]
+    train_ids = arrays["train"].astype(np.int64)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    model = ProxyLanguageModel(vocab_size=cfg["tokenizers"][name]["vocab_size"], **cfg["lm"])
+    bf16 = bool(tr.get("bf16")) and device == "cuda" and torch.cuda.is_bf16_supported()
+    trainer = ByteBudgetTrainer(model, byte_budget=tr["byte_budget"], lr=tr["lr"], device=device,
+                                weight_decay=tr.get("weight_decay", 0.01), warmup_frac=tr.get("warmup_frac"),
+                                bf16=bf16)
+    curve = trainer.train_on_token_stream(
+        train_ids, seq_len=tr["seq_len"], batch_size=tr["batch_size"], token_bytes=token_bytes
+    )
+    ev = BpbEvaluator()
+    val = {
+        d: ev.evaluate_validation_bpb(
+            trainer.model, arrays[f"val_{d}"], int(token_bytes[arrays[f"val_{d}"]].sum()),
+            seq_len=tr["seq_len"], stride=tr.get("eval_stride"), token_bytes=token_bytes,
+        )
+        for d in cfg["domains"]
+    }
+    run = {"seed": seed, "curve": curve, "val": val, "steps": curve[-1]["step"], "bf16": bf16,
+           "bytes_consumed": trainer.bytes_consumed, "tokens_consumed": trainer.tokens_consumed,
+           "epochs": trainer.epochs, "train_bytes_per_token": float(token_bytes[train_ids].sum()) / max(1, len(train_ids))}
+    out = job / "runs" / f"{name}__s{seed}.json"
+    out.parent.mkdir(exist_ok=True)
+    tmp = out.with_suffix(".tmp")
+    tmp.write_text(json.dumps(run))
+    os.replace(tmp, out)  # atomic: a partially written run file never looks finished
+    return run
+
+
 def run_job(job_dir: str, device: Optional[str] = None, log=print) -> Dict[str, Any]:
-    """Train and evaluate one proxy LM per tokenizer and seed; writes and returns result.json."""
+    """Train and evaluate one proxy LM per tokenizer and seed; writes and returns result.json.
+    Each run writes its own ``runs/<name>__s<seed>.json``; runs whose file exists are not repeated, so
+    a restarted job resumes. ``config["concurrency"]`` (default 1) runs that many at once in separate
+    processes on the one device; the aggregation reads the run files, so it does not depend on order."""
     job = Path(job_dir)
     cfg = json.loads((job / "config.json").read_text())
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -320,32 +372,27 @@ def run_job(job_dir: str, device: Optional[str] = None, log=print) -> Dict[str, 
             raise ValueError(f"{name}: validation domain(s) {short} have fewer than 2 tokens")
     if tr.get("eval_stride") is not None:  # likewise
         _check_stride(tr["eval_stride"], tr["seq_len"])
+    todo = [(n, s) for n in cfg["tokenizers"] for s in cfg["seeds"]
+            if not (job / "runs" / f"{n}__s{s}.json").exists()]
+    workers = max(1, int(cfg.get("concurrency", 1)))
+    if workers == 1:
+        for name, seed in todo:
+            run = _run_one(job_dir, name, seed, device)
+            log(f"  {name} seed={seed}: steps={run['steps']} initial_loss={run['curve'][0]['train_loss_nats']:.3f} "
+                f"macro_bpb={statistics.fmean(v['bpb'] for v in run['val'].values()):.4f} "
+                f"({time.time() - t_start:.0f}s)")
+    elif todo:
+        import concurrent.futures as cf
+        import multiprocessing as mp
+
+        with cf.ProcessPoolExecutor(workers, mp_context=mp.get_context("spawn")) as pool:
+            futs = {pool.submit(_run_one, job_dir, n, s, device): (n, s) for n, s in todo}
+            for fut in cf.as_completed(futs):
+                run = fut.result()
+                log(f"  {futs[fut][0]} seed={futs[fut][1]}: steps={run['steps']} "
+                    f"({time.time() - t_start:.0f}s)")
     for name, tcfg in cfg["tokenizers"].items():
-        arrays = np.load(job / f"{name}.npz")
-        token_bytes = arrays["token_bytes"]
-        train_ids = arrays["train"].astype(np.int64)
-        runs = []
-        for seed in cfg["seeds"]:
-            torch.manual_seed(seed)
-            np.random.seed(seed)
-            model = ProxyLanguageModel(vocab_size=tcfg["vocab_size"], **cfg["lm"])
-            trainer = ByteBudgetTrainer(model, byte_budget=tr["byte_budget"], lr=tr["lr"], device=device)
-            curve = trainer.train_on_token_stream(
-                train_ids, seq_len=tr["seq_len"], batch_size=tr["batch_size"], token_bytes=token_bytes
-            )
-            ev = BpbEvaluator()
-            val = {
-                d: ev.evaluate_validation_bpb(
-                    trainer.model, arrays[f"val_{d}"], int(token_bytes[arrays[f"val_{d}"]].sum()),
-                    seq_len=tr["seq_len"], stride=tr.get("eval_stride"), token_bytes=token_bytes,
-                )
-                for d in cfg["domains"]
-            }
-            runs.append({"seed": seed, "curve": curve, "val": val, "steps": curve[-1]["step"],
-                         "bytes_consumed": trainer.bytes_consumed, "tokens_consumed": trainer.tokens_consumed,
-                         "epochs": trainer.epochs})
-            log(f"  {name} seed={seed}: steps={curve[-1]['step']} initial_loss={curve[0]['train_loss_nats']:.3f} "
-                f"macro_bpb={statistics.fmean(v['bpb'] for v in val.values()):.4f} ({time.time() - t_start:.0f}s)")
+        runs = [json.loads((job / "runs" / f"{name}__s{s}.json").read_text()) for s in cfg["seeds"]]
         val_domains = {}
         for d in cfg["domains"]:
             mean, sd = _mean_sd([r["val"][d]["bpb"] for r in runs])
@@ -357,7 +404,7 @@ def run_job(job_dir: str, device: Optional[str] = None, log=print) -> Dict[str, 
         mean, sd = _mean_sd(macro)
         models[name] = {
             "vocab_size": tcfg["vocab_size"],
-            "train_bytes_per_token": float(token_bytes[train_ids].sum()) / max(1, len(train_ids)),
+            "train_bytes_per_token": runs[0]["train_bytes_per_token"],
             "steps": runs[0]["steps"],
             "bytes_consumed": runs[0]["bytes_consumed"],
             "tokens_consumed": runs[0]["tokens_consumed"],

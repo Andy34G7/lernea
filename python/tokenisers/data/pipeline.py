@@ -464,6 +464,37 @@ class DataPipeline:
             raise ValueError(f"max_bytes must be strictly positive, got {max_bytes}")
         return self.prepare(train_bytes=max_bytes).texts(split)
 
+    def lm_pool(self, base: PreparedDataset, total_bytes: int) -> Tuple[List[str], Dict[str, Any]]:
+        """Extra LM-training text for ``base``: (texts, provenance).
+
+        The pool is the train split of the dataset with ``base``'s parameters but
+        ``train_bytes=total_bytes`` (built and cached under that dataset's own key, so ``base`` and
+        its cache are untouched), minus every document of base's train/val/test by sha256. Same
+        sources, revisions and per-source byte shares as ``base``; each source is read further in
+        file order, so base train + pool holds about ``total_bytes``. Pool documents land in train
+        under the split rule, so none could be a val/test document of ``base`` either.
+        """
+        cfg = base.manifest["config"]
+        if total_bytes <= cfg["train_bytes"]:
+            raise ValueError(f"total_bytes ({total_bytes:,}) must exceed the base train budget "
+                             f"({cfg['train_bytes']:,})")
+        if self.force_offline != cfg["offline"]:  # before building anything
+            raise ValueError(f"{base.root.name} and this pipeline do not read the same sources (offline differs)")
+        big = self.prepare(train_bytes=total_bytes, seed=cfg["seed"], val_fraction=cfg["val_fraction"],
+                           test_fraction=cfg["test_fraction"], languages=cfg["languages"])
+        used = lambda m: [f["used"] for f in m["fallbacks"]]  # noqa: E731
+        same_config = {**big.manifest["config"], "train_bytes": cfg["train_bytes"]} == cfg
+        if not same_config or used(big.manifest) != used(base.manifest):
+            raise ValueError(f"{big.root.name} does not read the same sources as {base.root.name}")
+        held = {d["sha256"] for s in SPLITS for d in base.docs(s)}
+        train = big.docs("train")
+        docs = [d for d in train if d["sha256"] not in held]
+        prov = {"rule": "train split of the dataset below minus every base train/val/test document (sha256)",
+                "base": base.root.name, "docs": len(docs),
+                "text_bytes": sum(len(d["text"].encode("utf-8")) for d in docs),
+                "excluded_base_docs": len(train) - len(docs), "dataset": {"root": big.root.name, **big.manifest}}
+        return [d["text"] for d in docs], prov
+
     # -- internals ----------------------------------------------------------
 
     def _build(
