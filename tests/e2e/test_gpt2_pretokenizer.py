@@ -3,6 +3,7 @@ Python API, against tiktoken's own split and ids, the Hugging Face export (``tok
 ``transformers``), on random strings, the existing probes and real FineWeb val documents; plus the
 benchmark plumbing of the ``_g2`` and ``_sp<MB>`` variants."""
 
+import functools
 import glob
 import json
 import os
@@ -19,6 +20,7 @@ import regex
 import tiktoken
 import tokenizers
 import transformers
+from tiktoken_ext import openai_public
 
 import tokenisers
 from tokenisers import _core
@@ -26,9 +28,26 @@ from tokenisers.benchmarks import common
 from test_space_prefix import CORPUS, GOLDEN_PROBES, TEXTS, _quiet, _web_docs  # noqa: E402 (tests/e2e on sys.path)
 
 G2 = "gpt2"
-ENC = tiktoken.get_encoding("gpt2")
-# What tiktoken's own Python path splits with (Encoding._encode_only_native_bpe): its pat_str.
-TIKTOKEN_PAT = regex.compile(ENC._pat_str)
+# What tiktoken's own Python path splits with (Encoding._encode_only_native_bpe): its pat_str, a
+# constant (the encoding itself downloads on first use: see gpt2_enc).
+TIKTOKEN_PAT = regex.compile(openai_public.r50k_pat_str)
+
+
+@functools.cache
+def _gpt2_encoding():
+    """tiktoken's gpt2 encoding, or None offline with a cold tiktoken cache. It downloads vocab.bpe and
+    encoder.json on first use; failing at import would abort collection, and so the whole session."""
+    try:
+        return tiktoken.get_encoding("gpt2")
+    except OSError:  # requests' errors are OSErrors
+        return None
+
+
+@pytest.fixture(scope="module")
+def gpt2_enc():
+    if _gpt2_encoding() is None:
+        pytest.skip("tiktoken's gpt2 encoding is not cached and cannot be downloaded")
+    return _gpt2_encoding()
 
 
 def tiktoken_split(text: str) -> list:
@@ -69,13 +88,14 @@ def _fineweb_val_docs():
     as the tokenizer swap decodes them), from $TOKENISERS_FINEWEB_VAL or a prepared swap job's cache."""
     paths = ([os.environ["TOKENISERS_FINEWEB_VAL"]] if os.environ.get("TOKENISERS_FINEWEB_VAL") else
              sorted(glob.glob(os.path.expanduser("~/.cache/tokenisers/*/source/fineweb_val_000000.bin"))))
-    if not paths or not Path(paths[0]).is_file():
+    if not paths or not Path(paths[0]).is_file() or _gpt2_encoding() is None:
         return None
     from tokenisers.benchmarks.nanogpt_swap import swap_job
 
+    enc = _gpt2_encoding()
     tokens = swap_job.read_bin(Path(paths[0]), max_tokens=20 * 524288)
-    docs, _ = swap_job.split_docs(tokens, ENC.eot_token)
-    return [ENC.decode_bytes(d.tolist()).decode("utf-8") for d in docs]
+    docs, _ = swap_job.split_docs(tokens, enc.eot_token)
+    return [enc.decode_bytes(d.tolist()).decode("utf-8") for d in docs]
 
 
 FINEWEB = _fineweb_val_docs()
@@ -84,7 +104,7 @@ FINEWEB = _fineweb_val_docs()
 @pytest.fixture(scope="module")
 def fineweb():
     if FINEWEB is None:
-        pytest.skip("no FineWeb val shard cached (set TOKENISERS_FINEWEB_VAL)")
+        pytest.skip("no FineWeb val shard cached (set TOKENISERS_FINEWEB_VAL), or no tiktoken gpt2 to decode it")
     return FINEWEB
 
 
@@ -97,11 +117,24 @@ def fineweb_sample(step: int) -> list:
 # The split itself: native == tiktoken == Hugging Face
 # ----------------------------------------------------------------------------
 
-def test_pattern_is_tiktokens():
-    from tiktoken_ext import openai_public
-
-    assert openai_public.gpt2()["pat_str"] == ENC._pat_str == (
+def test_pattern_is_tiktokens(gpt2_enc):
+    assert openai_public.gpt2()["pat_str"] == gpt2_enc._pat_str == TIKTOKEN_PAT.pattern == (
         r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}++| ?\p{N}++| ?[^\s\p{L}\p{N}]++|\s++$|\s+(?!\S)|\s""")
+
+
+def test_both_pretokenizer_modules_collect_offline_with_a_cold_tiktoken_cache(tmp_path, repo_root):
+    """No network, empty tiktoken cache: the modules still import and the tiktoken tests skip. A
+    collection error would stop the whole session, unrelated tests included."""
+    proxy = "http://127.0.0.1:9"  # discard port: every download fails at once
+    env = {**os.environ, "TIKTOKEN_CACHE_DIR": str(tmp_path), "TOKENISERS_FINEWEB_VAL": str(tmp_path / "none"),
+           "HTTPS_PROXY": proxy, "https_proxy": proxy, "HTTP_PROXY": proxy, "http_proxy": proxy,
+           "NO_PROXY": "", "no_proxy": ""}
+    files = [str(repo_root / "tests" / "e2e" / f) for f in ("test_gpt2_pretokenizer.py", "test_hf_pretokenizer.py")]
+    r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-rs",
+                        "-k", "test_pattern_is_tiktokens", *files],
+                       cwd=repo_root, env=env, capture_output=True, text=True, timeout=600)
+    out = r.stdout + r.stderr
+    assert r.returncode == 0 and "1 skipped" in out and "cannot be downloaded" in out, out[-4000:]
 
 
 def assigned_in_unicode_15(text: str) -> bool:
@@ -258,10 +291,10 @@ def _bpe_parts(ranks, token: bytes, max_rank: int) -> list:
 
 
 @pytest.fixture(scope="module")
-def gpt2_native(tmp_path_factory):
+def gpt2_native(tmp_path_factory, gpt2_enc):
     """tiktoken's GPT-2 ranks as one of our tokenizer.json files (byte b = id b, merged token of
     rank r = id r) loaded natively: encoding then runs our gpt2 split and our BPE."""
-    ranks = ENC._mergeable_ranks
+    ranks = gpt2_enc._mergeable_ranks
     by_rank = sorted(ranks.items(), key=lambda kv: kv[1])
     assert sorted(len(b) for b, _ in by_rank[:256]) == [1] * 256 and [r for _, r in by_rank] == list(range(len(by_rank)))
     p = _core.bytes_to_printable
@@ -285,10 +318,10 @@ def gpt2_native(tmp_path_factory):
     return tok, to_rank
 
 
-def test_gpt2_merges_natively_give_tiktokens_ids(gpt2_native):
+def test_gpt2_merges_natively_give_tiktokens_ids(gpt2_native, gpt2_enc):
     tok, to_rank = gpt2_native
     for t in TEXTS + CORPUS + RANDOM + fineweb_sample(5):
-        assert to_rank[tok.encode(t)].tolist() == ENC.encode_ordinary(t), t[:200]
+        assert to_rank[tok.encode(t)].tolist() == gpt2_enc.encode_ordinary(t), t[:200]
 
 
 # ----------------------------------------------------------------------------
