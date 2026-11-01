@@ -824,6 +824,31 @@ def test_swap_card_arm_comes_from_the_recorded_spec(tmp_path) -> None:
     assert "unigram_lm_g2: ablation · GPT-2 split @ 50 MB." in card  # recorded bytes, name-derived pretokenizer
 
 
+@needs_node
+def test_run_line_and_proxy_subtitle_show_every_hardware_the_runs_trained_on(tmp_path) -> None:
+    """meta.backend is the last session only; a result recording runs_by_hardware with more than one entry
+    shows that summary in the visible Run line, the provenance summary and the proxy subtitle. One entry
+    leaves the backend as it was."""
+    import copy
+
+    data = copy.deepcopy(server_mod.load_benchmark_data())
+    meta = data["results"]["proxy_small"]["data"]["meta"]
+    meta["backend"]["gpu"] = "Tesla T4"  # the last session
+    meta["runs_by_hardware"] = {"GPU `NVIDIA A100`": [f"r{i}" for i in range(31)], "GPU `Tesla T4`": ["a", "b"]}
+    errors, html = _render(tmp_path, data)
+    assert errors == []
+    summary = "runs trained on: 31 × GPU NVIDIA A100, 2 × GPU Tesla T4"
+    leader = next(_text(c) for c in html["leaders"].split('<div class="kpi">') if ">Proxy LM · small<" in c)
+    assert f"Run: {summary}" in leader
+    assert summary in _text(html["proxy-prov"]) and summary in _text(html["proxy-sub"])
+    assert summary in _text(html["results-index"])
+
+    meta["runs_by_hardware"] = {"GPU `Tesla T4`": ["a", "b"]}
+    errors, html = _render(tmp_path, data)
+    assert errors == [] and "runs trained on" not in html["proxy-sub"] + html["proxy-prov"] + html["leaders"]
+    assert "Tesla T4." in _text(html["proxy-sub"])
+
+
 def _sp_root(tmp_path, sp):
     """The committed original swap run (with its steps CSV) and ``sp`` as the space-prefix rerun."""
     base = json.loads((REAL_RESULTS / "nanogpt_swap/nanogpt_swap.json").read_text())

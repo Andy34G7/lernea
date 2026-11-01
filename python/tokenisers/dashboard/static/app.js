@@ -135,13 +135,21 @@ function median(vals) {
 
 const mb = (b) => `${(b / 1e6).toFixed(b < 1e7 ? 1 : 0)} MB`;
 
+// meta.backend is the last session only. A result whose runs were trained on more than one kind of hardware
+// (meta.runs_by_hardware, {hardware: [run names]}) says so instead: "runs trained on: 31 × GPU A100, 2 × GPU T4"
+function mixedHardware(m) {
+  const hw = Object.entries(m?.runs_by_hardware || {});
+  const n = (v) => (Array.isArray(v) ? v.length : '?');
+  return hw.length > 1 ? `runs trained on: ${hw.map(([k, v]) => `${n(v)} × ${k.replace(/`/g, '')}`).join(', ')}` : null;
+}
+
 // One line of provenance from a result file's meta block (legacy files have none)
 function provenance(m) {
   if (!m) return 'no provenance recorded';
   const b = m.backend || {};
   const parts = [];
   if (m.synthetic_data) parts.push('SYNTHETIC data');
-  const hw = b.gpu ? b.gpu.split(',')[0] : b.kind === 'colab' ? `Colab CPU (${b.cpu ?? '?'})` : b.cpu || m.host?.cpu;
+  const hw = mixedHardware(m) ?? (b.gpu ? b.gpu.split(',')[0] : b.kind === 'colab' ? `Colab CPU (${b.cpu ?? '?'})` : b.cpu || m.host?.cpu);
   if (hw) parts.push(hw);
   if (isNum(m.byte_budget)) parts.push(`${mb(m.byte_budget)} LM budget`);
   else if (isNum(m.train_bytes)) parts.push(`${mb(m.train_bytes)} train`);
@@ -811,7 +819,7 @@ function renderProxy() {
     esc(
       `${state.tier === 'proxy_big' ? 'Big' : 'Small'} LM: ${lm.n_layers ?? '?'} layers, d_model ${lm.d_model ?? '?'}` +
         (params ? `, ≈ ${(params / 1e6).toFixed(1)}M parameters (${((V * lm.d_model) / 1e6).toFixed(1)}M embedding)` : '') +
-        `; ${isNum(meta.byte_budget) ? mb(meta.byte_budget) : '?'} of text per tokeniser; seeds ${(meta.seeds || []).join(', ')}; ${meta.backend?.gpu ?? meta.backend?.kind ?? '?'}.`,
+        `; ${isNum(meta.byte_budget) ? mb(meta.byte_budget) : '?'} of text per tokeniser; seeds ${(meta.seeds || []).join(', ')}; ${mixedHardware(meta) ?? meta.backend?.gpu ?? meta.backend?.kind ?? '?'}.`,
     ),
   );
 
