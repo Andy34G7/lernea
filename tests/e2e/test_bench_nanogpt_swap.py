@@ -266,6 +266,22 @@ def test_speedrun_target_in_bits_per_byte():
     assert swap.target_bpb({"bytes_per_token": 4.436}) == pytest.approx(3.28 / math.log(2) / 4.436)
 
 
+def test_gpt2_equivalent_steps_read_gpt2s_smoothed_train_curve():
+    """The first step at which GPT-2's train loss, in BPB and smoothed, reaches a tokenizer's final val BPB."""
+    def bpb(step):  # GPT-2's noise-free curve: 0.01 nats per step, 4 bytes per token
+        return (10 - 0.01 * step) / math.log(2) / 4
+    steps = [{"step": s, "train_loss": 10 - 0.01 * s + 0.5 * (-1) ** s} for s in range(600)]  # +-0.5 nats of noise
+    gpt2 = {"train": {"bytes_per_token": 4.0},
+            "trainer": {"steps": steps, "evals": [{"step": s, "val_bpb": bpb(s)} for s in (0, 300, 600)]}}
+    models = {"gpt2": {"final_bpb": bpb(599)}, "a": {"final_bpb": bpb(250.5)}, "b": {"final_bpb": 0.0}, "c": {}}
+    eq = swap.gpt2_equivalent(gpt2, models)
+    # a 21-step window leaves +-0.5/21 nats (2.4 steps) of the noise: first hit at odd step 249, not 251
+    assert eq["steps"] == {"gpt2": 600, "a": 249, "b": None, "c": None}
+    assert swap.gpt2_equivalent(gpt2, models, window=1)["steps"]["a"] == 201  # unsmoothed: 0.5 nats = 50 steps early
+    assert [s for s, _ in eq["train_minus_val_bpb"]] == [300, 600]
+    assert eq["train_minus_val_bpb"][0][1] == pytest.approx(0.5 / 21 / math.log(2) / 4)
+
+
 # ----------------------------------------------------------------------------
 # The trainer: micro-batch accumulation; the Colab job
 # ----------------------------------------------------------------------------
@@ -367,8 +383,12 @@ def test_colab_job_runs_every_tokenizer_downloads_each_run_and_resumes(tmp_path,
     m = doc["models"]["lp"]
     assert m["curve"][-1][1] == m["final_bpb"] and m["tokens_per_s"] == pytest.approx(128 / m["ms_per_step"] * 1000)
     assert doc["meta"]["target"]["bpb"] == pytest.approx(3.28 / math.log(2) / runs["gpt2"]["val"]["bytes_per_token"])
+    assert doc["gpt2_equivalent"]["steps"]["gpt2"] == 4
     md = render_nanogpt_swap(doc)
     assert "| `lp` |" in md and ("not reached" in md or str(m["reached_target_step"]) in md)
+    assert "GPT-2-equivalent steps" in md and "Findings" in md
+    csv = swap.train_steps_csv(job / "runs").splitlines()
+    assert csv[0] == "step,lr,gpt2,lp" and len(csv) == 1 + 4
 
     # Session dropped after gpt2: a new session gets runs/gpt2.json uploaded and trains only lp
     (job / "runs" / "lp.json").unlink()

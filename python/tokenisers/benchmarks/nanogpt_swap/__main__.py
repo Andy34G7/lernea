@@ -254,7 +254,49 @@ def collect(job: Path, cfg: Dict[str, Any], result: Dict[str, Any], gpu: str, st
         "target": {"nats_per_gpt2_token": SPEEDRUN_TARGET_NATS, "bpb": target},
         "prepared": cfg["prepared"], "tokenizer_text": cfg["tokenizer_text"], "source": cfg["source"],
     }
-    return {"meta": meta, "models": {n: summarize(runs[n], target) for n in order}}
+    doc = {"meta": meta, "models": {n: summarize(runs[n], target) for n in order}}
+    if gpt2 and gpt2["trainer"] and cfg["mode"] == "full":
+        doc["gpt2_equivalent"] = gpt2_equivalent(gpt2, doc["models"])
+    return doc
+
+
+EQUIV_WINDOW = 21  # steps: centred rolling mean over GPT-2's per-step train loss (one 524,288-token batch each)
+
+
+def gpt2_equivalent(gpt2: Dict[str, Any], models: Dict[str, Any], window: int = EQUIV_WINDOW) -> Dict[str, Any]:
+    """GPT-2-equivalent steps: per tokenizer, the first step at which GPT-2's curve reaches that
+    tokenizer's final val BPB, i.e. how many of GPT-2's steps buy the same quality (GPT-2 itself: its
+    step count, by definition). GPT-2's per-step curve is its train loss in bits per byte of its train
+    text (nats / ln 2 / train bytes per token), smoothed by a centred rolling mean over ``window``
+    steps (fewer at both ends); the train text is one pass over unseen documents, so it tracks val.
+    ``train_minus_val_bpb`` checks that against every val pass after step 0 (the last val pass,
+    after the last step, against the last step's train loss)."""
+    steps = [s["step"] for s in gpt2["trainer"]["steps"]]
+    x = np.array([s["train_loss"] for s in gpt2["trainer"]["steps"]]) / math.log(2) / gpt2["train"]["bytes_per_token"]
+    c = np.concatenate([[0.0], np.cumsum(x)])
+    i = np.arange(len(x))
+    lo, hi = np.maximum(i - window // 2, 0), np.minimum(i + window // 2 + 1, len(x))
+    curve = (c[hi] - c[lo]) / (hi - lo)
+    out: Dict[str, Optional[int]] = {}
+    for name, m in models.items():
+        hit = np.flatnonzero(curve <= m["final_bpb"]) if "final_bpb" in m else []
+        out[name] = steps[-1] + 1 if name == "gpt2" else (steps[hit[0]] if len(hit) else None)
+    at = dict(zip(steps, curve.tolist()))
+    check = [[e["step"], at[min(e["step"], steps[-1])] - e["val_bpb"]] for e in gpt2["trainer"]["evals"] if e["step"] > 0]
+    return {"window": window, "steps": out, "train_minus_val_bpb": check}
+
+
+def train_steps_csv(runs_dir: Path) -> str:
+    """The runs' step curves in one table: step, lr (the same for every tokenizer), and each
+    tokenizer's train loss in nats per its own token."""
+    runs = {p.stem: json.loads(p.read_text())["trainer"]["steps"] for p in sorted(runs_dir.glob("*.json"))}
+    first = next(iter(runs.values()))
+    if any([(s["step"], s["lr"]) for s in r] != [(s["step"], s["lr"]) for s in first] for r in runs.values()):
+        raise ValueError("the runs differ in their steps or learning rates")
+    rows = [",".join(["step", "lr", *runs])]
+    rows += [",".join(map(str, [s["step"], s["lr"], *(r[k]["train_loss"] for r in runs.values())]))
+             for k, s in enumerate(first)]
+    return "\n".join(rows) + "\n"
 
 
 def flops_per_token(padded_vocab: int, n_layer: int = 12, d: int = 768, seq: int = 1024) -> float:
@@ -412,6 +454,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         write_outputs(doc, args.output_dir, f"pilot_{args.gpu.lower()}")
     else:
         write_outputs(doc, args.output_dir, "nanogpt_swap")
+        (args.output_dir / "nanogpt_swap_steps.csv").write_text(train_steps_csv(run_dir / "runs"), encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -228,6 +228,64 @@ def render_throughput(doc: Dict[str, Any]) -> str:
     return "\n".join(head + rows)
 
 
+def _swap_findings(doc: Dict[str, Any], models: Dict[str, Any]) -> List[str]:
+    """Method notes and findings under a full tokenizer-swap table (``models`` sorted by final BPB);
+    every number comes from the JSON."""
+    eq, g = doc.get("gpt2_equivalent"), models.get("gpt2")
+    if not eq or not g:
+        return []
+    meta = doc["meta"]
+    steps, batch = int(meta["recipe"]["args"]["num_iterations"]), int(meta["recipe"]["args"]["total_batch_size"])
+    check = eq["train_minus_val_bpb"]
+    worst = max(check, key=lambda c: abs(c[1]))
+    best, second = list(models)[:2]
+    more = {n: m for n, m in models.items() if n != "gpt2" and m["val_bytes_per_token"] > g["val_bytes_per_token"]}
+    more_bpb = [m["final_bpb"] for m in more.values()]
+    # super_bpe merges across whitespace; our other tokenizers isolate every whitespace run as its own token
+    ws = {n: m for n, m in models.items() if m["spec"]["kind"] == "tokenisers" and n != "super_bpe"}
+    ws_bpt = [m["val_bytes_per_token"] for m in ws.values()]
+    less = [100 * (1 - m["train_bytes_per_token"] / g["train_bytes_per_token"]) for m in ws.values()]
+    nats = meta["target"]["nats_per_gpt2_token"]
+    lines = [
+        "",
+        f"- GPT-2-equivalent steps: the first step at which GPT-2's train loss, in bits per byte of its train text "
+        f"(nats / ln 2 / {g['train_bytes_per_token']:.3f} bytes per token) and smoothed by a centred "
+        f"{eq['window']}-step rolling mean, reaches the tokenizer's final val BPB: how many of GPT-2's {steps} steps "
+        f"buy the same quality (GPT-2: {eq['steps']['gpt2']} by definition). The train text is one pass over unseen "
+        f"documents; at GPT-2's val passes (steps {check[0][0]}-{check[-1][0]}) the smoothed train BPB is within "
+        f"{abs(worst[1]):.4f} of val BPB (largest at step {worst[0]}).",
+        f"- train: each tokenizer's first {steps} x {batch:,} tokens of the same FineWeb train documents in the same "
+        "order, one pass; one run per tokenizer, llm.c's fixed seed",
+        "",
+        "Findings (one seed per tokenizer: the seed-to-seed spread is not measured here):",
+        "",
+        f"- Lowest final BPB: `{best}` ({models[best]['final_bpb']:.4f})"
+        + (", GPT-2's own tokenizer" if best == "gpt2" else "")
+        + f"; next `{second}` ({models[second]['final_bpb']:.4f}, +"
+        f"{models[second]['final_bpb'] - models[best]['final_bpb']:.4f}).",
+    ]
+    if more:
+        lines.append(
+            f"- More val bytes per token than GPT-2's {g['val_bytes_per_token']:.3f}: "
+            + ", ".join(f"`{n}` {m['val_bytes_per_token']:.3f}" for n, m in more.items())
+            + f". Their final BPB is {min(more_bpb):.4f}-{max(more_bpb):.4f}, "
+            + ("all above GPT-2's: more text per step did not give a lower BPB."
+               if min(more_bpb) > g["final_bpb"] else f"against GPT-2's {g['final_bpb']:.4f}."))
+    if ws:
+        lines.append(
+            f"- Our {len(ws)} whitespace-isolating tokenizers (the repo's pre-tokenizer makes every whitespace run its "
+            f"own token) get {min(ws_bpt):.2f}-{max(ws_bpt):.2f} val bytes per token, so each {batch:,}-token step "
+            f"holds {min(less):.0f}-{max(less):.0f}% less text than GPT-2's (train bytes per token). The comparison "
+            "is confounded by that design choice: they train on less text, not only on different tokens.")
+    lines.append(
+        f"- Early training: after {steps} steps GPT-2 is at {g['final_nats_per_token']:.2f} nats per token on val, "
+        f"far from the speedrun's target of {nats}; "
+        + ("no tokenizer reaches the target. " if all(m["reached_target_step"] is None for m in models.values())
+           else "")
+        + "The ranking at this budget need not hold for longer training.")
+    return lines
+
+
 def render_nanogpt_swap(doc: Dict[str, Any]) -> str:
     """Tokenizer swap on llm.c's GPT-2 (124M) recipe: final val BPB and speed per tokenizer (a pilot
     adds the projected full-run time)."""
@@ -258,17 +316,19 @@ def render_nanogpt_swap(doc: Dict[str, Any]) -> str:
         "",
     ]
     if not pilot:
-        cols = "| Tokenizer | \\|V\\| | Params | Val B/token | Train B/token | Final BPB | Step at target | ms/step | tok/s |"
-        lines = [cols, "| :--- |" + " ---: |" * 8]
-        for name, m in sorted(models.items(), key=lambda kv: kv[1].get("final_bpb", math.inf)):
-            if "final_bpb" not in m:
-                continue
-            step = m["reached_target_step"]
+        eq = (doc.get("gpt2_equivalent") or {}).get("steps", {})
+        cols = ("| Tokenizer | \\|V\\| | Params | Val B/token | Train B/token | Final BPB | GPT-2-equivalent steps "
+                "| Step at target | ms/step | tok/s |")
+        lines = [cols, "| :--- |" + " ---: |" * 9]
+        done = dict(sorted(((n, m) for n, m in models.items() if "final_bpb" in m), key=lambda kv: kv[1]["final_bpb"]))
+        for name, m in done.items():
+            step, eq_step = m["reached_target_step"], eq.get(name, "?")
             lines.append(f"| `{name}` | {m['vocab_size']:,} | {m['params'] / 1e6:.1f} M | {m['val_bytes_per_token']:.3f} | "
                          f"{m['train_bytes_per_token']:.3f} | **{m['final_bpb']:.4f}** | "
+                         f"{eq_step if eq_step is not None else 'not reached'} | "
                          f"{step if step is not None else 'not reached'} | {m['ms_per_step']:.0f} | "
                          f"{m['tokens_per_s']:,.0f} |")
-        return "\n".join(head + lines)
+        return "\n".join(head + lines + _swap_findings(doc, done))
     p = doc["projection"]
     lines = ["| Tokenizer | \\|V\\| | Val B/token | Encode MB/s | ms/step | tok/s | Peak GiB | Warm eval s "
              "| Projected h |", "| :--- |" + " ---: |" * 8]
