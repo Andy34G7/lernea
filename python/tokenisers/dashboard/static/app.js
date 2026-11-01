@@ -1681,20 +1681,25 @@ function renderRadarView() {
   ];
   const ranges = axes.map(getMinMax);
 
+  // Min-max over the tokenisers measured on the axis (0 = lowest, 1 = highest); unmeasured is a gap, not a value
   const normalize = (val, mm) => {
-    if (!isNum(val)) return 0.2;
+    if (!isNum(val)) return null;
     if (mm.max === mm.min) return 1.0;
-    return Math.max(0.1, Math.min(1.0, (val - mm.min) / (mm.max - mm.min)));
+    return (val - mm.min) / (mm.max - mm.min);
   };
+  const labels = ['Compression', 'Rényi E₂.₅', 'Morphology F1', 'Identifier F1', 'Downstream (1/BPB)', 'Decode speed'];
 
   const datasets = state.selectedRadarModels
     .map((mKey) => {
       const m = state.data.models[mKey];
       if (!m) return null;
       const hex = cssVar(`--fam-${state.radarSlots[mKey]}`);
+      const data = axes.map((f, i) => normalize(f(m), ranges[i]));
+      const missing = labels.filter((_, i) => data[i] === null);
       return {
-        label: m.display_name,
-        data: axes.map((f, i) => normalize(f(m), ranges[i])),
+        label: m.display_name + (missing.length ? ` (not measured: ${missing.join(', ')})` : ''),
+        data,
+        spanGaps: false,
         backgroundColor: withAlpha(hex, 0.12),
         borderColor: hex,
         borderWidth: 2,
@@ -1709,7 +1714,7 @@ function renderRadarView() {
   state.charts.radar = new Chart(canvas, {
     type: 'radar',
     data: {
-      labels: ['Compression', 'Rényi E₂.₅', 'Morphology F1', 'Identifier F1', 'Downstream (1/BPB)', 'Decode speed'],
+      labels,
       datasets,
     },
     options: {

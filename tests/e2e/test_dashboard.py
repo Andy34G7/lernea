@@ -732,6 +732,28 @@ def test_one_tokeniser_proxy_run_renders_every_section(tmp_path, monkeypatch) ->
     assert "BPE (Frequency)" in html["leaderboard-tbody"]
 
 
+@needs_node
+def test_radar_leaves_unmeasured_axes_out_and_min_max_normalises_the_rest(tmp_path) -> None:
+    """bpe_dropout_p0.1 has only a proxy-LM BPB: its other five axes are gaps named in the legend, not
+    values plotted above other tokenisers' measured worst; measured axes span exactly [0, 1]."""
+    data = server_mod.load_benchmark_data()
+    picked = ["bpe_dropout_p0.1", "bpe_frequency", "mdl_bits"]
+    errors, html = _render(tmp_path, data, [
+        "Chart = class { static defaults = { font: {} }; constructor(c, cfg) { globalThis.cfg = cfg; } destroy() {} };",
+        f"state.selectedRadarModels = {json.dumps(picked)}; renderRadarView();",
+        "document.getElementById('radar-out').innerHTML = JSON.stringify(cfg.data);"])
+    assert errors == []
+    out = json.loads(html["radar-out"])
+    drop = out["datasets"][0]
+    assert drop["data"][:4] + drop["data"][5:] == [None] * 5 and 0 <= drop["data"][4] <= 1
+    assert drop["label"].endswith("(not measured: Compression, Rényi E₂.₅, Morphology F1, Identifier F1, Decode speed)")
+    ms = data["models"]
+    for i, field in ((0, "bytes_per_token"), (1, "renyi_e_2_5"), (5, "decode_mb_per_sec")):
+        vals = [m[field] for m in ms.values() if m.get(field) is not None]
+        for d, key in zip(out["datasets"][1:], picked[1:]):  # no floor: the worst measured is 0
+            assert d["data"][i] == pytest.approx((ms[key][field] - min(vals)) / (max(vals) - min(vals)))
+
+
 def _sp_root(tmp_path, sp):
     """The committed original swap run (with its steps CSV) and ``sp`` as the space-prefix rerun."""
     base = json.loads((REAL_RESULTS / "nanogpt_swap/nanogpt_swap.json").read_text())
