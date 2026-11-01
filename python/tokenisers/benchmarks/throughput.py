@@ -254,7 +254,7 @@ def cli(argv: Optional[List[str]] = None) -> None:
     parser.add_argument("--output-dir", default=None,
                         help="Default benchmarks/results/throughput/colab_cpu (--colab) or .../local")
     args = parser.parse_args(argv)
-    start = start_provenance(__package__, argv)
+    start = start_provenance("tokenisers.benchmarks.throughput", argv)
 
     job = args.job_dir
     job.mkdir(parents=True, exist_ok=True)

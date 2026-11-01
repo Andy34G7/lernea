@@ -18,7 +18,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from tokenisers.benchmarks import colab  # noqa: E402
+from tokenisers.benchmarks import colab, common  # noqa: E402
 from tokenisers.benchmarks.nanogpt_swap import __main__ as swap  # noqa: E402
 from tokenisers.benchmarks.nanogpt_swap import swap_job as job_mod  # noqa: E402
 from tokenisers.benchmarks.report import render_nanogpt_swap  # noqa: E402
@@ -350,10 +350,11 @@ def _colab_job(tmp_path: Path, toks, shards, mode: str = "full") -> tuple:
            "headroom": 0.01,
            "tokenizers": [{**specs["gpt2"], "ids_docs": 5, "ids_sha256": job_mod.ids_sha256(gpt2.encode_batch(tt[:5]))},
                           specs["lp"]],
-           "prepared": {"tokenmonster_why": "n/a"},
+           "prepared": {"tokenmonster_why": "n/a", "git_commit": "abc", "git_dirty": False},
            "train": ["gpt2"] if mode == "pilot" else ["gpt2", "lp"],
            "trainer_args": {**swap.recipe_args(4, 2), **TINY_ARGS}, "trainer_env": {"CUDA_VISIBLE_DEVICES": ""},
-           "mbs": 2, "mode": mode, "gpu": "L4", "eval_docs": 30 if mode == "pilot" else None}
+           "mbs": 2, "mode": mode, "gpu": "L4", "eval_docs": 30 if mode == "pilot" else None,
+           "launched": {"git_commit": "abc", "git_dirty": False}}
     (job / "config.json").write_text(json.dumps(cfg))
     files = [job / "config.json", job / "train_gpt2_swap.py", job / "tokenizers.tar.gz"]
     return job, cfg, files
@@ -390,12 +391,19 @@ def test_colab_job_runs_every_tokenizer_downloads_each_run_and_resumes(tmp_path,
     csv = swap.train_steps_csv(job / "runs").splitlines()
     assert csv[0] == "step,lr,gpt2,lp" and len(csv) == 1 + 4
 
-    # Session dropped after gpt2: a new session gets runs/gpt2.json uploaded and trains only lp
+    # Session dropped after gpt2: a new session, launched at another commit, gets runs/gpt2.json
+    # uploaded and trains only lp; the header says gpt2 ran at the earlier commit
     (job / "runs" / "lp.json").unlink()
+    cfg["launched"] = {"git_commit": "def", "git_dirty": False}
+    (job / "config.json").write_text(json.dumps(cfg))
     monkeypatch.setenv("FAKE_COLAB_ROOT", str(tmp_path / "vm2"))
-    _run(tmp_path, job, files)
+    result = _run(tmp_path, job, files)
     log = (tmp_path / "vm2" / "content" / "job.log").read_text()
     assert "gpt2: finished in an earlier session, skipped" in log and "lp: val" in log
+    doc = swap.collect(job, cfg, result, "L4", {"git_commit": "def", "git_dirty": False})
+    assert [doc["models"][n]["launched"]["git_commit"] for n in ("gpt2", "lp")] == ["abc", "def"]
+    assert ("commit `def`, tokenizers prepared at commit `abc`, `gpt2` run in an earlier session at commit `abc`; "
+            "generated") in render_nanogpt_swap(doc)
     assert log.count("val_bpb") == 1 and (job / "runs" / "lp.json").exists()
     calls = [json.loads(line) for line in (tmp_path / "vm2" / "calls.log").read_text().splitlines()]
     assert any(c[0] == "upload" and c[-1].endswith("/runs/gpt2.json") for c in calls) and calls[-1][0] == "stop"
@@ -433,14 +441,16 @@ def test_a_tokenizer_subset_run_keeps_every_prepared_tokenizer_in_the_job(tmp_pa
     specs = [{"name": "gpt2", "kind": "tiktoken", "encoding": "gpt2"},
              {"name": "tm_englishcode_50256", "kind": "tokenmonster"}, {"name": "tm_englishcode_32000", "kind": "tokenmonster"}]
     (job / "config.json").write_text(json.dumps({"tokenizers": specs, "prepared": {}}))
-    uploaded = []
+    uploaded, launched = [], []
 
     class Fail:
         def __init__(self, **kw):
             pass
 
         def run_job(self, run_dir, files, **kw):
-            uploaded.append((files[0].name, [s["name"] for s in json.loads(files[0].read_text())["tokenizers"]]))
+            vm = json.loads(files[0].read_text())
+            uploaded.append((files[0].name, [s["name"] for s in vm["tokenizers"]]))
+            launched.append(vm["launched"])  # stamped on each run the VM writes
             raise colab.ColabError("session dropped")
 
     monkeypatch.setattr(colab, "ColabOrchestrator", Fail)
@@ -449,6 +459,8 @@ def test_a_tokenizer_subset_run_keeps_every_prepared_tokenizer_in_the_job(tmp_pa
     with pytest.raises(SystemExit, match="session dropped"):
         swap.main(["--job-dir", str(job), "--gpu", "A100", "--resume"])
     assert uploaded == [("config.json", ["gpt2"]), ("config.json", [s["name"] for s in specs])]
+    start = common.start_provenance("m", [])
+    assert launched == 2 * [{"git_commit": start["git_commit"], "git_dirty": start["git_dirty"]}]
     assert [s["name"] for s in json.loads((job / "config.json").read_text())["tokenizers"]] == [s["name"] for s in specs]
 
 

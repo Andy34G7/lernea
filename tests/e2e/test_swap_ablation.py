@@ -19,7 +19,8 @@ from tokenisers.benchmarks import common  # noqa: E402
 from tokenisers.benchmarks.nanogpt_swap import __main__ as swap  # noqa: E402
 from tokenisers.benchmarks.nanogpt_swap import swap_job as job_mod  # noqa: E402
 from tokenisers.benchmarks.nanogpt_swap import train_tokenizers as tt  # noqa: E402
-from tokenisers.benchmarks.report import render_nanogpt_swap, render_nanogpt_swap_ablation  # noqa: E402
+from tokenisers.benchmarks.report import (render_nanogpt_swap, render_nanogpt_swap_ablation,  # noqa: E402
+                                          render_nanogpt_swap_space_prefix)
 from test_bench_nanogpt_swap import TINY_ARGS, _cpu_trainer, _source, shards, toks  # noqa: E402,F401 (fixtures)
 from test_bench_proxy_lm import _fake_colab  # noqa: E402
 
@@ -286,3 +287,35 @@ def test_readme_ablation_section_is_data_driven(repo_root, tmp_path):
     readme = "".join(f"<!-- BEGIN GENERATED: {s} -->\nold\n<!-- END GENERATED: {s} -->\n" for s in gen.SECTIONS)
     section = gen.render_readme(readme, tmp_path).split("BEGIN GENERATED: nanogpt_swap_ablation -->")[1]
     assert section.startswith("\n" + md + "\n<!-- END")
+
+
+def _committed(repo_root, path):
+    return json.loads((repo_root / "benchmarks/results" / path / "nanogpt_swap.json").read_text(encoding="utf-8"))
+
+
+def test_swap_findings_call_only_whitespace_pretokenizers_whitespace_isolating(repo_root):
+    """A full swap with GPT-2 and a space_prefix retrain: the retrain (more bytes per token than GPT-2)
+    is not counted as whitespace-isolating, so no negative 'less text' share is printed."""
+    base, sp = _committed(repo_root, "nanogpt_swap"), _committed(repo_root, "nanogpt_swap_sp")
+    doc = copy.deepcopy(base)
+    doc["models"]["bpe_frequency_sp"] = sp["models"]["bpe_frequency_sp"]
+    line = next(x for x in render_nanogpt_swap(doc).splitlines() if "whitespace-isolating" in x)
+    assert line.startswith("- Our 8 whitespace-isolating tokenizers") and "holds 3" in line  # 37-39%, not -9
+    doc["models"] = {n: sp["models"][n] if n in sp["models"] else base["models"][n] for n in ("gpt2", "bpe_frequency_sp")}
+    assert "whitespace-isolating" not in render_nanogpt_swap(doc)
+
+
+def test_swap_headers_name_the_commits_that_prepared_the_tokenizers(repo_root):
+    """Tokenizers come from an earlier --prepare-only or --from-pool pools: their commit and dirty flag
+    are in every swap header next to the run's own."""
+    base, sp = _committed(repo_root, "nanogpt_swap"), _committed(repo_root, "nanogpt_swap_sp")
+    assert "commit `ceb11bac38`, tokenizers prepared at commit `a04d3c3ff3`; generated" in render_nanogpt_swap(base)
+    prep = sp["meta"]["prepared"]
+    prep.update(git_commit="d" * 40, git_dirty=True, pools={"/p": {"git_commit": "e" * 40, "git_dirty": False}})
+    want = ("commit `2df09a7847`, tokenizers prepared at commit `dddddddddd (dirty)` / `eeeeeeeeee` (dirty = "
+            "uncommitted changes, not reproducible from any commit)")
+    assert want in render_nanogpt_swap(sp)
+    assert want in render_nanogpt_swap_space_prefix(base, sp)
+    abl = copy.deepcopy(sp)
+    abl["models"] = {"bpe_frequency_g2": sp["models"]["bpe_frequency_sp"]}
+    assert want in render_nanogpt_swap_ablation(base, sp, abl)

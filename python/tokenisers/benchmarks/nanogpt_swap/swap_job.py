@@ -456,7 +456,8 @@ def run_job(job_dir: str) -> Dict[str, Any]:
         t_run = time.time()
         log(f"{name}: loading")
         tok = load_tokenizer(spec, job)
-        record: Dict[str, Any] = {"name": name, "spec": spec, "n_vocab": tok.n_vocab, "separator_id": tok.sep,
+        record: Dict[str, Any] = {"name": name, "spec": spec, "launched": cfg.get("launched"),
+                                  "n_vocab": tok.n_vocab, "separator_id": tok.sep,
                                   "vocab_size": tok.n_vocab + 1, "padded_vocab_size": padded_vocab(tok.n_vocab + 1)}
         if spec.get("ids_sha256"):  # same tokenizer as at preparation (a reload or version mismatch shows here)
             got = ids_sha256(tok.encode_batch(source.train[:spec["ids_docs"]]))

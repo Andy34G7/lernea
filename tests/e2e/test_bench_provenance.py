@@ -127,3 +127,29 @@ def test_native_extension_is_recorded_and_a_stale_build_is_flagged(tmp_path, mon
     os.utime(src, (built - 60, built - 60))  # rebuilt since
     prov = common.start_provenance("m", [])
     assert prov["native_extension"]["stale_sources"] == [] and "STALE" not in _summary(prov)
+
+
+def test_clis_record_the_module_they_run_as(tmp_path, monkeypatch, require_tokenisers):
+    """`python -m <recorded module>` must rerun the same CLI, not its package's (which has other flags)."""
+    from tokenisers.benchmarks import common, throughput
+    from tokenisers.benchmarks.nanogpt_swap import train_tokenizers
+
+    real, seen = common.start_provenance, []
+
+    class Stop(Exception):
+        pass
+
+    def spy(module, argv):
+        seen.append(real(module, argv)["command"])
+        raise Stop
+
+    monkeypatch.setattr(common, "start_provenance", spy)
+    for cli, argv in ((throughput.cli, ["--job-dir", str(tmp_path / "t")]),
+                      (train_tokenizers.main, ["--job-dir", str(tmp_path / "p"), "--variants", "mdl_bits"])):
+        try:
+            cli(argv)
+        except Stop:
+            pass
+    assert seen == [["python", "-m", "tokenisers.benchmarks.throughput", "--job-dir", str(tmp_path / "t")],
+                    ["python", "-m", "tokenisers.benchmarks.nanogpt_swap.train_tokenizers", "--job-dir",
+                     str(tmp_path / "p"), "--variants", "mdl_bits"]]

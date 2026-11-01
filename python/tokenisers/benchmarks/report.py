@@ -19,9 +19,29 @@ def _mb(n: Any) -> str:
     return f"{n / 1e6:.1f} MB" if isinstance(n, (int, float)) else "?"
 
 
+def _commit(p: Dict[str, Any]) -> str:
+    """A provenance record's short commit, flagged when its tree was dirty."""
+    return (p.get("git_commit") or "unknown")[:10] + (" (dirty)" if p.get("git_dirty") else "")
+
+
+def _swap_provenance(meta: Dict[str, Any], models: Dict[str, Any]) -> str:
+    """What a swap header adds to the run's own commit: the commits that prepared its tokenizers (an
+    earlier ``--prepare-only``, and each ``--from-pool`` pool that trained them) and that ran a run kept
+    from an earlier session (``--resume``), wherever they differ from the run's."""
+    own, prep = _commit(meta), meta.get("prepared") or {}
+    made = sorted({_commit(p) for p in [prep, *(prep.get("pools") or {}).values()]} - {own})
+    ran: Dict[str, List[str]] = {}
+    for n, m in models.items():
+        if m.get("launched") and _commit(m["launched"]) != own:
+            ran.setdefault(_commit(m["launched"]), []).append(f"`{n}`")
+    out = (f", tokenizers prepared at commit {' / '.join(f'`{c}`' for c in made)}" if made else "") + "".join(
+        f", {', '.join(ns)} run in an earlier session at commit `{c}`" for c, ns in sorted(ran.items()))
+    return out + (" (dirty = uncommitted changes, not reproducible from any commit)" if "(dirty)" in out else "")
+
+
 def _summary(meta: Dict[str, Any]) -> str:
     data = "SYNTHETIC offline corpus" if meta.get("synthetic_data") else "real corpus"
-    commit = (meta.get("git_commit") or "unknown")[:10] + (" (dirty)" if meta.get("git_dirty") else "")
+    commit = _commit(meta)
     stale = (meta.get("native_extension") or {}).get("stale_sources")
     if stale:
         commit += f" (STALE native extension: built before {len(stale)} Rust source file(s) changed)"
@@ -260,7 +280,7 @@ def render_throughput(doc: Dict[str, Any]) -> str:
     build = b.get("build")
     built = (f"; extension built on the VM from commit `{(meta.get('git_commit') or '?')[:10]}` "
              f"({build.get('rustc')}, {build.get('seconds')} s)") if build else ""
-    commit = (meta.get("git_commit") or "unknown")[:10] + (" (dirty)" if meta.get("git_dirty") else "")
+    commit = _commit(meta)
     ds = prep.get("dataset", {})
     n_tok = sum(len(v) for v in doc["models"].values())
     passes = meta.get("passes", 0)
@@ -310,8 +330,10 @@ def _swap_findings(doc: Dict[str, Any], models: Dict[str, Any]) -> List[str]:
     best, second = list(models)[:2]
     more = {n: m for n, m in models.items() if n != "gpt2" and m["val_bytes_per_token"] > g["val_bytes_per_token"]}
     more_bpb = [m["final_bpb"] for m in more.values()]
-    # super_bpe merges across whitespace; our other tokenizers isolate every whitespace run as its own token
-    ws = {n: m for n, m in models.items() if m["spec"]["kind"] == "tokenisers" and n != "super_bpe"}
+    # Ours with the "whitespace" pre-tokenizer (the default: specs written before they recorded it), which
+    # isolates every whitespace run as its own token; super_bpe merges across whitespace
+    ws = {n: m for n, m in models.items() if m["spec"]["kind"] == "tokenisers" and n != "super_bpe"
+          and m["spec"].get("pretokenizer", "whitespace") == "whitespace"}
     ws_bpt = [m["val_bytes_per_token"] for m in ws.values()]
     less = [100 * (1 - m["train_bytes_per_token"] / g["train_bytes_per_token"]) for m in ws.values()]
     nats = meta["target"]["nats_per_gpt2_token"]
@@ -363,7 +385,7 @@ def render_nanogpt_swap(doc: Dict[str, Any]) -> str:
     rec = meta["recipe"]
     a = rec["args"]
     target = meta["target"]["bpb"]
-    commit = (meta.get("git_commit") or "unknown")[:10] + (" (dirty)" if meta.get("git_dirty") else "")
+    commit = _commit(meta)
     data = meta.get("data") or {}
     tt = meta["tokenizer_text"]
     # Each of our tokenizers' training text (its spec's, e.g. 300 MB from a Colab VM, else the job's).
@@ -374,7 +396,8 @@ def render_nanogpt_swap(doc: Dict[str, Any]) -> str:
     pretoks = sorted({v["pretokenizer"] for v in (meta["prepared"].get("variants") or {}).values() if "pretokenizer" in v})
     head = [
         f"- {'PILOT (timing only, not a result): ' if pilot else ''}{b.get('gpu') or meta['requested_gpu']}, "
-        f"torch {b.get('torch', '?')}, Colab session `{b.get('session', '?')}`; commit `{commit}`; "
+        f"torch {b.get('torch', '?')}, Colab session `{b.get('session', '?')}`; commit `{commit}`"
+        f"{_swap_provenance(meta, models)}; "
         f"generated {meta['created_utc']}",
         f"- recipe: `{rec['upstream']}` scripts/pyrun_gpt2_124M.sh (GPT-2 124M, tied embeddings, AdamW lr "
         f"{a['learning_rate']}, wd {a['weight_decay']}, {a['total_batch_size']} tokens/step, bf16, compiled) with "
@@ -445,14 +468,14 @@ def render_nanogpt_swap_space_prefix(base: Dict[str, Any], sp: Optional[Dict[str
     }
     differ = [k for k, ok in checks.items() if not ok]
     gpus = [(x.get("backend") or {}).get("gpu") or x.get("requested_gpu") for x in (bmeta, smeta)]
-    commit = (smeta.get("git_commit") or "unknown")[:10] + (" (dirty)" if smeta.get("git_dirty") else "")
+    commit = _commit(smeta)
 
     def num(m: Optional[Dict[str, Any]], key: str, fmt: str) -> str:
         return format(m[key], fmt) if m and m.get(key) is not None else "-"
 
     lines = [
-        f"- space-prefix run: {gpus[1]}, commit `{commit}`, generated {smeta['created_utc']}; whitespace run: "
-        f"{gpus[0]}",
+        f"- space-prefix run: {gpus[1]}, commit `{commit}`{_swap_provenance(smeta, sm)}, generated "
+        f"{smeta['created_utc']}; whitespace run: {gpus[0]}",
         "- " + (f"DIFFERENT {', '.join(differ)} from the whitespace run: the BPB columns are not comparable"
                 if differ else "same recipe, val documents and tokenizer training text as the whitespace run"),
         "",
@@ -504,7 +527,7 @@ def render_nanogpt_swap_ablation(base: Dict[str, Any], sp: Optional[Dict[str, An
         "val documents": {m["val_docs_sha256"] for m in bm.values()} == {m["val_docs_sha256"] for m in am.values()},
     }
     differ = [k for k, ok in checks.items() if not ok]
-    commit = (ameta.get("git_commit") or "unknown")[:10] + (" (dirty)" if ameta.get("git_dirty") else "")
+    commit = _commit(ameta)
     gpu = (ameta.get("backend") or {}).get("gpu") or ameta.get("requested_gpu")
     cols = [("whitespace, 50 MB", bm, ""), ("space_prefix, 50 MB", (sp or {}).get("models") or {}, "_sp")]
     for suf in suffixes:
@@ -520,7 +543,7 @@ def render_nanogpt_swap_ablation(base: Dict[str, Any], sp: Optional[Dict[str, An
         return f"{bpb} ({m['val_bytes_per_token']:.2f})"
 
     lines = [
-        f"- ablation run: {gpu}, commit `{commit}`, generated {ameta['created_utc']}"
+        f"- ablation run: {gpu}, commit `{commit}`{_swap_provenance(ameta, am)}, generated {ameta['created_utc']}"
         + ("" if sp else "; the 50 MB space-prefix run is not committed yet (its column is empty)"),
         "- " + (f"DIFFERENT {', '.join(differ)} from the whitespace run: the BPB columns are not comparable"
                 if differ else "same recipe and val documents as the whitespace run"),
@@ -631,7 +654,7 @@ def render_flores(doc: Dict[str, Any]) -> str:
     eng = langs["english"]
     tiers = {t: {n: m for n, m in models.items() if m["tier"] == t} for t in _TIERS}
     tiers = {t: ms for t, ms in tiers.items() if ms}
-    commit = (meta.get("git_commit") or "unknown")[:10] + (" (dirty)" if meta.get("git_dirty") else "")
+    commit = _commit(meta)
     mapping = ", ".join(k if k == v else f"{k} -> {v}" for k, v in langs["in_mix"].items())
     head = [
         f"- FLORES+ `{fl['repo']}` at `{(fl['revision'] or 'a local copy')[:12]}` ({fl['license']}), {fl['split']} "
@@ -653,8 +676,11 @@ def render_flores(doc: Dict[str, Any]) -> str:
             + (f"{sum(c is True for c in checks)} of {len(checks)} reproduce the committed test-split bytes/token "
                "exactly" if any(c is not None for c in checks) else "no committed leaderboard to check against"))
     if meta.get("swap_jobs"):
+        dirty = [f"`{j}`" for j, v in meta["swap_jobs"].items() if v.get("prepared_git_dirty")]
         head.append("- swap tier: the GPT-2-swap tokenizers from the prepared jobs "
-                    + ", ".join(f"`{j}`" for j in meta["swap_jobs"]) + ": " + _swap_sources(tiers.get("swap", {})))
+                    + ", ".join(f"`{j}`" for j in meta["swap_jobs"]) + ": " + _swap_sources(tiers.get("swap", {}))
+                    + (f"; prepared from a dirty tree (uncommitted changes: not reproducible from any commit): "
+                       f"{', '.join(dirty)}" if dirty else ""))
     head += [
         f"- premium = tokens(language) / tokens(English) on the same sentences; σ ln = standard deviation of "
         f"ln(premium) over the group's languages; <= {meta['parity_threshold']} = share of them with premium "

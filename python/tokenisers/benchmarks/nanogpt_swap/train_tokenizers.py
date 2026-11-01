@@ -150,7 +150,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     args = parser.parse_args(argv)
     if args.train_bytes < 1_000_000 or args.train_bytes % 1_000_000:
         parser.error("--train-bytes must be a whole number of MB (it names the tokenizers: _sp300 = 300 MB)")
-    start = start_provenance(__package__, argv)
+    start = start_provenance("tokenisers.benchmarks.nanogpt_swap.train_tokenizers", argv)
     job, remote = args.job_dir, args.job_dir / "remote"
     if (job / "config.json").is_file():
         raise SystemExit(f"{job} is already a finished pool (config.json)")

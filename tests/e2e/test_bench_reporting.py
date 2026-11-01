@@ -240,3 +240,22 @@ def test_assert_disjoint():
     common.assert_disjoint(["a", "b"], ["c"])
     with pytest.raises(RuntimeError, match="1 test documents"):
         common.assert_disjoint(["a", "b"], ["b", "c"], "test")
+
+
+def test_readme_setup_paragraph_accounts_for_every_results_section(repo_root):
+    """'Scale and setup' says where each numbered results section's data and runs come from, so it
+    cannot claim one suite run for all of them while sections are added; the limitations pointer
+    names the last section."""
+    import re
+
+    readme = (repo_root / "README.md").read_text(encoding="utf-8")
+    results = readme[readme.index("## Benchmark Results"):readme.index("### Known limitations")]
+    sections = {int(n) for n in re.findall(r"^### (\d+)\. ", results, re.M)}
+    setup = re.search(r"\*\*Scale and setup\.\*\*(.+?)\n\n", results, re.S)[1]
+    named = set()
+    for m in re.finditer(r"[Ss]ections? (\d+(?:(?:-| and |, )\d+)*)", setup.replace("\n", " ")):
+        for part in re.split(r" and |, ", m[1]):
+            lo, _, hi = part.partition("-")
+            named |= set(range(int(lo), int(hi or lo) + 1))
+    assert sections - named == set(), f"Scale and setup says nothing about sections {sorted(sections - named)}"
+    assert f"listed after section {max(sections)}." in " ".join(setup.split())
