@@ -174,9 +174,10 @@ def render_colab(doc: Dict[str, Any]) -> str:
     return "\n".join(head + _table(doc, cols, lambda m: m["macro_val_bpb"]))
 
 
-def render_colab_compare(small: Dict[str, Any], big: Dict[str, Any], ref: str = "bpe_frequency") -> str:
-    """Proxy-LM ranking of the tokenizers both tiers trained, small LM vs big LM: rank by mean macro val BPB
-    and the difference to ``ref`` in the same tier, ± its standard error over the seeds."""
+def colab_compare_stats(small: Dict[str, Any], big: Dict[str, Any], ref: str = "bpe_frequency"
+                        ) -> Tuple[List[str], Dict[str, Dict[str, Tuple[int, float, float]]]]:
+    """The tokenizers both proxy-LM tiers trained, and per tier {name: (rank by mean macro val BPB, macro val
+    BPB minus ``ref``'s in the same tier, its standard error over the seeds)}."""
     tiers = {"small LM": small, "big LM": big}
     dups = {**small["meta"].get("duplicates", {}), **big["meta"].get("duplicates", {})}
     names = [n for n in big["models"] if n in small["models"] and n not in dups]
@@ -188,6 +189,13 @@ def render_colab_compare(small: Dict[str, Any], big: Dict[str, Any], ref: str = 
                            math.sqrt(ms[n]["macro_val_bpb_sd"] ** 2 / len(ms[n]["macro_val_bpb_by_seed"])
                                      + r["macro_val_bpb_sd"] ** 2 / len(r["macro_val_bpb_by_seed"])))
                        for n in names}
+    return names, stats
+
+
+def render_colab_compare(small: Dict[str, Any], big: Dict[str, Any], ref: str = "bpe_frequency") -> str:
+    """Proxy-LM ranking of the tokenizers both tiers trained, small LM vs big LM: rank by mean macro val BPB
+    and the difference to ``ref`` in the same tier, ± its standard error over the seeds."""
+    names, stats = colab_compare_stats(small, big, ref)
 
     def setup(doc: Dict[str, Any]) -> str:
         meta, lm = doc["meta"], doc["meta"].get("lm", {})
@@ -395,4 +403,5 @@ def render_nanogpt_swap(doc: Dict[str, Any]) -> str:
     return "\n".join(head + lines)
 
 
-__all__ = ["render_tokka", "render_intrinsic", "render_colab", "render_throughput", "render_nanogpt_swap"]
+__all__ = ["render_tokka", "render_intrinsic", "render_colab", "render_colab_compare", "colab_compare_stats",
+           "render_throughput", "render_nanogpt_swap"]
