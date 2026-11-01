@@ -217,17 +217,22 @@ def render_colab(doc: Dict[str, Any]) -> str:
 def colab_compare_stats(small: Dict[str, Any], big: Dict[str, Any], ref: str = "bpe_frequency"
                         ) -> Tuple[List[str], Dict[str, Dict[str, Tuple[int, float, float]]]]:
     """The tokenizers both proxy-LM tiers trained, and per tier {name: (rank by mean macro val BPB, macro val
-    BPB minus ``ref``'s in the same tier, its standard error over the seeds)}."""
+    BPB minus ``ref``'s in the same tier, its standard error over the seeds, None with a single seed)}."""
     tiers = {"small LM": small, "big LM": big}
     dups = {**small["meta"].get("duplicates", {}), **big["meta"].get("duplicates", {})}
     names = [n for n in big["models"] if n in small["models"] and n not in dups]
-    stats: Dict[str, Dict[str, Tuple[int, float, float]]] = {}
+    stats: Dict[str, Dict[str, Tuple[int, float, Optional[float]]]] = {}
+
+    def se(m: Dict[str, Any], r: Dict[str, Any]) -> Optional[float]:  # sd is None for a single seed
+        if m["macro_val_bpb_sd"] is None or r["macro_val_bpb_sd"] is None:
+            return None
+        return math.sqrt(m["macro_val_bpb_sd"] ** 2 / len(m["macro_val_bpb_by_seed"])
+                         + r["macro_val_bpb_sd"] ** 2 / len(r["macro_val_bpb_by_seed"]))
+
     for tier, doc in tiers.items():
         ms, r = doc["models"], doc["models"][ref]
         order = sorted(names, key=lambda n: ms[n]["macro_val_bpb"])
-        stats[tier] = {n: (order.index(n) + 1, ms[n]["macro_val_bpb"] - r["macro_val_bpb"],
-                           math.sqrt(ms[n]["macro_val_bpb_sd"] ** 2 / len(ms[n]["macro_val_bpb_by_seed"])
-                                     + r["macro_val_bpb_sd"] ** 2 / len(r["macro_val_bpb_by_seed"])))
+        stats[tier] = {n: (order.index(n) + 1, ms[n]["macro_val_bpb"] - r["macro_val_bpb"], se(ms[n], r))
                        for n in names}
     return names, stats
 
@@ -254,13 +259,16 @@ def render_colab_compare(small: Dict[str, Any], big: Optional[Dict[str, Any]], r
     for tier, st in stats.items():
         better = [st[n] for n in names if st[n][1] < 0]
         if better:
+            z = [-d / se for _, d, se in better if se]
             head.append(f"- {tier}: {len(better)} tokenizers beat `{ref}`, by {min(-d for _, d, _ in better):.3f}–"
-                        f"{max(-d for _, d, _ in better):.3f} BPB, i.e. {min(-d / se for _, d, se in better):.1f}–"
-                        f"{max(-d / se for _, d, se in better):.1f} standard errors")
+                        f"{max(-d for _, d, _ in better):.3f} BPB"
+                        + (f", i.e. {min(z):.1f}–{max(z):.1f} standard errors" if len(z) == len(better) else
+                           " (single seed: no standard error)"))
     lines = head + ["", "| Tokenizer | Small LM rank | Small LM Δ BPB | Big LM rank | Big LM Δ BPB |",
                     "| :--- | ---: | ---: | ---: | ---: |"]
     for n in sorted(names, key=lambda n: stats["big LM"][n][0]):
-        cells = [f"{st[n][0]} | " + ("reference" if n == ref else f"{st[n][1]:+.3f} ± {st[n][2]:.3f}")
+        cells = [f"{st[n][0]} | " + ("reference" if n == ref else f"{st[n][1]:+.3f}"
+                                      + ("" if st[n][2] is None else f" ± {st[n][2]:.3f}"))
                  for st in stats.values()]
         lines.append(f"| `{n}` | " + " | ".join(cells) + " |")
     return "\n".join(lines)

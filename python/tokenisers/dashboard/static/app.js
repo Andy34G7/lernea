@@ -900,7 +900,7 @@ function renderCompare() {
   const { ref, names, tiers } = e.data;
   const s = tiers['small LM'];
   const b = tiers['big LM'];
-  const delta = (tier) => (v, r) => (r.key === ref ? '<span class="muted">reference</span>' : `${signed(v)} <span class="sd">± ${tier[r.key][2].toFixed(3)}</span>`);
+  const delta = (tier) => (v, r) => (r.key === ref ? '<span class="muted">reference</span>' : `${signed(v)}${tier[r.key][2] == null ? '' : ` <span class="sd">± ${tier[r.key][2].toFixed(3)}</span>`}`);
   table(
     'compare-table',
     [

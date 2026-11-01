@@ -139,6 +139,17 @@ def test_colab_compare_ranks_both_tiers_against_bpe_frequency():
     assert "seeds vary only the LM's initialization (same LM text, same order)" in md
 
 
+def test_colab_compare_renders_a_single_seed_tier_without_standard_errors():
+    """--seeds 0 is legal and stores sd None: the comparison drops the ± instead of raising."""
+    def doc(bpb, seeds):
+        return {"meta": {"seeds": seeds}, "models": {
+            n: {"macro_val_bpb": m, "macro_val_bpb_sd": None if len(seeds) == 1 else 0.01,
+                "macro_val_bpb_by_seed": dict.fromkeys(map(str, seeds))} for n, m in bpb.items()}}
+    md = render_colab_compare(doc({"bpe_frequency": 2.0, "a": 1.9}, [0, 1]), doc({"bpe_frequency": 1.5, "a": 1.4}, [0]))
+    assert "| `a` | 1 | -0.100 ± 0.010 | 1 | -0.100 |" in md
+    assert "- big LM: 1 tokenizers beat `bpe_frequency`, by 0.100–0.100 BPB (single seed: no standard error)" in md
+
+
 def test_memory_preflight_refuses_runs_that_would_not_fit(monkeypatch):
     """The CLIs stop before training when the estimated peak exceeds available memory."""
     mb = 2**20
