@@ -3,6 +3,8 @@ Pytest configuration and shared fixtures for Tokenisers E2E test suite.
 """
 
 from pathlib import Path
+import sys
+
 import pytest
 
 # Tests use the installed package (`uv run maturin develop`), never a sys.path shim onto python/.
@@ -17,6 +19,20 @@ def _isolated_data_cache(tmp_path_factory):
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("TOKENISERS_CACHE_DIR", str(tmp_path_factory.mktemp("tokenisers-cache")))
         yield
+
+
+@pytest.fixture(autouse=True)
+def _no_real_colab_cli(monkeypatch):
+    """A ColabOrchestrator built without ``colab_bin`` runs the user's signed-in CLI
+    (~/.local/bin/colab), which opens paid sessions. In tests it gets a path that does not exist, so a
+    test that reaches a CLI's Colab path by mistake fails instead of starting a VM."""
+    # ponytail: patched only once imported (importing it here costs every session torch: ~3 s, 0.5 GB).
+    # Test files import colab at module level, so it is loaded before any test of theirs runs.
+    colab = sys.modules.get("tokenisers.benchmarks.colab")
+    if colab is not None:
+        init = colab.ColabOrchestrator.__init__
+        monkeypatch.setattr(colab.ColabOrchestrator, "__init__", lambda self, mock=False, colab_bin=None:
+                            init(self, mock=mock, colab_bin=colab_bin or "/nonexistent/colab-cli-in-tests"))
 
 
 @pytest.fixture(scope="session")

@@ -5,18 +5,25 @@ Inspired by Artificial Analysis (artificialanalysis.ai).
 
 from __future__ import annotations
 
+import csv
 import datetime
 import json
 import logging
+import math
 import mimetypes
 import os
+import re
 from collections import OrderedDict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from tokenisers.benchmarks.report import (colab_compare_stats, render_colab, render_colab_compare, render_flores,
+                                          render_intrinsic, render_nanogpt_swap, render_nanogpt_swap_ablation,
+                                          render_nanogpt_swap_space_prefix, render_throughput, render_tokka)
 
 logger = logging.getLogger("tokenisers.dashboard")
 
@@ -32,6 +39,7 @@ CACHE_ENTRIES = 4              # trained tokenizer sets kept (LRU)
 MAX_BODY_BYTES = 64 * 1024
 MAX_TEXT_CHARS = 16_384
 CORPUS_TRAIN_BYTES = 100_000   # playground training corpus (train split of the data pipeline)
+VOCAB_DIRS = {16384: "", 32768: "v32768/", 65536: "v65536/"}  # suite vocabulary size -> results subdirectory
 DEFAULT_TEXT = "The internationalization of unhappily disproportionate misunderstandings requires robust subword tokenization."
 
 # Metadata for all algorithm architectures and theoretical objectives. Formulas state what the
@@ -276,68 +284,230 @@ class TokenizerCache:
         return toks
 
 
+# Every committed result set: key -> (path under benchmarks/results, the README renderer whose header lines
+# are the set's provenance and whose bullets after the table are its notes; None: no renderer).
+RESULT_SETS: Dict[str, Tuple[str, Optional[Callable[[Dict[str, Any]], str]]]] = {
+    **{f"tokka_{v}": (f"{d}tokka/tokka_matrix.json", render_tokka) for v, d in VOCAB_DIRS.items()},
+    **{f"intrinsic_{v}": (f"{d}intrinsic/intrinsic_leaderboard.json", render_intrinsic) for v, d in VOCAB_DIRS.items()},
+    "throughput_local": ("throughput/local/throughput.json", render_throughput),
+    "throughput_colab_cpu": ("throughput/colab_cpu/throughput.json", render_throughput),
+    "proxy_small": ("colab/extrinsic_bpb_results.json", render_colab),
+    "proxy_big": ("colab_big/extrinsic_bpb_results.json", render_colab),
+    "swap": ("nanogpt_swap/nanogpt_swap.json", render_nanogpt_swap),
+    "swap_lr1p8e-3": ("nanogpt_swap_lr1p8e-3/gpt2_run.json", None),
+    # GPT-2-style space-prefix rerun of our tokenizers.
+    "swap_space_prefix": ("nanogpt_swap_sp/nanogpt_swap.json", render_nanogpt_swap),
+    # _g2 / _sp300 retrains: shown as soon as this file is committed (provenance from
+    # report.render_nanogpt_swap_ablation, which needs the other swap runs too: see load_benchmark_data).
+    "swap_ablation": ("nanogpt_swap_ablation/nanogpt_swap.json", None),
+    "flores": ("flores/flores.json", render_flores),
+}
+
+# Ablation arms: the column name and the tokenizer-name suffix of a variant's run in it.
+ABLATION_ARMS = {"whitespace": "", "space_prefix": "_sp", "gpt2_split": "_g2", "space_prefix_300mb": "_sp300"}
+
+
+def _report(render: Callable[..., str], *docs: Dict[str, Any]) -> Dict[str, List[str]]:
+    """The README rendering of a result split into its provenance (bullets before the first table) and its
+    notes (bullets after it); empty when the file lacks a field the renderer needs."""
+    try:
+        md = render(*docs).splitlines()
+    except Exception as e:  # an older or partial file: its numbers still show, its summary does not
+        logger.warning(f"{render.__name__} failed: {e!r}")
+        return {"provenance": [], "notes": []}
+    first = next((i for i, line in enumerate(md) if line.startswith("|")), len(md))
+    return {"provenance": [line[2:] for line in md[:first] if line.startswith("- ")],
+            "notes": [line[2:] for line in md[first:] if line.startswith("- ")]}
+
+
+def _load_result(rel: str, render: Optional[Callable[..., str]]) -> Dict[str, Any]:
+    path = REPO_ROOT / "benchmarks" / "results" / rel
+    entry: Dict[str, Any] = {"path": f"benchmarks/results/{rel}", "available": False, "data": None,
+                             "provenance": [], "notes": []}
+    if not path.is_file():
+        return entry
+    try:
+        entry["data"] = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        logger.warning(f"Failed reading {path}: {e}")
+        entry["error"] = f"unreadable: {e}"
+        return entry
+    entry["available"] = True
+    if render:
+        entry.update(_report(render, entry["data"]))
+    return entry
+
+
+def _train_bpb(csv_path: Path, models: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Per-step train BPB of each tokenizer swap run from nanogpt_swap_steps.csv (train loss in nats per
+    token / ln 2 / that tokenizer's train bytes per token)."""
+    if not csv_path.is_file():
+        return None
+    with csv_path.open(encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    names = [n for n in (rows[0] if rows else {}) if n not in ("step", "lr") and models.get(n, {}).get("train_bytes_per_token")]
+    return {"steps": [int(r["step"]) for r in rows],
+            "bpb": {n: [round(float(r[n]) / math.log(2) / models[n]["train_bytes_per_token"], 4) for r in rows]
+                    for n in names}}
+
+
+# The README's checks that a swap rerun is comparable with the whitespace run (report.render_nanogpt_swap_space_prefix
+# and render_nanogpt_swap_ablation): what of a run each one compares.
+COMPARABLE: Dict[str, Callable[[Dict[str, Any]], Any]] = {
+    "recipe": lambda d: d["meta"]["recipe"]["args"],
+    "val documents": lambda d: {m["val_docs_sha256"] for m in d["models"].values()},
+    "tokenizer training text": lambda d: d["meta"]["tokenizer_text"]["docs_sha256"],
+}
+
+
+def not_comparable(base: Dict[str, Any], run: Dict[str, Any], checks=tuple(COMPARABLE)) -> List[str]:
+    """The ``checks`` (COMPARABLE keys) on which ``run`` differs from the whitespace run ``base``. Fails closed: a
+    check that a file lacks the fields for counts too, so an older or partial file is not shown as comparable."""
+    out = []
+    for k in checks:
+        try:
+            if COMPARABLE[k](base) != COMPARABLE[k](run):
+                out.append(f"different {k}")
+        except (KeyError, TypeError, AttributeError):
+            out.append(f"{k} unknown (missing from a file)")
+    return out
+
+
+def sp_gpt2_equivalent(base: Dict[str, Any], sp: Dict[str, Any], csv_path: Path) -> Dict[str, Optional[int]]:
+    """GPT-2-equivalent steps of a space-prefix rerun that has no GPT-2 run of its own, read off GPT-2's train
+    curve in the original swap run (nanogpt_swap's gpt2_equivalent on GPT-2's column of that run's steps CSV).
+    Only when both runs have the same recipe and val documents, so that GPT-2's curve and the rerun's final val
+    BPB measure the same training on the same text; else {}."""
+    bm, sm = base.get("models", {}), sp.get("models", {})
+    eq, g = base.get("gpt2_equivalent"), bm.get("gpt2")
+    same = not not_comparable(base, sp, ("recipe", "val documents"))
+    if "gpt2" in sm or not (eq and g and same and csv_path.is_file()):
+        return {}
+    from tokenisers.benchmarks.nanogpt_swap.__main__ import gpt2_equivalent
+
+    with csv_path.open(encoding="utf-8", newline="") as f:
+        steps = [{"step": int(r["step"]), "train_loss": float(r["gpt2"])} for r in csv.DictReader(f)]
+    run = {"trainer": {"steps": steps, "evals": []}, "train": {"bytes_per_token": g["train_bytes_per_token"]}}
+    return gpt2_equivalent(run, sm, eq["window"])["steps"]
+
+
+def space_prefix_pairs(old: Dict[str, Any], sp: Dict[str, Any],
+                       sp_steps: Optional[Dict[str, Optional[int]]] = None) -> Dict[str, Any]:
+    """Each of our tokenizers in the space-prefix swap run next to its run in the original swap (matched by
+    name, a trailing ``_sp`` / ``_space_prefix`` dropped), plus GPT-2 as the reference (from the space-prefix
+    run when it has one, else from the original run). The space-prefix run's GPT-2-equivalent steps are its
+    own, else ``sp_steps`` (sp_gpt2_equivalent)."""
+    om, sm = old.get("models", {}), sp.get("models", {})
+    eq = {"old": (old.get("gpt2_equivalent") or {}).get("steps", {}),
+          "sp": (sp.get("gpt2_equivalent") or {}).get("steps") or sp_steps or {}}
+
+    def pick(name: str, m: Dict[str, Any], run: str) -> Dict[str, Any]:
+        return {"name": name, "final_bpb": m.get("final_bpb"), "val_bytes_per_token": m.get("val_bytes_per_token"),
+                "train_bytes_per_token": m.get("train_bytes_per_token"), "gpt2_equivalent_steps": eq[run].get(name)}
+
+    rows = []
+    for name, m in sm.items():
+        base = re.sub(r"_(sp|space_prefix)$", "", name)
+        if m.get("spec", {}).get("kind", "tokenisers") != "tokenisers" or base not in om or "final_bpb" not in m:
+            continue
+        o, n = pick(base, om[base], "old"), pick(name, m, "sp")
+        rows.append({"variant": base, "old": o, "sp": n,
+                     "delta_bpb": n["final_bpb"] - o["final_bpb"] if o["final_bpb"] is not None else None})
+    run = "sp" if "gpt2" in sm else "old"
+    g = (sm if run == "sp" else om).get("gpt2")
+    return {"rows": rows, "gpt2": {**pick("gpt2", g, run), "run": run} if g else None}
+
+
+def ablation_arms(base: Dict[str, Any], sp: Optional[Dict[str, Any]], abl: Dict[str, Any]) -> Dict[str, Any]:
+    """Per variant of the ablation run (it has ``<variant>_g2`` or ``<variant>_sp300``), its final val BPB and
+    val bytes per token in each of ABLATION_ARMS: whitespace from ``base`` (the original swap), space_prefix
+    from ``sp`` (the 50 MB rerun, None until committed) else the ablation run, the rest from ``abl``; None where
+    that run is missing. GPT-2 from ``base`` is the reference."""
+    bm, am = base.get("models", {}), abl.get("models", {})
+    pool = {**am, **(sp or {}).get("models", {}), **bm}
+
+    def pick(m: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        return {"final_bpb": m.get("final_bpb"), "val_bytes_per_token": m.get("val_bytes_per_token")} if m else None
+
+    variants = dict.fromkeys(m[1] for n in am if (m := re.fullmatch(r"(.+)_(?:g2|sp300)", n)))
+    return {"arms": list(ABLATION_ARMS), "gpt2": pick(bm.get("gpt2")),
+            "rows": [{"variant": v, **{arm: pick(pool.get(v + suf)) for arm, suf in ABLATION_ARMS.items()}}
+                     for v in variants]}
+
+
+def _derived(entry: Dict[str, Any], what: str, compute: Callable[[], Any]) -> Any:
+    """A view computed from result files (train BPB, small vs big, the swap pairings). An odd or partial file
+    (e.g. a single seed: no sd) must not turn /api/benchmarks into a 500 that blanks the whole dashboard: on a
+    failure the files' own numbers still show, ``entry["error"]`` says why, and the view is None."""
+    try:
+        return compute()
+    except Exception as e:
+        logger.warning(f"{what} failed: {e!r}")
+        entry["error"] = f"{what} failed: {type(e).__name__}: {e}"
+        return None
+
+
 def load_benchmark_data() -> Dict[str, Any]:
-    """Loads and unifies tokka, intrinsic, and extrinsic benchmark results."""
-    # 1. Tokka Bench
-    tokka_candidates = [
-        REPO_ROOT / "benchmarks/results/tokka/tokka_matrix.json",
-        REPO_ROOT / "benchmarks/results/tokka/tokka_leaderboard.json",
-        REPO_ROOT / "benchmarks/results/tokka/leaderboard.json",
-    ]
-    tokka_data: Dict[str, Any] = {}
-    for p in tokka_candidates:
-        if p.exists():
-            try:
-                tokka_data = json.loads(p.read_text(encoding="utf-8"))
-                break
-            except Exception as e:
-                logger.warning(f"Failed reading {p}: {e}")
+    """Every result set under benchmarks/results (with an availability flag), plus the unified V = 16,384
+    per-tokenizer view (tokka, intrinsic, small and big proxy LM) the overview charts use."""
+    results = {key: _load_result(rel, render) for key, (rel, render) in RESULT_SETS.items()}
 
-    # 2. Intrinsic Leaderboard
-    intrinsic_candidates = [
-        REPO_ROOT / "benchmarks/results/intrinsic/intrinsic_leaderboard.json",
-        REPO_ROOT / "benchmarks/results/intrinsic/metrics.json",
-        REPO_ROOT / "benchmarks/results/intrinsic/leaderboard.json",
-    ]
-    intrinsic_data: Dict[str, Any] = {}
-    for p in intrinsic_candidates:
-        if p.exists():
-            try:
-                intrinsic_data = json.loads(p.read_text(encoding="utf-8"))
-                break
-            except Exception as e:
-                logger.warning(f"Failed reading {p}: {e}")
+    def steps_csv(key: str) -> Path:
+        return REPO_ROOT / "benchmarks" / "results" / Path(RESULT_SETS[key][0]).parent / "nanogpt_swap_steps.csv"
 
-    # 3. Colab Extrinsic Proxy-LM BPB
-    colab_candidates = [
-        REPO_ROOT / "benchmarks/results/colab/extrinsic_bpb_results.json",
-        REPO_ROOT / "benchmarks/results/colab/bpb_results.json",
-        REPO_ROOT / "benchmarks/results/colab/extrinsic_bpb_leaderboard.json",
-    ]
-    colab_data: Dict[str, Any] = {}
-    for p in colab_candidates:
-        if p.exists():
-            try:
-                colab_data = json.loads(p.read_text(encoding="utf-8"))
-                break
-            except Exception as e:
-                logger.warning(f"Failed reading {p}: {e}")
+    for key in ("swap", "swap_space_prefix"):
+        e = results[key]
+        if e["available"]:
+            e["train_bpb"] = _derived(e, "train BPB from the steps CSV",
+                                      lambda: _train_bpb(steps_csv(key), e["data"].get("models", {})))
+    small, big = results["proxy_small"], results["proxy_big"]
+    cmp = results["proxy_compare"] = {"path": f"{small['path']} + {big['path']}", "available": False, "data": None,
+                                      "provenance": [], "notes": []}
+    if small["available"] and big["available"]:
+        stats = _derived(cmp, "small vs big proxy-LM comparison",
+                         lambda: colab_compare_stats(small["data"], big["data"]))
+        if stats:
+            cmp.update(available=True, data={"ref": "bpe_frequency", "names": stats[0], "tiers": stats[1]},
+                       **_report(render_colab_compare, small["data"], big["data"]))
+    swap, sp = results["swap"], results["swap_space_prefix"]
+    if sp["available"] and swap["available"]:
+        # The README's check that the rerun is comparable (recipe, val documents, tokenizer training text) first
+        check = _report(render_nanogpt_swap_space_prefix, swap["data"], sp["data"])["provenance"]
+        sp["provenance"] = check + sp["provenance"]
+        sp["not_comparable"] = not_comparable(swap["data"], sp["data"])
+        sp["pairs"] = _derived(sp, "pairing with the original swap run", lambda: space_prefix_pairs(
+            swap["data"], sp["data"], sp_gpt2_equivalent(swap["data"], sp["data"], steps_csv("swap"))))
+    abl = results["swap_ablation"]
+    if abl["available"] and swap["available"]:
+        docs = (swap["data"], sp["data"] if sp["available"] else None, abl["data"])
+        # The 300 MB arm changes the tokenizer training text on purpose: recipe and val documents only
+        abl.update(ablation=_derived(abl, "ablation arms", lambda: ablation_arms(*docs)),
+                   not_comparable=not_comparable(swap["data"], abl["data"], ("recipe", "val documents")),
+                   **_report(render_nanogpt_swap_ablation, *docs))
 
-    colab_models = colab_data.get("models", {}) if isinstance(colab_data, dict) else {}
+    def doc(key: str) -> Dict[str, Any]:
+        d = results[key]["data"]
+        return d if isinstance(d, dict) else {}
+
+    tokka_data, intrinsic_data, colab_data = doc("tokka_16384"), doc("intrinsic_16384"), doc("proxy_small")
+    colab_models = colab_data.get("models", {})
+    big_models = doc("proxy_big").get("models", {})
     # Benchmark JSON is {"meta": ..., "models": {...}}; older files were the bare model map (no meta).
     # meta is each run's provenance (data, budgets, backend, commit, synthetic flag): pass it through.
     provenance = {
         "tokka": tokka_data.get("meta"),
         "intrinsic": intrinsic_data.get("meta"),
-        "proxy_lm": colab_data.get("meta") if isinstance(colab_data, dict) else None,
+        "proxy_lm": colab_data.get("meta"),
     }
     tokka_data = tokka_data.get("models", tokka_data)
     intrinsic_data = intrinsic_data.get("models", intrinsic_data)
     # Heatmap columns come from the data, not a fixed list: per-language cells are dicts; the
-    # aggregates are not languages and scalars (vocab_size, unique_tokens) are not cells.
+    # aggregates are not languages and scalars (vocab_size, unique_tokens) are not cells. The union
+    # over every vocabulary size's matrix (the same held-out text, so the same languages).
     tokka_languages = list(dict.fromkeys(
         lang
-        for row in tokka_data.values() if isinstance(row, dict)
+        for key in RESULT_SETS if key.startswith("tokka_")
+        for row in doc(key).get("models", doc(key)).values() if isinstance(row, dict)
         for lang, cell in row.items() if isinstance(cell, dict) and lang not in ("macro_avg", "micro_avg")
     ))
 
@@ -364,6 +534,7 @@ def load_benchmark_data() -> Dict[str, Any]:
         intr = intrinsic_data.get(key, {})
         tok = tokka_data.get(key, {})
         col = colab_models.get(key, {})
+        big_bpb = big_models.get(key, {}).get("macro_val_bpb")
 
         macro_bpb = col.get("macro_val_bpb")
         val_domains = col.get("val_domains", {})
@@ -384,17 +555,15 @@ def load_benchmark_data() -> Dict[str, Any]:
             "pros": meta.get("pros", []),
             "cons": meta.get("cons", []),
             "macro_val_bpb": macro_bpb,
+            "big_macro_val_bpb": big_bpb,
             "bytes_per_token": bytes_per_token,
             "renyi_e_2_0": intr.get("renyi_e_2_0"),
             "morph_f1": intr.get("morph_f1"),
             "identifier_f1": intr.get("identifier_f1"),
             "decode_mb_per_sec": intr.get("decode_mb_per_sec"),
             "encode_mb_per_sec": intr.get("encode_mb_per_sec"),
+            "renyi_e_2_5": intr.get("renyi_e_2_5"),
             "val_domains": val_domains,
-            "steps": col.get("steps"),
-            "curve": col.get("curve", []),
-            "intrinsic": intr,
-            "tokka": tok,
         }
 
     # Summary KPI Calculation
@@ -449,6 +618,7 @@ def load_benchmark_data() -> Dict[str, Any]:
         "tokka_matrix": tokka_data,
         "tokka_languages": tokka_languages,
         "meta": provenance,
+        "results": results,
         "metadata": ALGORITHM_METADATA,
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }

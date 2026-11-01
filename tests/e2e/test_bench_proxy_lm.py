@@ -7,6 +7,7 @@ import json
 import math
 from pathlib import Path
 import sys
+import time
 
 import numpy as np
 import pytest
@@ -194,9 +195,16 @@ def _calls(tmp_path: Path) -> list:
     return [json.loads(line)[0] for line in (tmp_path / "vm" / "calls.log").read_text().splitlines()]
 
 
+def test_tests_never_reach_the_signed_in_colab_cli():
+    """conftest gives an orchestrator built without colab_bin a CLI path that does not exist, so a
+    CLI's Colab path reached by mistake fails instead of opening a paid session."""
+    assert not Path(colab.ColabOrchestrator().colab_bin).exists()
+
+
 def _fake_colab(tmp_path: Path) -> Path:
     """A stand-in for the colab CLI: /content on the 'VM' is $FAKE_COLAB_ROOT/content. Like the real
-    0.7.5 CLI, `exec` exits 0 when the executed code raises (the traceback is only printed).
+    0.7.5 CLI, `exec` exits 0 when the executed code raises (the traceback is only printed), and
+    `upload` into a remote directory that does not exist fails.
     FAKE_COLAB_FAIL=<command> makes that command exit 1; FAKE_COLAB_VERSION sets `colab version`;
     FAKE_COLAB_DROP=n: the first n `exec` calls run the code but lose its output and exit 1
     ("Connection was lost."); FAKE_COLAB_HANG=n: the first n `exec` calls hang before running it;
@@ -206,7 +214,7 @@ def _fake_colab(tmp_path: Path) -> Path:
     fake.write_text(f"""#!{sys.executable}
 import json, os, shutil, subprocess, sys, time
 root = os.environ["FAKE_COLAB_ROOT"]
-os.makedirs(root, exist_ok=True)
+os.makedirs(os.path.join(root, "content"), exist_ok=True)
 args = sys.argv[1:]
 with open(os.path.join(root, "calls.log"), "a") as f:
     f.write(json.dumps(args) + "\\n")
@@ -226,7 +234,8 @@ if args[0] in ("upload", "download") and take(args[0] + "_drop"):
 if args[0] == "version":
     print("Version: " + os.environ.get("FAKE_COLAB_VERSION", "0.7.5"))
 elif args[0] == "upload":
-    os.makedirs(os.path.dirname(vm(args[4])), exist_ok=True)
+    if not os.path.isdir(os.path.dirname(vm(args[4]))):
+        sys.exit("FileNotFoundError: no such remote directory: " + os.path.dirname(args[4]))
     shutil.copy(args[3], vm(args[4]))
 elif args[0] == "exec":
     if take("hang"):
@@ -292,11 +301,13 @@ def test_finished_job_survives_dropped_uploads_and_downloads(tmp_path, monkeypat
     monkeypatch.setenv("FAKE_COLAB_ROOT", str(tmp_path / "vm"))
     monkeypatch.setenv("FAKE_COLAB_UPLOAD_DROP", "1")
     monkeypatch.setenv("FAKE_COLAB_DOWNLOAD_DROP", "2")
-    res = colab.ColabOrchestrator(colab_bin=str(_fake_colab(tmp_path))).run_job(
-        _job(tmp_path, seeds=(0,)), poll_interval=0.01)
+    job = _job(tmp_path, seeds=(0,))
+    res = colab.ColabOrchestrator(colab_bin=str(_fake_colab(tmp_path))).run_job(job, poll_interval=0.01)
     assert res["backend"]["kind"] == "colab" and "tok" in res["models"]
     calls = _calls(tmp_path)
-    assert calls.count("download") == 3 and calls.count("upload") == 4 and calls[-1] == "stop"
+    # Both drops hit the one run file (2 tries), then it and result.json download: nothing is lost.
+    assert calls.count("download") == 4 and calls.count("upload") == 4 and calls[-1] == "stop"
+    assert (job / "runs" / "tok__s0.json").is_file()
     log = (tmp_path / "vm" / "content" / "job.log").read_text()
     assert log.count("tok seed=0") == 1, log  # the job ran once; only the transfer was retried
 
@@ -308,7 +319,75 @@ def test_persistent_download_failure_is_bounded(tmp_path, monkeypatch):
         colab.ColabOrchestrator(colab_bin=str(_fake_colab(tmp_path))).run_job(
             _job(tmp_path, seeds=(0,)), poll_interval=0.01, max_poll_failures=3)
     calls = _calls(tmp_path)
-    assert calls.count("download") == 3 and calls[-1] == "stop"
+    result_downloads = (tmp_path / "vm" / "calls.log").read_text().count('"/content/result.json"')  # not per-run files
+    assert result_downloads == 3 and calls[-1] == "stop"
+
+
+class _LastRunDrops(colab.ColabOrchestrator):
+    """The job writes b.json moments before its final status, so the poll that first lists it also
+    reports ok; its download fails ``b_failures`` times."""
+
+    def __init__(self, b_failures: int) -> None:
+        super().__init__(mock=True)
+        self.polls, self.downloads, self.b_failures = 0, [], b_failures
+
+    def _poll(self, name, control):
+        self.polls += 1
+        return {"state": "running", "runs": ["a.json"]} if self.polls == 1 else {"state": "ok", "runs": ["a.json", "b.json"]}
+
+    def _colab(self, *args, timeout=None):
+        if args[0] == "download":
+            self.downloads.append(Path(args[3]).name)
+            if args[3].endswith("b.json") and self.downloads.count("b.json") <= self.b_failures:
+                raise colab.ColabError("`colab download` exited with 1: Connection was lost.")
+            Path(args[4]).write_text(json.dumps({"backend": {}}))
+        return ""
+
+
+def test_last_run_file_is_retried_before_the_session_stops(tmp_path):
+    """The last run file appears with the final status: a failed download is retried, not lost."""
+    orch = _LastRunDrops(b_failures=1)
+    job = _job(tmp_path / "a")
+    orch.run_job(job, poll_interval=0, max_poll_failures=3)
+    assert sorted(p.name for p in (job / "runs").iterdir()) == ["a.json", "b.json"]
+    assert orch.downloads == ["a.json", "b.json", "b.json", "result.json"]
+    orch = _LastRunDrops(b_failures=99)  # persistently lost: an error naming it, after a bounded retry
+    with pytest.raises(colab.ColabError, match="could not be downloaded: runs/b.json: .*Connection was lost"):
+        orch.run_job(_job(tmp_path / "b"), poll_interval=0, max_poll_failures=3)
+    assert orch.downloads.count("b.json") == 1 + 3
+
+
+class _BadNameVM(colab.ColabOrchestrator):
+    """A fake VM whose listing carries an unsafe name after a good one on every poll."""
+
+    def __init__(self) -> None:
+        super().__init__(colab_bin="unused")
+        self.calls, self.polls = [], 0
+
+    def _colab(self, *args, timeout=None):
+        self.calls.append(args[0])
+        if args[0] == "version":
+            return "Version: 99.0.0"
+        if args[0] == "download":
+            Path(args[4]).write_text("{}")
+        return ""
+
+    def _poll(self, name, control):
+        self.polls += 1
+        return {"state": "running", "runs": ["good.json", "../escaped.json", "late.json"]}
+
+
+def test_unsafe_file_name_from_the_vm_aborts_at_once_and_stops_the_session(tmp_path):
+    """A refused name used to be swallowed as one failed poll (reset by the next good poll), so the
+    paid session ran until the timeout. It aborts at once; the valid names are still downloaded."""
+    vm, job = _BadNameVM(), _job(tmp_path)
+    t0 = time.monotonic()
+    with pytest.raises(colab.ColabError, match="refusing the file name '../escaped.json'"):
+        vm.run_job(job, timeout=30, poll_interval=0.05, max_poll_failures=3)
+    assert time.monotonic() - t0 < 5 and vm.polls == 1
+    assert vm.calls[-1] == "stop"
+    assert sorted(p.name for p in (job / "runs").iterdir()) == ["good.json", "late.json"]
+    assert not (job / "escaped.json").exists() and not (tmp_path / "escaped.json").exists()
 
 
 def test_poll_failures_and_deadline_are_bounded(tmp_path, monkeypatch):
@@ -355,6 +434,22 @@ def test_session_is_stopped_when_colab_new_times_out(monkeypatch):
     assert calls == ["new", "stop"]
 
 
+def test_killed_cli_stops_its_session(tmp_path):
+    """SIGTERM (`kill <pid>`) of a CLI inside a session stops the session; it would keep billing."""
+    import subprocess
+
+    fake = _fake_colab(tmp_path)
+    code = (f"import time; from tokenisers.benchmarks.colab import ColabOrchestrator\n"
+            f"with ColabOrchestrator(colab_bin={str(fake)!r}).managed_session('s'):\n"
+            f"    print('in session', flush=True); time.sleep(60)\n")
+    proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True,
+                            env={**__import__("os").environ, "FAKE_COLAB_ROOT": str(tmp_path / "vm")})
+    assert proc.stdout.readline().strip() == "in session"
+    proc.terminate()
+    assert proc.wait(timeout=60) != 0
+    assert _calls(tmp_path) == ["new", "stop"]
+
+
 @pytest.fixture
 def cli_args(tmp_path):
     return ["--offline", "--cache-dir", str(tmp_path / "cache"), "--train-bytes", "30000", "--vocab-size", "280",
@@ -397,6 +492,27 @@ def test_cli_records_local_fallback_and_val_split(tmp_path, monkeypatch, cli_arg
     m = doc["models"]["bpe_frequency"]
     assert sum(m["val_domains"][d]["bytes_per_token"] * (m["val_domains"][d]["scored_tokens"] + 1)
                for d in meta["val_domains"]) == pytest.approx(val_bytes)
+
+
+def test_fallback_discloses_runs_reused_from_the_failed_colab_session(tmp_path, cli_args, require_tokenisers):
+    """A run file downloaded from a Colab session that later failed is reused by the local fallback
+    (not retrained), so the results must say which runs ran on which hardware, not just the local backend."""
+    from tokenisers.benchmarks.colab.__main__ import main
+
+    job = tmp_path / "job"
+    args = cli_args + ["--variants", "bpe_frequency", "--no-dropout-variant", "--job-dir", str(job)]
+    main(args + ["--prepare-only"])
+    run = lm._run_one(str(job), "bpe_frequency", 0, "cpu")  # stands in for a run downloaded from the VM
+    run["backend"] = {"device": "cuda", "gpu": "Tesla T4"}
+    (job / "runs" / "bpe_frequency__s0.json").write_text(json.dumps(run))
+    main(args + ["--resume", "--allow-local-fallback", "--colab-bin", str(tmp_path / "missing-colab")])
+    meta = json.loads((tmp_path / "out" / "extrinsic_bpb_results.json").read_text())["meta"]
+    assert meta["backend"]["kind"] == "local" and meta["fallback"]["from"] == "colab"
+    hw = meta["runs_by_hardware"]
+    assert hw.pop("GPU `Tesla T4`") == ["bpe_frequency__s0"]
+    assert list(hw.values()) == [["bpe_frequency__s1"]] and next(iter(hw)).startswith("CPU ")
+    md = (tmp_path / "out" / "extrinsic_bpb_leaderboard.md").read_text()
+    assert "1 on GPU `Tesla T4` (`bpe_frequency__s0`)" in md
 
 
 def test_dropout_variant_is_described_only_when_it_ran(tmp_path, cli_args, require_tokenisers):

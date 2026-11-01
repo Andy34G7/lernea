@@ -102,6 +102,63 @@ def test_corrupted_cache_file_is_detected_and_rebuilt(tmp_path):
     assert again.path("val").read_bytes() == good
 
 
+def test_a_builder_keeps_the_dataset_a_concurrent_builder_finished_first(tmp_path):
+    """Builder B is still building when builder A writes the same key: B returns A's dataset instead
+    of moving it aside and deleting it (which also left a window with no manifest at the root)."""
+    b = DataPipeline(cache_dir=tmp_path, force_offline=True)
+    build, first = b._build, {}
+
+    def a_finishes_meanwhile(config, splitter):
+        out = build(config, splitter)
+        first["a"] = DataPipeline(cache_dir=tmp_path, force_offline=True).prepare(train_bytes=20_000)
+        first["inode"] = os.stat(first["a"].root / "manifest.json").st_ino
+        return out
+
+    b._build = a_finishes_meanwhile
+    ds = b.prepare(train_bytes=20_000)
+    assert ds.root == first["a"].root and ds.manifest == first["a"].manifest
+    assert os.stat(ds.root / "manifest.json").st_ino == first["inode"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == [ds.root.name]
+
+
+def test_a_builder_keeps_a_dataset_that_lands_in_the_window_before_its_rename(tmp_path, monkeypatch):
+    """The microsecond window: builder A's complete dataset lands after B's check found no root and
+    before B's rename (B's `root.exists()` / `os.replace`). B used to move A's dataset aside and
+    delete it; the rename now comes first, so B finds A's non-empty root and keeps it."""
+    b = DataPipeline(cache_dir=tmp_path, force_offline=True)
+    build, state = b._build, {"armed": False, "landed": False}
+    real_exists, real_replace = pl.Path.exists, os.replace
+
+    def land_a():  # A runs to completion once, at B's first touch of the root after its check
+        state["landed"] = True
+        a = DataPipeline(cache_dir=tmp_path, force_offline=True).prepare(train_bytes=20_000)
+        state["a"], state["inode"] = a, os.stat(a.root / "manifest.json").st_ino
+
+    def exists(self):
+        if state["armed"] and not state["landed"] and self.parent == tmp_path and not self.name.startswith("."):
+            land_a()
+        return real_exists(self)
+
+    def replace(src, dst):
+        if state["armed"] and not state["landed"] and os.path.basename(src).startswith(".tmp-"):
+            land_a()
+        return real_replace(src, dst)
+
+    def arm_after_build(config, splitter):
+        out = build(config, splitter)
+        state["armed"] = True
+        return out
+
+    b._build = arm_after_build
+    monkeypatch.setattr(pl.Path, "exists", exists)
+    monkeypatch.setattr(pl.os, "replace", replace)
+    ds = b.prepare(train_bytes=20_000)
+    monkeypatch.undo()
+    assert state["landed"] and ds.root == state["a"].root
+    assert os.stat(ds.root / "manifest.json").st_ino == state["inode"]  # A's dataset, not a replacement
+    assert sorted(p.name for p in tmp_path.iterdir()) == [ds.root.name]
+
+
 def test_failed_write_leaves_no_half_written_dataset(tmp_path, monkeypatch):
     pipeline = DataPipeline(cache_dir=tmp_path, force_offline=True)
     real_sha = pl._sha256_file
@@ -222,6 +279,56 @@ def test_stream_failure_is_logged_raised_and_partial_data_kept(tmp_path, monkeyp
 
     kept = pipeline.prepare(train_bytes=200_000, languages=("cmn_Hani",), allow_partial=True)
     assert kept.manifest["complete"] is False and kept.texts("train", lang="cmn_Hani")
+
+
+def _assert_pool(pipeline, base, total_bytes):
+    """The LM text pool leaves base's splits as they were and shares no document with them."""
+    splits = {s: v["sha256"] for s, v in base.manifest["splits"].items()}
+    pool, prov = pipeline.lm_pool(base, total_bytes)
+    cfg = base.manifest["config"]
+    again = pipeline.prepare(train_bytes=cfg["train_bytes"], languages=cfg["languages"])
+    assert again.root == base.root and {s: v["sha256"] for s, v in again.manifest["splits"].items()} == splits
+    held = {d["sha256"] for s in SPLITS for d in base.docs(s)}
+    assert pool and not {_sha(t) for t in pool} & held and len(set(pool)) == len(pool)
+    lm_bytes = sum(len(t.encode()) for t in base.texts("train") + pool)
+    assert lm_bytes >= total_bytes and prov["text_bytes"] == lm_bytes - base.manifest["splits"]["train"]["text_bytes"]
+    assert prov["base"] == base.root.name and prov["dataset"]["config"]["train_bytes"] == total_bytes
+    assert prov["dataset"]["root"] != base.root.name and prov["docs"] == len(pool)
+    return pool, prov
+
+
+def test_lm_pool_is_disjoint_and_leaves_the_default_splits_unchanged(tmp_path):
+    pipeline = DataPipeline(cache_dir=tmp_path, force_offline=True)
+    base = pipeline.prepare(train_bytes=20_000)
+    pool, prov = _assert_pool(pipeline, base, 60_000)
+    assert {d["domain"] for d in prov["dataset"]["sources"]} == {"english", "multilingual", "code"}
+    assert prov["excluded_base_docs"] > 0  # base train documents are in the larger train split too
+    with pytest.raises(ValueError, match="must exceed"):
+        pipeline.lm_pool(base, 20_000)
+    with pytest.raises(ValueError, match="same sources"):  # a pool must not come from other sources
+        DataPipeline(cache_dir=tmp_path, force_offline=False).lm_pool(base, 60_000)
+
+
+def test_lm_pool_refuses_a_larger_build_with_another_config_or_other_fallback_sources(tmp_path):
+    """Same offline mode is not enough: the larger build must have base's config (but train_bytes) and
+    have used the same fallback sources, or the pool would mix text from other sources into the LM text."""
+    pipeline = DataPipeline(cache_dir=tmp_path, force_offline=True)
+    base = pipeline.prepare(train_bytes=20_000)
+    m = base.manifest
+    other_config = {**m, "config": {**m["config"], "max_doc_bytes": m["config"]["max_doc_bytes"] - 1}}
+    other_sources = {**m, "fallbacks": [{"used": "some/fallback-repo"}]}
+    for manifest in (other_config, other_sources):
+        with pytest.raises(ValueError, match="does not read the same sources"):
+            pipeline.lm_pool(pl.PreparedDataset(base.root, manifest), 60_000)
+    assert pipeline.lm_pool(base, 60_000)[0]  # the unchanged base still gets its pool
+
+
+def test_lm_pool_on_the_real_path_dedups_against_every_split(tmp_path, monkeypatch):
+    monkeypatch.setattr(pl, "_iter_hf_rows", _fake_hub)
+    pipeline = DataPipeline(cache_dir=tmp_path)
+    base = pipeline.prepare(train_bytes=40_000, languages=("cmn_Hani", "deu_Latn"))
+    pool, prov = _assert_pool(pipeline, base, 120_000)
+    assert SHARED_DOC not in pool and prov["dataset"]["fallbacks"] == base.manifest["fallbacks"]
 
 
 def test_sigmorphon_tsv_marks_canonical_segmentations(tmp_path):

@@ -12,15 +12,34 @@ both "\\n" and "Ċ"), so it can have more entries than ``vocab_size``.
 ``vocab_size`` passed to ``train`` is the requested total size, special tokens included. Training
 never pads: when the corpus cannot supply that many tokens the real, smaller vocabulary is kept
 and a ``UserWarning`` reports its size.
+
+``pretokenizer`` (``train`` of every class except SuperBPE and ByteEntropy) is how text is split
+into segments that no token spans, for training and encoding alike: ``"whitespace"`` (default)
+puts every maximal Unicode whitespace run in a segment of its own, so no token mixes whitespace
+with other text (a run such as ``"    "`` or ``" \\n"`` can still be one token); ``"space_prefix"``
+(GPT-2-style) lets a word take the one U+0020 space before it (" the"), while other whitespace
+stays in whitespace-only segments; ``"gpt2"`` is GPT-2's exact regex pre-split (tiktoken's gpt2
+``pat_str``): contractions, letter runs, digit runs and punctuation runs apart, each with the
+space before it (" it", "'s", " 2024", "!"); ``{"hf": config}`` is a Hugging Face ``pre_tokenizer``
+config (a dict or JSON string, e.g. ``{"type": "Digits", "individual_digits": True}``) run by
+``tokenizers`` itself, limited to splitters that keep every character (``Split``, ``Punctuation``,
+``Digits``, ``FixedLength``, ``ByteLevel`` without ``add_prefix_space``, ``Sequence``); anything
+else, or a field the component does not have (a misspelt ``"behaviour"``), raises ``ValueError``. The exported ``tokenizer.json`` reproduces it, and ``from_pretrained``
+restores it. ``train`` also raises ``ValueError`` for a config that ``tokenizer.json`` would load
+back as another pretokenizer with the same split, and names that one: a lone ``ByteLevel`` with
+``use_regex=True`` is ``"gpt2"``, ``Sequence[X, ByteLevel(use_regex=False)]`` is ``{"hf": X}``,
+and a lone ``ByteLevel(use_regex=False)`` splits nothing (whole text).
+``tokenisers._core.pretokenize(data, mode)`` returns the segments of any accepted config.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import tempfile
 import warnings
 from collections import Counter
-from typing import Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 from tokenisers import _core
 
@@ -53,17 +72,24 @@ class _CoreTokenizer:
     def vocab_size(self) -> int:
         return 0 if self._model is None else self._model.vocab_size()
 
+    @property
+    def pretokenizer(self) -> Optional[Union[str, Dict[str, Any]]]:
+        """``"whitespace"``, ``"space_prefix"``, ``"gpt2"`` or ``{"hf": config}``; None when the model
+        encodes whole text (SuperBPE after stage 2) or is not trained."""
+        return None if self._model is None else self._model.pretokenizer()
+
     def get_vocab(self) -> Dict[str, int]:
         return {} if self._model is None else self._model.get_vocab()
 
     def token_to_id(self, token: str) -> Optional[int]:
         return None if self._model is None else self._model.token_to_id(token)
 
+    # The core takes u32 ids: one outside that range (e.g. HF's -100 label padding) is unknown, like a too-large one.
     def id_to_token(self, token_id: int) -> Optional[str]:
-        return None if self._model is None else self._model.id_to_token(token_id)
+        return None if self._model is None or not 0 <= token_id < 2**32 else self._model.id_to_token(token_id)
 
     def id_to_bytes(self, token_id: int) -> Optional[bytes]:
-        return None if self._model is None else self._model.id_to_bytes(token_id)
+        return None if self._model is None or not 0 <= token_id < 2**32 else self._model.id_to_bytes(token_id)
 
     def special_tokens(self) -> Dict[str, int]:
         """``{content: id}`` of the special tokens."""
@@ -71,7 +97,12 @@ class _CoreTokenizer:
 
     def decode_bytes(self, token_ids: Sequence[int]) -> bytes:
         """Raw bytes of ``token_ids``; ``ValueError`` on an unknown id."""
-        return self._require().decode_bytes(list(token_ids))
+        ids = list(token_ids)
+        try:
+            return self._require().decode_bytes(ids)
+        except OverflowError:  # outside u32, checked only on failure so decode stays one native call
+            bad = next(i for i in ids if not 0 <= i < 2**32)
+            raise ValueError(f"Token ID {bad} not found in vocabulary") from None
 
     def decode(self, token_ids: Sequence[int], errors: str = "replace") -> str:
         """UTF-8 text of ``token_ids`` (``errors`` as in ``bytes.decode``)."""
@@ -103,6 +134,25 @@ class _CoreTokenizer:
         """Loads a directory written by ``save`` (or a ``tokenizer.json`` path)."""
         return cls(model=cls._core_class.from_hf_json(str(pretrained_model_name_or_path)))
 
+    def __reduce__(self):
+        """Pickle / deepcopy (spawn workers, ``datasets.map(num_proc)``) as the tokenizer.json export:
+        the native model does not pickle, and its file round trip is the save/load path."""
+        if self._model is None:
+            return (type(self), ())
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "tokenizer.json")
+            self.export_hf_json(path)
+            with open(path, encoding="utf-8") as f:
+                return (_from_tokenizer_json, (type(self), f.read()))
+
+
+def _from_tokenizer_json(cls: type, text: str) -> _CoreTokenizer:
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "tokenizer.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return cls.from_pretrained(path)
+
 
 class BpeTokenizer(_CoreTokenizer):
     """
@@ -124,6 +174,7 @@ class BpeTokenizer(_CoreTokenizer):
         beta: Optional[float] = None,
         penalty: Optional[float] = None,
         special_tokens: Optional[List[str]] = None,
+        pretokenizer: Union[str, Dict[str, Any]] = "whitespace",
     ):
         """
         Trains on ``corpus``. ``vocab_size`` includes ``special_tokens``, which are cut out of the
@@ -146,6 +197,7 @@ class BpeTokenizer(_CoreTokenizer):
             beta=beta,
             penalty=penalty,
             special_tokens=special_tokens,
+            pretokenizer=pretokenizer,
         )
         _warn_if_short(cls.__name__, model.vocab_size(), vocab_size)
         return cls(model=model)
@@ -182,10 +234,12 @@ class WordPieceTokenizer(BpeTokenizer):
     """BPE with the Laplace-smoothed WordPiece likelihood score (``alpha`` smoothing)."""
 
     @classmethod
-    def train(cls, corpus, vocab_size=300, alpha=None, min_frequency=None, special_tokens=None):
+    def train(
+        cls, corpus, vocab_size=300, alpha=None, min_frequency=None, special_tokens=None, pretokenizer="whitespace"
+    ):
         return super().train(
             corpus, vocab_size, "wordpiece", min_frequency=min_frequency, alpha=alpha,
-            special_tokens=special_tokens,
+            special_tokens=special_tokens, pretokenizer=pretokenizer,
         )
 
 
@@ -193,9 +247,12 @@ class WpBpeBaseTokenizer(BpeTokenizer):
     """wp-bpe-base: uncalibrated PMI f(uv) / (f(u) f(v)), no frequency cutoff by default."""
 
     @classmethod
-    def train(cls, corpus, vocab_size=300, min_frequency=None, special_tokens=None):
+    def train(
+        cls, corpus, vocab_size=300, min_frequency=None, special_tokens=None, pretokenizer="whitespace"
+    ):
         return super().train(
-            corpus, vocab_size, "wp-bpe-base", min_frequency=min_frequency, special_tokens=special_tokens
+            corpus, vocab_size, "wp-bpe-base", min_frequency=min_frequency, special_tokens=special_tokens,
+            pretokenizer=pretokenizer,
         )
 
 
@@ -203,9 +260,12 @@ class WpBpeFtTokenizer(BpeTokenizer):
     """wp-bpe-ft: the wp-bpe-base ratio restricted to pairs with f(uv) >= min_frequency (>= 2)."""
 
     @classmethod
-    def train(cls, corpus, vocab_size=300, min_frequency=None, special_tokens=None):
+    def train(
+        cls, corpus, vocab_size=300, min_frequency=None, special_tokens=None, pretokenizer="whitespace"
+    ):
         return super().train(
-            corpus, vocab_size, "wp-bpe-ft", min_frequency=min_frequency, special_tokens=special_tokens
+            corpus, vocab_size, "wp-bpe-ft", min_frequency=min_frequency, special_tokens=special_tokens,
+            pretokenizer=pretokenizer,
         )
 
 
@@ -213,9 +273,12 @@ class WpBpePigTokenizer(BpeTokenizer):
     """wp-bpe-pig: pointwise information gain f(uv) * PMI(u, v)."""
 
     @classmethod
-    def train(cls, corpus, vocab_size=300, min_frequency=None, special_tokens=None):
+    def train(
+        cls, corpus, vocab_size=300, min_frequency=None, special_tokens=None, pretokenizer="whitespace"
+    ):
         return super().train(
-            corpus, vocab_size, "wp-bpe-pig", min_frequency=min_frequency, special_tokens=special_tokens
+            corpus, vocab_size, "wp-bpe-pig", min_frequency=min_frequency, special_tokens=special_tokens,
+            pretokenizer=pretokenizer,
         )
 
 
@@ -223,10 +286,12 @@ class WpBpeScpTokenizer(BpeTokenizer):
     """wp-bpe-scp: (f(uv) - discount)+ / sqrt(f(u) f(v)) (default discount 0.75)."""
 
     @classmethod
-    def train(cls, corpus, vocab_size=300, min_frequency=None, discount=None, special_tokens=None):
+    def train(
+        cls, corpus, vocab_size=300, min_frequency=None, discount=None, special_tokens=None, pretokenizer="whitespace"
+    ):
         return super().train(
             corpus, vocab_size, "wp-bpe-scp", min_frequency=min_frequency, alpha=discount,
-            special_tokens=special_tokens,
+            special_tokens=special_tokens, pretokenizer=pretokenizer,
         )
 
 
@@ -234,10 +299,12 @@ class WpBpeNpmiTokenizer(BpeTokenizer):
     """wp-bpe-npmi: normalized PMI weighted by f(uv)^alpha (default alpha 0.5)."""
 
     @classmethod
-    def train(cls, corpus, vocab_size=300, min_frequency=None, alpha=None, special_tokens=None):
+    def train(
+        cls, corpus, vocab_size=300, min_frequency=None, alpha=None, special_tokens=None, pretokenizer="whitespace"
+    ):
         return super().train(
             corpus, vocab_size, "wp-bpe-npmi", min_frequency=min_frequency, alpha=alpha,
-            special_tokens=special_tokens,
+            special_tokens=special_tokens, pretokenizer=pretokenizer,
         )
 
 
@@ -245,10 +312,13 @@ class WpBpePpigTokenizer(BpeTokenizer):
     """wp-bpe-ppig: f(uv) * max(0, PMI) / (|u| + |v|)^length_penalty (default 0.35)."""
 
     @classmethod
-    def train(cls, corpus, vocab_size=300, min_frequency=None, length_penalty=None, special_tokens=None):
+    def train(
+        cls, corpus, vocab_size=300, min_frequency=None, length_penalty=None, special_tokens=None,
+        pretokenizer="whitespace",
+    ):
         return super().train(
             corpus, vocab_size, "wp-bpe-ppig", min_frequency=min_frequency, penalty=length_penalty,
-            special_tokens=special_tokens,
+            special_tokens=special_tokens, pretokenizer=pretokenizer,
         )
 
 
@@ -256,10 +326,12 @@ class MdlTokenizer(BpeTokenizer):
     """BPE with the Minimum Description Length (delta-bits) score; ``entry_cost`` in bits (24)."""
 
     @classmethod
-    def train(cls, corpus, vocab_size=300, entry_cost=None, min_frequency=None, special_tokens=None):
+    def train(
+        cls, corpus, vocab_size=300, entry_cost=None, min_frequency=None, special_tokens=None, pretokenizer="whitespace"
+    ):
         return super().train(
             corpus, vocab_size, "mdl", min_frequency=min_frequency, penalty=entry_cost,
-            special_tokens=special_tokens,
+            special_tokens=special_tokens, pretokenizer=pretokenizer,
         )
 
 
@@ -267,10 +339,12 @@ class LengthPenalizedTokenizer(BpeTokenizer):
     """BPE with score f(uv) / (|u| + |v|)^beta (default beta 0.5)."""
 
     @classmethod
-    def train(cls, corpus, vocab_size=300, beta=None, min_frequency=None, special_tokens=None):
+    def train(
+        cls, corpus, vocab_size=300, beta=None, min_frequency=None, special_tokens=None, pretokenizer="whitespace"
+    ):
         return super().train(
             corpus, vocab_size, "length_penalized", min_frequency=min_frequency, beta=beta,
-            special_tokens=special_tokens,
+            special_tokens=special_tokens, pretokenizer=pretokenizer,
         )
 
 
@@ -311,7 +385,10 @@ class MorphemeGuidedTokenizer(BpeTokenizer):
     warning). ``morpheme_lexicon`` maps whitespace-free training words to surface morphemes that
     concatenate to the word; supply it from training annotations or an unsupervised segmenter,
     never from evaluation gold. ``alpha`` (wordpiece), ``beta`` (length_penalized) and
-    ``penalty`` (mdl entry cost in bits) default to the scorer's own defaults.
+    ``penalty`` (mdl entry cost in bits) default to the scorer's own defaults. With
+    ``pretokenizer="space_prefix"`` or ``"gpt2"`` the segment " word" gets the boundaries of "word"
+    (the space joins the first morpheme) unless the lexicon has its own " word" entry; in ``"gpt2"``
+    a word the regex splits ("don't") is never a training segment and has no effect.
     """
 
     @classmethod
@@ -327,6 +404,7 @@ class MorphemeGuidedTokenizer(BpeTokenizer):
         beta: Optional[float] = None,
         penalty: Optional[float] = None,
         special_tokens: Optional[List[str]] = None,
+        pretokenizer: Union[str, Dict[str, Any]] = "whitespace",
     ) -> MorphemeGuidedTokenizer:
         if not corpus:
             raise ValueError("Training corpus cannot be empty")
@@ -340,7 +418,7 @@ class MorphemeGuidedTokenizer(BpeTokenizer):
             alpha=alpha,
             beta=beta,
             penalty=penalty,
-            special_tokens=special_tokens,
+            special_tokens=special_tokens, pretokenizer=pretokenizer,
         )
         return cls(model=model)
 
@@ -367,6 +445,7 @@ class UnigramTokenizer(_CoreTokenizer):
         vocab_size: int = 300,
         num_iterations: int = 10,
         shrinking_factor: float = 0.75,
+        pretokenizer: Union[str, Dict[str, Any]] = "whitespace",
     ) -> UnigramTokenizer:
         if not corpus:
             raise ValueError("Training corpus cannot be empty")
@@ -375,6 +454,7 @@ class UnigramTokenizer(_CoreTokenizer):
             vocab_size=vocab_size,
             num_iterations=num_iterations,
             shrinking_factor=float(shrinking_factor),
+            pretokenizer=pretokenizer,
         )
         _warn_if_short(cls.__name__, model.vocab_size(), vocab_size)
         return cls(model=model)
@@ -393,7 +473,7 @@ class UnigramTokenizer(_CoreTokenizer):
         probability proportional to P(s)^(1/temperature): temperature 1 (default) is the exact
         posterior, SentencePiece ``alpha`` = 1/temperature, 0 gives Viterbi. ``nbest_size``
         (SentencePiece convention): None or < 0 samples from all segmentations (FFBS), k > 1 from
-        the k best of each whitespace / non-whitespace segment, 0 or 1 is Viterbi.
+        the k best of each pretokenizer segment, 0 or 1 is Viterbi.
         """
         return self._require().encode(
             text, temperature=temperature, nbest_size=nbest_size, sample=sample, seed=seed
@@ -552,11 +632,8 @@ class ByteEntropyTokenizer:
     def special_tokens(self) -> Dict[str, int]:
         return {}
 
-    def save(self, save_directory: str) -> None:
-        """Writes config, patch vocabulary and Markov counts to ``byte_entropy.json``."""
-        self._require()
-        os.makedirs(save_directory, exist_ok=True)
-        state = {
+    def _state(self) -> Dict[str, Any]:
+        return {
             "type": "ByteEntropy",
             "config": self.config,
             "patches": [p.hex() for p in self._patches],
@@ -564,8 +641,13 @@ class ByteEntropyTokenizer:
                 [ctx.hex(), counts] for ctx, counts in self._patcher.transitions()
             ],
         }
+
+    def save(self, save_directory: str) -> None:
+        """Writes config, patch vocabulary and Markov counts to ``byte_entropy.json``."""
+        self._require()
+        os.makedirs(save_directory, exist_ok=True)
         with open(os.path.join(save_directory, self._FILE), "w", encoding="utf-8") as f:
-            json.dump(state, f)
+            json.dump(self._state(), f)
 
     save_pretrained = save
 
@@ -578,9 +660,18 @@ class ByteEntropyTokenizer:
             state = json.load(f)
         if state.get("type") != "ByteEntropy":
             raise ValueError(f"{path} is not a saved ByteEntropyTokenizer")
+        return cls._from_state(state)
+
+    @classmethod
+    def _from_state(cls, state: Dict[str, Any]) -> ByteEntropyTokenizer:
         tok = cls(**state["config"])
-        tok._patcher.load_transitions(
-            [(bytes.fromhex(ctx), [tuple(bc) for bc in counts]) for ctx, counts in state["transitions"]]
-        )
+        if state["transitions"]:
+            tok._patcher.load_transitions(
+                [(bytes.fromhex(ctx), [tuple(bc) for bc in counts]) for ctx, counts in state["transitions"]]
+            )
         tok._set_patches([bytes.fromhex(p) for p in state["patches"]])
         return tok
+
+    def __reduce__(self):
+        """Pickle / deepcopy as the ``save`` state (the native patcher does not pickle)."""
+        return (type(self)._from_state, (self._state(),))

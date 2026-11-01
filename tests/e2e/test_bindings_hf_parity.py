@@ -203,11 +203,15 @@ def test_reloads_a_tokenizer_json_re_saved_by_hugging_face(saved, tmp_path):
 
 
 UNSUPPORTED = {
-    "gpt2 regex": {"pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": False, "trim_offsets": False, "use_regex": True}},
+    "gpt2 regex with prefix space": {"pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": True, "trim_offsets": False,
+                                                        "use_regex": True}},
     "prefix space": {"pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": True, "trim_offsets": False, "use_regex": False}},
-    "other split": {"pre_tokenizer": {"type": "Sequence", "pretokenizers": [
-        {"type": "Split", "pattern": {"Regex": "\\s+"}, "behavior": "Isolated", "invert": False},
+    # (A lossless split such as Isolated \s+ now loads as pretokenizer={"hf": ...}: test_hf_pretokenizer.py.)
+    "removed split": {"pre_tokenizer": {"type": "Sequence", "pretokenizers": [
+        {"type": "Split", "pattern": {"Regex": "\\s+"}, "behavior": "Removed", "invert": False},
         {"type": "ByteLevel", "add_prefix_space": False, "trim_offsets": False, "use_regex": False}]}},
+    "metaspace": {"pre_tokenizer": {"type": "Metaspace", "replacement": "\u2581", "prepend_scheme": "always",
+                                    "split": True}},
     "normalizer": {"normalizer": {"type": "NFC"}},
 }
 

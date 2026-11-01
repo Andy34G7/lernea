@@ -15,7 +15,9 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
+import signal
 import subprocess
+import threading
 import time
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 import uuid
@@ -77,12 +79,22 @@ try:
         out["log_tail"] = f.read().decode("utf-8", "replace")
 except OSError:
     out["log_tail"] = ""
+runs = os.path.join(d, "runs")
+out["runs"] = sorted(f for f in os.listdir(runs) if f.endswith(".json")) if os.path.isdir(runs) else []
 print({marker!r} + json.dumps(out))
 """
 
 
 class ColabError(RuntimeError):
     """A ``colab`` CLI step or the remote job failed (the message carries the remote traceback)."""
+
+
+def plain_name(f: Any) -> str:
+    """A file name the VM reported, returned only if it names a file directly inside the target dir:
+    no separator, no '..', not absolute (a misbehaving VM must not write outside the job)."""
+    if not isinstance(f, str) or f in ("", ".", "..") or Path(f).name != f or "\\" in f:
+        raise ColabError(f"refusing the file name {f!r} from the VM: not a plain file name")
+    return f
 
 
 @dataclass
@@ -131,8 +143,11 @@ class ColabOrchestrator:
     @contextlib.contextmanager
     def managed_session(self, session_name: str, gpu: Optional[str] = "T4") -> Iterator[ColabSession]:
         """Creates a session and always stops it afterwards, also when ``colab new`` fails or times
-        out (the VM may exist even though the client gave up)."""
+        out (the VM may exist even though the client gave up). Meanwhile SIGTERM (``kill``) raises
+        KeyboardInterrupt, so a killed CLI stops its session too instead of leaving it billing."""
         session = ColabSession(session_id=session_name, active=True)
+        main = threading.current_thread() is threading.main_thread()  # signal handlers live there only
+        old = signal.signal(signal.SIGTERM, signal.default_int_handler) if main else None
         try:
             if not self.mock:
                 self._colab("new", "-s", session_name, *(["--gpu", gpu] if gpu else []))
@@ -144,6 +159,8 @@ class ColabOrchestrator:
                     self._colab("stop", "-s", session_name, timeout=120)
                 except ColabError:
                     pass
+            if main:
+                signal.signal(signal.SIGTERM, old if old is not None else signal.SIG_DFL)
 
     def _colab_retry(self, *args: str, attempts: int, delay: float, timeout: float) -> str:
         """``_colab`` for an idempotent step (upload, download): a transient failure such as a lost
@@ -162,21 +179,52 @@ class ColabOrchestrator:
                 return json.loads(line[len(STATUS_MARKER):])
         raise ColabError(f"`colab exec` of the job control script printed no status:\n{out.strip()[-3000:]}")
 
+    def _sync_runs(self, name: str, status: Dict[str, Any], local: Path, attempts: int = 1,
+                   delay: float = 0.0) -> Dict[str, str]:
+        """Downloads finished per-run result files not yet held locally, so a dropped session loses
+        only the runs in flight; returns {file: last error} of those still missing. During the polls
+        one try each (the next poll retries); after the last poll ``attempts`` tries, ``delay`` s
+        apart, as nothing retries them once the session stops. A file name that is not plain (see
+        ``plain_name``) raises ColabError, after the valid names were downloaded."""
+        failed: Dict[str, str] = {}
+        refused: Optional[ColabError] = None
+        for f in status.get("runs", []):
+            try:
+                f = plain_name(f)
+            except ColabError as e:  # keep downloading the valid names: the paid runs are not lost
+                refused = refused or e
+                continue
+            if not (local / f).exists():
+                local.mkdir(exist_ok=True)
+                try:
+                    self._colab_retry("download", "-s", name, f"{REMOTE_DIR}/runs/{f}", str(local / f),
+                                      attempts=attempts, delay=delay, timeout=600)
+                    print(f"downloaded runs/{f}", flush=True)
+                except ColabError as e:
+                    failed[f] = str(e)
+        if refused:
+            raise refused
+        return failed
+
     def _wait(self, name: str, control: Path, timeout: float, poll_interval: float,
-              max_poll_failures: int) -> Dict[str, Any]:
+              max_poll_failures: int, runs_dir: Optional[Path] = None) -> Dict[str, Any]:
         """Launches the job (first poll) and polls until it is ok/error/died; raises ColabError
-        after ``max_poll_failures`` consecutive failed polls or when ``timeout`` seconds pass."""
+        after ``max_poll_failures`` consecutive failed polls or when ``timeout`` seconds pass, and at
+        once for an unsafe file name from the VM (that is not a transient failure to retry)."""
         deadline = time.monotonic() + timeout
         failures = 0
         last: Dict[str, Any] = {}
         while True:
             try:
                 last = self._poll(name, control)
-                failures = 0
             except ColabError as e:
                 failures += 1
                 if failures >= max_poll_failures:
                     raise ColabError(f"{failures} consecutive job polls failed; last error: {e}") from e
+            else:
+                failures = 0
+                if runs_dir is not None:  # outside the poll's try: a refused name must abort, not count as a failed poll
+                    self._sync_runs(name, last, runs_dir)
             if last.get("state") in ("ok", "error", "died"):
                 return last
             if time.monotonic() >= deadline:
@@ -199,8 +247,12 @@ class ColabOrchestrator:
         proxy-LM job's config.json and *.npz), starts ``python script <dir>`` detached on the VM
         (``gpu=None``: a CPU runtime) and polls it every ``poll_interval`` s with short ``colab exec``
         calls (no exec stays open for the whole job), then downloads result.json and returns it with
-        ``backend.kind = "colab"``. Polls, uploads and the download are each retried until
-        ``max_poll_failures`` consecutive calls failed. A remote exception, a job that dies or runs
+        ``backend.kind = "colab"``. Finished run files already in ``job_dir/runs`` (from an earlier,
+        dropped session) are uploaded into the VM's runs/ (created first), so they are not retrained;
+        finished runs are downloaded there on every poll, and any still missing after the last poll
+        with retries (a finished job with a run file that cannot be downloaded raises ColabError).
+        Polls, uploads and the download are each
+        retried until ``max_poll_failures`` consecutive calls failed. A remote exception, a job that dies or runs
         past ``timeout``, or a CLI step that keeps failing raises ColabError (with the remote
         traceback / log tail); the session is always stopped. There is no silent local fallback.
         """
@@ -212,6 +264,7 @@ class ColabOrchestrator:
         if files is None:
             files = [job_dir / "config.json", *sorted(job_dir.glob("*.npz"))]
         uploads: List[Path] = [script, *map(Path, files)]
+        done_runs = sorted((job_dir / "runs").glob("*.json"))  # from an earlier, dropped session: not retrained
         control = job_dir / "control.py"
         control.write_text(CONTROL_SCRIPT.format(remote_dir=REMOTE_DIR, marker=STATUS_MARKER, script=script.name),
                            encoding="utf-8")
@@ -220,8 +273,22 @@ class ColabOrchestrator:
         with self.managed_session(name, gpu):
             retry = {"attempts": max_poll_failures, "delay": poll_interval}
             for f in uploads:
+                t0 = time.monotonic()
                 self._colab_retry("upload", "-s", name, str(f), f"{REMOTE_DIR}/{f.name}", timeout=3600, **retry)
-            status = self._wait(name, control, timeout, poll_interval, max_poll_failures)
+                mb = f.stat().st_size / 1e6
+                print(f"uploaded {f.name} ({mb:.1f} MB) in {time.monotonic() - t0:.0f} s", flush=True)
+            if done_runs:  # `colab upload` does not create the remote directory
+                mkdir = job_dir / "mkdir.py"
+                mkdir.write_text(f"import os\nos.makedirs({REMOTE_DIR + '/runs'!r}, exist_ok=True)\n", encoding="utf-8")
+                self._colab_retry("exec", "-s", name, "-f", str(mkdir), "--timeout", "120",
+                                  timeout=EXEC_TIMEOUT, **retry)
+            for f in done_runs:
+                self._colab_retry("upload", "-s", name, str(f), f"{REMOTE_DIR}/runs/{f.name}", timeout=600, **retry)
+            status = self._wait(name, control, timeout, poll_interval, max_poll_failures, job_dir / "runs")
+            # The job writes its last run file moments before its final status, so the last poll may
+            # have given that file a single failed try: every missing one is retried now, also after a
+            # failed job (what finished is kept for a resume).
+            lost = self._sync_runs(name, status, job_dir / "runs", **retry)
             if status["state"] != "ok":
                 detail = status.get("traceback") or f"no status.json; log tail:\n{status.get('log_tail', '')}"
                 raise ColabError(f"the remote job failed ({status['state']}):\n{detail}")
@@ -229,6 +296,9 @@ class ColabOrchestrator:
             # lost to a dropped connection is retried like a poll.
             self._colab_retry("download", "-s", name, f"{REMOTE_DIR}/result.json", str(local_result),
                               timeout=600, **retry)
+            if lost:
+                raise ColabError("the job finished but these run files could not be downloaded: "
+                                 + "; ".join(f"runs/{f}: {e}" for f, e in lost.items()))
         if not local_result.is_file():
             raise ColabError("the Colab job produced no result.json")
         result = json.loads(local_result.read_text(encoding="utf-8"))
@@ -251,4 +321,5 @@ __all__ = [
     "ColabSession",
     "run_job",
     "run_local",
+    "plain_name",
 ]

@@ -27,6 +27,10 @@ parking_lot = "0.12.5"
 ahash = "0.8"
 fastrand = "2.3"
 
+# GPT-2 pre-tokenization regex (lookahead, possessive quantifiers): the crate and version
+# tiktoken 0.14's Rust core uses
+fancy-regex = "0.19"
+
 # Error Handling & Logging
 thiserror = "2.0"
 log = "0.4"

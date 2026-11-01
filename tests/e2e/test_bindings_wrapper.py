@@ -182,3 +182,40 @@ def test_saving_a_model_without_a_tokenizer_json_export_raises_clearly(tmp_path)
     assert wrapper("Hello world")["input_ids"] == tok.encode("Hello world")
     with pytest.raises(NotImplementedError, match="ByteEntropyTokenizer has no tokenizer.json export"):
         wrapper.save_pretrained(str(tmp_path))
+
+
+def test_declared_transformers_floor_has_the_api_the_wrapper_uses():
+    """wrapper.py calls the v5-only add_special_tokens(..., replace_extra_special_tokens=False): on
+    transformers 4.57 wrapping a model with its own special tokens raised TypeError, and 5.0.0 fails
+    this file. AutoTokenizer parity with one-byte special tokens (test_bindings_hf_parity.py) fails on
+    5.2-5.20.2 and passes on 5.21.0, which needs Python >= 3.11. So, per interpreter, pyproject.toml
+    must admit no version below those, and the version running here must be one it admits."""
+    import sys
+    from pathlib import Path
+
+    from packaging.requirements import Requirement
+    from packaging.version import Version
+
+    try:
+        import tomllib
+    except ImportError:  # Python 3.10
+        import tomli as tomllib
+
+    with open(Path(__file__).parents[2] / "pyproject.toml", "rb") as f:
+        deps = [Requirement(d) for d in tomllib.load(f)["project"]["dependencies"]]
+
+    def admitted(python: str):
+        reqs = [r for r in deps if r.name == "transformers"
+                and (r.marker is None or r.marker.evaluate({"python_version": python}))]
+        assert len(reqs) == 1, (python, reqs)  # one requirement per interpreter, none left unpinned
+        return reqs[0].specifier
+
+    for v in ("4.57.0", "5.0.0", "5.1.0"):
+        assert not admitted("3.10").contains(v) and not admitted("3.11").contains(v), v
+    assert admitted("3.10").contains("5.2.0") and admitted("3.10").contains("5.20.2")
+    for v in ("5.2.0", "5.20.2"):  # parity fails there, and 5.21.0 (needs >= 3.11) is installable
+        assert not admitted("3.11").contains(v) and not admitted("3.14").contains(v), v
+    assert admitted("3.11").contains("5.21.0")
+
+    py = f"{sys.version_info.major}.{sys.version_info.minor}"
+    assert admitted(py).contains(Version(transformers.__version__)), (py, transformers.__version__)

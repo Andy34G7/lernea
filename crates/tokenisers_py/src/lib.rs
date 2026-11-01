@@ -4,6 +4,7 @@ use std::path::Path;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::{PyBytes, PyDict};
 
 use tokenisers_core::curricula::morpheme::{MorphemeGuidedScorer, MorphemeLexicon};
 use tokenisers_core::curricula::super_bpe::{SuperBpeConfig, SuperBpeTrainer};
@@ -14,11 +15,13 @@ use tokenisers_core::inference::byte_entropy::{
     ByteEntropyConfig, ByteEntropyPatcher, DEFAULT_MAX_CONTEXTS,
 };
 use tokenisers_core::inference::unigram_sample::UnigramSampler;
+use tokenisers_core::pretokenizer::Pretokenizer;
 use tokenisers_core::scoring::{
     BpeScorer, LengthPenalizedScorer, MdlScorer, PairScorer, WordPieceScorer, WpBpeBaseScorer,
     WpBpeFtScorer, WpBpeNpmiScorer, WpBpePigScorer, WpBpePpigScorer, WpBpeScpScorer,
 };
 use tokenisers_core::vocab::{TokenId, Vocabulary, BASE_VOCAB_SIZE};
+use tokenisers_core::TokeniserError;
 
 /// The text between the special tokens of `doc`, cut where `BottomUpModel::encode` cuts it
 /// (leftmost-longest match), so training never sees a special's bytes, as encode never does.
@@ -46,10 +49,11 @@ fn split_specials<'a>(doc: &'a str, specials: &[String]) -> Vec<&'a str> {
     pieces
 }
 
-/// Segment counts of `corpus` with `specials` cut out.
+/// `pretokenizer` segment counts of `corpus` with `specials` cut out.
 fn extract_word_counts(
     corpus: &[String],
     specials: &[String],
+    pretokenizer: Pretokenizer,
 ) -> Result<Vec<(Vec<u8>, u64)>, &'static str> {
     if corpus.is_empty() {
         return Err("Corpus cannot be empty");
@@ -57,7 +61,7 @@ fn extract_word_counts(
     let mut word_counts_map: ahash::AHashMap<Vec<u8>, u64> = ahash::AHashMap::default();
     for doc in corpus {
         for piece in split_specials(doc, specials) {
-            for seg in SuperBpeTrainer::segment_text(piece) {
+            for seg in pretokenizer.segment_text(piece) {
                 if !seg.is_empty() {
                     *word_counts_map.entry(seg).or_insert(0) += 1;
                 }
@@ -92,6 +96,68 @@ fn merge_target(vocab_size: usize, specials: &[String]) -> PyResult<usize> {
 
 fn value_err(e: impl ToString) -> PyErr {
     PyValueError::new_err(e.to_string())
+}
+
+/// `f` without the GIL. An `Hf` pre-tokenizer that fails on some text unwinds with a
+/// `TokeniserError` (`Pretokenizer::segment_bytes`): that is a `ValueError`. Other panics stay
+/// panics.
+fn allow_threads<T: Send>(py: Python<'_>, f: impl FnOnce() -> T + Send) -> PyResult<T> {
+    py.allow_threads(|| std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)))
+        .map_err(|panic| match panic.downcast::<TokeniserError>() {
+            Ok(e) => value_err(e),
+            Err(panic) => std::panic::resume_unwind(panic),
+        })
+}
+
+/// `pretokenizer=`: a mode name ("whitespace", also for None, "space_prefix", "gpt2") or
+/// `{"hf": config}`, a Hugging Face `pre_tokenizer` config as a dict or a JSON string.
+fn parse_pretokenizer(spec: Option<&Bound<'_, PyAny>>) -> PyResult<Pretokenizer> {
+    let Some(spec) = spec else { return Ok(Pretokenizer::Whitespace) };
+    if let Ok(name) = spec.extract::<String>() {
+        return Pretokenizer::from_name(&name).map_err(value_err);
+    }
+    let config = spec
+        .downcast::<PyDict>()
+        .ok()
+        .filter(|d| d.len() == 1)
+        .and_then(|d| d.get_item("hf").ok().flatten())
+        .ok_or_else(|| {
+            value_err(format!(
+                "pretokenizer must be \"whitespace\", \"space_prefix\", \"gpt2\" or {{\"hf\": <pre_tokenizer \
+                 config>}}, got {spec}"
+            ))
+        })?;
+    let json: String = match config.extract() {
+        Ok(json) => json,
+        Err(_) => spec.py().import("json")?.call_method1("dumps", (config,))?.extract()?,
+    };
+    let config = serde_json::from_str(&json).map_err(|e| value_err(format!("pretokenizer {{\"hf\": ...}}: {e}")))?;
+    Pretokenizer::hf(config).map_err(value_err)
+}
+
+/// `parse_pretokenizer` for training. It also rejects an `Hf` config that the model's
+/// tokenizer.json would load back as another pretokenizer (the same split under another name, or
+/// whole text), so `from_pretrained` always restores the `pretokenizer` a model was trained with.
+fn parse_train_pretokenizer(spec: Option<&Bound<'_, PyAny>>) -> PyResult<Pretokenizer> {
+    let pretokenizer = parse_pretokenizer(spec)?;
+    let Pretokenizer::Hf(hf) = pretokenizer else { return Ok(pretokenizer) };
+    let reloaded = match HfTokenizerJson::reloaded_pretokenizer(pretokenizer).map_err(value_err)? {
+        Some(p) if p == pretokenizer => return Ok(pretokenizer),
+        Some(Pretokenizer::Hf(h)) => format!("as {{\"hf\": {}}}, the same split; pass that", h.config),
+        Some(p) => format!("as {:?}, the same split; pass that", p.name()),
+        None => "as whole-text encoding (no pretokenizer): it splits nothing".into(),
+    };
+    Err(value_err(format!("pretokenizer {{\"hf\": {}}}: its tokenizer.json export loads back {reloaded}", hf.config)))
+}
+
+/// The `pretokenizer` property: the mode name, or `{"hf": config}`.
+fn pretokenizer_py(py: Python<'_>, pretokenizer: Pretokenizer) -> PyResult<Bound<'_, PyAny>> {
+    let Pretokenizer::Hf(hf) = pretokenizer else {
+        return Ok(pyo3::types::PyString::new(py, pretokenizer.name()).into_any());
+    };
+    let spec = PyDict::new(py);
+    spec.set_item("hf", py.import("json")?.call_method1("loads", (hf.config.to_string(),))?)?;
+    Ok(spec.into_any())
 }
 
 /// The string a token is known by in `id_to_token` (HF `id_to_token` on the export): a special
@@ -214,6 +280,12 @@ impl PyBpeModel {
         self.model.vocab.len()
     }
 
+    /// The segmentation encoding splits text into ("whitespace", "space_prefix", "gpt2" or
+    /// `{"hf": config}`), or None for a model that encodes whole text (SuperBPE after stage 2).
+    pub fn pretokenizer<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        self.model.pretokenize.then(|| pretokenizer_py(py, self.model.pretokenizer)).transpose()
+    }
+
     /// The keys of the exported tokenizer.json (HF `get_vocab(with_added_tokens=True)`): each
     /// id's `token_string`, and also the byte-level key of a special token where the export
     /// keeps it (a one-byte special such as "\n" is both "\n" and "Ċ"), so a special may have two
@@ -283,13 +355,13 @@ impl PyBpeModel {
                 "dropout probability must be between 0.0 and 1.0",
             ));
         }
-        Ok(py.allow_threads(|| {
+        allow_threads(py, || {
             if split_special_tokens {
                 self.model.encode_ordinary(bytes, p, seed)
             } else {
                 self.model.encode_with_dropout(bytes, p, seed)
             }
-        }))
+        })
     }
 
     pub fn export_hf_json(&self, path: &str) -> PyResult<()> {
@@ -307,7 +379,7 @@ impl PyBpeModel {
     #[staticmethod]
     pub fn from_hf_json(path: &str) -> PyResult<Self> {
         let json = read_hf_json(path)?;
-        let pretokenize = json.pretokenize().map_err(value_err)?;
+        let pretokenizer = json.pretokenizer().map_err(value_err)?;
         let HfModelConfig::BPE { vocab, merges, .. } = json.model else {
             return Err(PyValueError::new_err("tokenizer.json is not a BPE model"));
         };
@@ -385,7 +457,8 @@ impl PyBpeModel {
         }
 
         let mut model = BottomUpModel::new(model_vocab, merges_vec);
-        model.pretokenize = pretokenize;
+        model.pretokenize = pretokenizer.is_some();
+        model.pretokenizer = pretokenizer.unwrap_or_default();
         Ok(Self { model })
     }
 }
@@ -400,6 +473,12 @@ pub struct PyUnigramModel {
 impl PyUnigramModel {
     pub fn vocab_size(&self) -> usize {
         self.model.vocab.len()
+    }
+
+    /// The segmentation encoding and sampling split text into ("whitespace", "space_prefix",
+    /// "gpt2" or `{"hf": config}`).
+    pub fn pretokenizer<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        pretokenizer_py(py, self.model.pretokenizer).map(Some)
     }
 
     /// `{token string: id}` with exactly `vocab_size()` entries (see `token_string`).
@@ -473,15 +552,15 @@ impl PyUnigramModel {
             temperature.is_some() || nbest_size.is_some_and(|k| !(0..=1).contains(&k))
         });
         let model = &self.model;
-        Ok(py.allow_threads(|| {
-            let sampler = UnigramSampler::new(&model.trie);
+        allow_threads(py, || {
+            let sampler = UnigramSampler { trie: &model.trie, pretokenizer: model.pretokenizer };
             match nbest_size {
                 _ if !sample || temp == 0.0 => model.encode(bytes),
                 Some(0 | 1) => model.encode(bytes),
                 Some(k) if k > 1 => sampler.sample_kbest(bytes, k as usize, temp, seed),
                 _ => sampler.sample_ffbs(bytes, temp, seed),
             }
-        }))
+        })
     }
 
     pub fn export_hf_json(&self, path: &str) -> PyResult<()> {
@@ -520,12 +599,12 @@ impl PyUnigramModel {
     #[staticmethod]
     pub fn from_hf_json(path: &str) -> PyResult<Self> {
         let json = read_hf_json(path)?;
-        // UnigramModel::encode is segment-wise: only the whitespace-run split encodes the same.
-        if !json.pretokenize().map_err(value_err)? {
+        // UnigramModel::encode is segment-wise: only a Pretokenizer split encodes the same.
+        let Some(pretokenizer) = json.pretokenizer().map_err(value_err)? else {
             return Err(value_err(
                 "Unigram tokenizer.json must split whitespace runs before byte level",
             ));
-        }
+        };
         let HfModelConfig::Unigram { vocab, .. } = json.model else {
             return Err(PyValueError::new_err("tokenizer.json is not a Unigram model"));
         };
@@ -556,9 +635,9 @@ impl PyUnigramModel {
             }
             log_probs.push(score);
         }
-        Ok(Self {
-            model: UnigramModel::new(model_vocab, log_probs),
-        })
+        let mut model = UnigramModel::new(model_vocab, log_probs);
+        model.pretokenizer = pretokenizer;
+        Ok(Self { model })
     }
 }
 
@@ -672,6 +751,15 @@ pub fn printable_to_bytes(text: &str) -> PyResult<Vec<u8>> {
     byte_vocab().printable_to_bytes(text).map_err(value_err)
 }
 
+/// The segments `pretokenizer` ("whitespace", "space_prefix", "gpt2" or `{"hf": config}`) splits
+/// `data` into, as training and encoding see them; concatenated they give back `data`.
+#[pyfunction]
+pub fn pretokenize<'py>(py: Python<'py>, data: &[u8], pretokenizer: &Bound<'py, PyAny>) -> PyResult<Vec<Bound<'py, PyBytes>>> {
+    let pretokenizer = parse_pretokenizer(Some(pretokenizer))?;
+    let segments = allow_threads(py, || pretokenizer.segment_bytes(data))?;
+    Ok(segments.into_iter().map(|seg| PyBytes::new(py, seg)).collect())
+}
+
 fn byte_vocab() -> &'static Vocabulary {
     static VOCAB: std::sync::OnceLock<Vocabulary> = std::sync::OnceLock::new();
     VOCAB.get_or_init(Vocabulary::new_byte_level)
@@ -691,10 +779,12 @@ fn check_param(name: &str, value: Option<f64>, allow_negative: bool) -> PyResult
 /// Trains a byte-level BPE model. `vocab_size` counts every token, special tokens included; it
 /// is an upper bound (training stops early when no eligible pair is left). Special tokens are cut
 /// out of the corpus before training, as encode cuts them out of the text. `None` parameters take
-/// the scorer's default; a parameter the scorer does not use raises `ValueError`.
+/// the scorer's default; a parameter the scorer does not use raises `ValueError`. `pretokenizer`
+/// ("whitespace", "space_prefix", "gpt2" or `{"hf": config}`, see `parse_pretokenizer`) is the
+/// segmentation of training and encoding.
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
-#[pyo3(signature = (corpus, vocab_size, scorer_type="frequency", min_frequency=None, alpha=None, beta=None, penalty=None, special_tokens=None))]
+#[pyo3(signature = (corpus, vocab_size, scorer_type="frequency", min_frequency=None, alpha=None, beta=None, penalty=None, special_tokens=None, pretokenizer=None))]
 pub fn train_bpe(
     py: Python<'_>,
     corpus: Vec<String>,
@@ -705,7 +795,9 @@ pub fn train_bpe(
     beta: Option<f64>,
     penalty: Option<f64>,
     special_tokens: Option<Vec<String>>,
+    pretokenizer: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyBpeModel> {
+    let pretokenizer = parse_train_pretokenizer(pretokenizer)?;
     check_param("alpha", alpha, false)?;
     check_param("beta", beta, true)?;
     check_param("penalty", penalty, false)?;
@@ -748,10 +840,9 @@ pub fn train_bpe(
         ));
     }
 
-    let model = py
-        .allow_threads(|| -> Result<BottomUpModel, String> {
+    let model = allow_threads(py, || -> Result<BottomUpModel, String> {
             let word_counts =
-                extract_word_counts(&corpus, &specials).map_err(|e| e.to_string())?;
+                extract_word_counts(&corpus, &specials, pretokenizer).map_err(|e| e.to_string())?;
             let scorer: Box<dyn PairScorer> = match scorer_norm.as_str() {
                 "frequency" | "bpe" => Box::new(BpeScorer::new()),
                 "wordpiece" | "pmi" => Box::new(WordPieceScorer::new(
@@ -785,6 +876,7 @@ pub fn train_bpe(
             };
             let mut model = BottomUpTrainer::new(scorer.as_ref(), target)
                 .with_min_frequency(min_freq)
+                .with_pretokenizer(pretokenizer)
                 .train(&word_counts)
                 .map_err(|e| e.to_string())?;
             for special in &specials {
@@ -794,7 +886,7 @@ pub fn train_bpe(
                     .map_err(|e| e.to_string())?;
             }
             Ok(model)
-        })
+        })?
         .map_err(PyValueError::new_err)?;
 
     Ok(PyBpeModel { model })
@@ -802,16 +894,19 @@ pub fn train_bpe(
 
 /// Trains a Unigram LM; `vocab_size` is an upper bound (the seed set may be smaller). Each round
 /// runs `num_iterations` EM steps, then keeps `shrinking_factor` of the vocabulary (SentencePiece
-/// semantics), never pruning below `vocab_size`.
+/// semantics), never pruning below `vocab_size`. `pretokenizer` ("whitespace", "space_prefix",
+/// "gpt2" or `{"hf": config}`) is the segmentation of training, encoding and sampling.
 #[pyfunction]
-#[pyo3(signature = (corpus, vocab_size, num_iterations=10, shrinking_factor=0.75))]
+#[pyo3(signature = (corpus, vocab_size, num_iterations=10, shrinking_factor=0.75, pretokenizer=None))]
 pub fn train_unigram(
     py: Python<'_>,
     corpus: Vec<String>,
     vocab_size: usize,
     num_iterations: usize,
     shrinking_factor: f64,
+    pretokenizer: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyUnigramModel> {
+    let pretokenizer = parse_train_pretokenizer(pretokenizer)?;
     if vocab_size < BASE_VOCAB_SIZE {
         return Err(PyValueError::new_err(format!(
             "vocab_size must be at least {BASE_VOCAB_SIZE}"
@@ -834,12 +929,12 @@ pub fn train_unigram(
         em_sub_iterations: num_iterations,
     };
 
-    let model = py.allow_threads(|| -> Result<UnigramModel, String> {
-        let word_counts = extract_word_counts(&corpus, &[]).map_err(|e| e.to_string())?;
-        trainer
-            .train(&word_counts)
-            .map_err(|e| e.to_string())
-    }).map_err(PyValueError::new_err)?;
+    let model = allow_threads(py, || -> Result<UnigramModel, String> {
+        let word_counts = extract_word_counts(&corpus, &[], pretokenizer).map_err(|e| e.to_string())?;
+        let mut model = trainer.train(&word_counts).map_err(|e| e.to_string())?;
+        model.pretokenizer = pretokenizer;
+        Ok(model)
+    })?.map_err(PyValueError::new_err)?;
 
     Ok(PyUnigramModel { model })
 }
@@ -883,9 +978,14 @@ pub fn train_super_bpe(
 
 /// Morpheme-guided BPE. `morpheme_lexicon` maps training words (whole whitespace-free segments)
 /// to their surface morphemes; it must come from training data or an unsupervised segmenter, never
-/// from evaluation gold. Inner-scorer parameters left as `None` take the scorer's defaults.
+/// from evaluation gold. Inner-scorer parameters left as `None` take the scorer's defaults. With
+/// `pretokenizer="space_prefix"` or `"gpt2"` (or an hf config) a word's segment may start with a
+/// space: " word" then gets the boundaries of "word" (the space joins the first morpheme) whenever
+/// " word" is one segment of that mode, unless the lexicon has its own " word" entry. A word the
+/// mode splits (in "gpt2": "don't", "e-mail", "abc123") is never a training segment, so its entry
+/// has no effect.
 #[pyfunction]
-#[pyo3(signature = (corpus, vocab_size, morpheme_lexicon, lambda_weight=1.0, scorer="frequency", min_frequency=1, alpha=None, beta=None, penalty=None, special_tokens=None))]
+#[pyo3(signature = (corpus, vocab_size, morpheme_lexicon, lambda_weight=1.0, scorer="frequency", min_frequency=1, alpha=None, beta=None, penalty=None, special_tokens=None, pretokenizer=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn train_morpheme_guided(
     py: Python<'_>,
@@ -899,7 +999,9 @@ pub fn train_morpheme_guided(
     beta: Option<f64>,
     penalty: Option<f64>,
     special_tokens: Option<Vec<String>>,
+    pretokenizer: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyBpeModel> {
+    let pretokenizer = parse_train_pretokenizer(pretokenizer)?;
     let specials = special_tokens.unwrap_or_default();
     let target = merge_target(vocab_size, &specials)?;
     if !lambda_weight.is_finite() || lambda_weight < 0.0 {
@@ -932,14 +1034,31 @@ pub fn train_morpheme_guided(
         }
     }
 
-    let mut lexicon = MorphemeLexicon::new();
-    let mut rejected = Vec::new();
-    for (word, morphemes) in &morpheme_lexicon {
-        let m_refs: Vec<&[u8]> = morphemes.iter().map(|m| m.as_bytes()).collect();
-        if !lexicon.insert_segmentation(word.as_bytes(), &m_refs) {
-            rejected.push(word.as_str());
+    // Segmenting " word" can fail in hf mode (see `allow_threads`).
+    let (lexicon, mut rejected) = allow_threads(py, || {
+        let mut lexicon = MorphemeLexicon::new();
+        let mut rejected = Vec::new();
+        for (word, morphemes) in &morpheme_lexicon {
+            let m_refs: Vec<&[u8]> = morphemes.iter().map(|m| m.as_bytes()).collect();
+            if !lexicon.insert_segmentation(word.as_bytes(), &m_refs) {
+                rejected.push(word.as_str());
+                continue;
+            }
+            let spaced_word = format!(" {word}");
+            // " word" is one segment in space_prefix (always) and gpt2 (if "word" is), never in
+            // whitespace mode. An explicit " word" key wins: the keys come in a random order.
+            if !morphemes.is_empty()
+                && !morpheme_lexicon.contains_key(&spaced_word)
+                && pretokenizer.segment_bytes(spaced_word.as_bytes()).len() == 1
+            {
+                let first = format!(" {}", morphemes[0]);
+                let parts: Vec<&[u8]> =
+                    std::iter::once(first.as_bytes()).chain(m_refs[1..].iter().copied()).collect();
+                lexicon.insert_segmentation(spaced_word.as_bytes(), &parts);
+            }
         }
-    }
+        (lexicon, rejected)
+    })?;
     if !rejected.is_empty() {
         rejected.sort_unstable();
         let msg = format!(
@@ -953,8 +1072,9 @@ pub fn train_morpheme_guided(
     }
 
     let min_freq = min_frequency.max(1);
-    let model = py.allow_threads(|| -> Result<BottomUpModel, String> {
-        let word_counts = extract_word_counts(&corpus, &specials).map_err(|e| e.to_string())?;
+    let model = allow_threads(py, || -> Result<BottomUpModel, String> {
+        let word_counts =
+            extract_word_counts(&corpus, &specials, pretokenizer).map_err(|e| e.to_string())?;
 
         macro_rules! train_with_inner {
             ($inner_scorer:expr) => {{
@@ -962,6 +1082,7 @@ pub fn train_morpheme_guided(
                     MorphemeGuidedScorer::new($inner_scorer, lexicon, lambda_weight, 1.0);
                 BottomUpTrainer::new(&morpheme_scorer, target)
                     .with_min_frequency(min_freq)
+                    .with_pretokenizer(pretokenizer)
                     .train(&word_counts)
                     .map_err(|e| e.to_string())?
             }};
@@ -991,7 +1112,7 @@ pub fn train_morpheme_guided(
                 .map_err(|e| e.to_string())?;
         }
         Ok(model)
-    }).map_err(PyValueError::new_err)?;
+    })?.map_err(PyValueError::new_err)?;
 
     // No <unused_N> padding: a strong prior (or a small corpus) can leave fewer mergeable pairs.
     if model.vocab.len() < vocab_size {
@@ -1018,5 +1139,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(train_morpheme_guided, m)?)?;
     m.add_function(wrap_pyfunction!(bytes_to_printable, m)?)?;
     m.add_function(wrap_pyfunction!(printable_to_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(pretokenize, m)?)?;
     Ok(())
 }

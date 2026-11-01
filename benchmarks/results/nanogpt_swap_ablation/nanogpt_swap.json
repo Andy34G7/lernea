@@ -1,0 +1,1322 @@
+{
+  "meta": {
+    "benchmark": "nanogpt_swap",
+    "created_utc": "2026-11-01T16:28:54Z",
+    "command": [
+      "python",
+      "-m",
+      "tokenisers.benchmarks.nanogpt_swap",
+      "--job-dir",
+      "/home/andey/.cache/tokenisers/nanogpt-swap-job-ablation",
+      "--gpu",
+      "A100",
+      "--steps",
+      "600",
+      "--eval-every",
+      "100",
+      "--timeout",
+      "43200",
+      "--output-dir",
+      "benchmarks/results/nanogpt_swap_ablation"
+    ],
+    "tokenisers_version": "0.1.0",
+    "git_commit": "950506beba6438bd4ca3cb32d623944e81fd8cd6",
+    "git_dirty": false,
+    "native_extension": {
+      "file": "_core.cpython-313-x86_64-linux-gnu.so",
+      "sha256": "e68ceb542de74919ae83d05f3a9671c7b42da4b099f0e268d87c9242ae0d0f81",
+      "built_utc": "2026-11-01T08:01:15Z",
+      "stale_sources": []
+    },
+    "mode": "full",
+    "requested_gpu": "A100",
+    "backend": {
+      "gpu": "NVIDIA A100-SXM4-40GB, 40960 MiB, 580.82.07",
+      "torch": "2.11.0+cu130",
+      "python": "3.13.16",
+      "platform": "Linux-6.6.159+-x86_64-with-glibc2.39",
+      "cpu_count": 12,
+      "kind": "colab",
+      "requested_gpu": "A100",
+      "session": "tokenisers-swap_job-7ff01406"
+    },
+    "timings": {
+      "setup": {
+        "pip_seconds": 4.7,
+        "build": {
+          "wheel": "tokenisers-0.1.0-cp313-cp313-manylinux_2_34_x86_64.whl",
+          "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+          "seconds": 42.8
+        }
+      },
+      "download": {
+        "fineweb_val_000000.bin": 3.4,
+        "fineweb_train_000001.bin": 2.7,
+        "fineweb_train_000002.bin": 4.2,
+        "fineweb_train_000003.bin": 2.6,
+        "fineweb_train_000004.bin": 3.5
+      },
+      "source_seconds": 24.5,
+      "decode": {
+        "val_decode": 4.7,
+        "train_decode": 41.0
+      }
+    },
+    "data": {
+      "val_docs": 14982,
+      "val_bytes": 46513886,
+      "train_docs_decoded": 579580,
+      "train_bytes_decoded": 1780808610,
+      "train_docs_dropped_as_val": 0,
+      "shards": [
+        "fineweb_val_000000.bin",
+        "fineweb_train_000001.bin",
+        "fineweb_train_000002.bin",
+        "fineweb_train_000003.bin",
+        "fineweb_train_000004.bin"
+      ]
+    },
+    "recipe": {
+      "upstream": "karpathy/llm.c@f1e2ace651495b74ae22d45d1723443fd00ecd3a",
+      "trainer": "vendor/llmc/train_gpt2_swap.py",
+      "args": {
+        "val_loss_every": "100",
+        "sample_every": "0",
+        "write_tensors": "0",
+        "model": "d12",
+        "sequence_length": "1024",
+        "total_batch_size": "524288",
+        "dtype": "bfloat16",
+        "compile": "1",
+        "tensorcores": "1",
+        "flash": "1",
+        "num_iterations": "600",
+        "weight_decay": "0.1",
+        "zero_stage": "1",
+        "learning_rate": "0.0006",
+        "warmup_iters": "22",
+        "learning_rate_decay_frac": "0.0",
+        "overfit_single_batch": "0"
+      },
+      "mbs_requested": 32
+    },
+    "target": {
+      "nats_per_gpt2_token": 3.28,
+      "bpb": null
+    },
+    "prepared": {
+      "command": [
+        "python",
+        "-m",
+        "tokenisers.benchmarks.nanogpt_swap",
+        "--job-dir",
+        "/home/andey/.cache/tokenisers/nanogpt-swap-job-ablation",
+        "--prepare-only",
+        "--from-pool",
+        "/home/andey/.cache/tokenisers/nanogpt-swap-pool-g2",
+        "/home/andey/.cache/tokenisers/nanogpt-swap-pool-sp300",
+        "--tokenizers",
+        "mdl_bits_g2",
+        "unigram_lm_g2",
+        "wp_bpe_npmi_g2",
+        "wp_bpe_pig_g2",
+        "wp_bpe_ppig_g2",
+        "mdl_bits_sp300",
+        "unigram_lm_sp300",
+        "wp_bpe_npmi_sp300",
+        "wp_bpe_pig_sp300",
+        "wp_bpe_ppig_sp300"
+      ],
+      "git_commit": "950506beba6438bd4ca3cb32d623944e81fd8cd6",
+      "git_dirty": false,
+      "native_extension": {
+        "file": "_core.cpython-313-x86_64-linux-gnu.so",
+        "sha256": "e68ceb542de74919ae83d05f3a9671c7b42da4b099f0e268d87c9242ae0d0f81",
+        "built_utc": "2026-11-01T08:01:15Z",
+        "stale_sources": []
+      },
+      "created_utc": "2026-11-01T10:54:47Z",
+      "val_docs": 14982,
+      "val_bytes": 46513886,
+      "train_docs_dropped_as_val": 0,
+      "variants": {
+        "mdl_bits_g2": {
+          "class": "BpeTokenizer",
+          "scorer": "mdl",
+          "min_frequency": 2,
+          "penalty": 24.0,
+          "pretokenizer": "gpt2",
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 7.07,
+          "warnings": []
+        },
+        "unigram_lm_g2": {
+          "class": "UnigramTokenizer",
+          "num_iterations": 10,
+          "shrinking_factor": 0.75,
+          "pretokenizer": "gpt2",
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 8.42,
+          "warnings": []
+        },
+        "wp_bpe_npmi_g2": {
+          "class": "BpeTokenizer",
+          "scorer": "wp-bpe-npmi",
+          "min_frequency": 2,
+          "alpha": 0.5,
+          "pretokenizer": "gpt2",
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 7.89,
+          "warnings": []
+        },
+        "wp_bpe_pig_g2": {
+          "class": "BpeTokenizer",
+          "scorer": "wp-bpe-pig",
+          "min_frequency": 1,
+          "pretokenizer": "gpt2",
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 8.06,
+          "warnings": []
+        },
+        "wp_bpe_ppig_g2": {
+          "class": "BpeTokenizer",
+          "scorer": "wp-bpe-ppig",
+          "min_frequency": 2,
+          "penalty": 0.35,
+          "pretokenizer": "gpt2",
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 7.35,
+          "warnings": []
+        },
+        "mdl_bits_sp300": {
+          "class": "BpeTokenizer",
+          "scorer": "mdl",
+          "min_frequency": 2,
+          "penalty": 24.0,
+          "pretokenizer": "space_prefix",
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 50.54,
+          "warnings": [],
+          "peak_rss_bytes": 3239600128,
+          "train_docs": 97402,
+          "train_bytes": 299998439
+        },
+        "unigram_lm_sp300": {
+          "class": "UnigramTokenizer",
+          "num_iterations": 10,
+          "shrinking_factor": 0.75,
+          "pretokenizer": "space_prefix",
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 75.34,
+          "warnings": [],
+          "peak_rss_bytes": 2655920128,
+          "train_docs": 97402,
+          "train_bytes": 299998439
+        },
+        "wp_bpe_npmi_sp300": {
+          "class": "BpeTokenizer",
+          "scorer": "wp-bpe-npmi",
+          "min_frequency": 2,
+          "alpha": 0.5,
+          "pretokenizer": "space_prefix",
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 49.49,
+          "warnings": [],
+          "peak_rss_bytes": 3116277760,
+          "train_docs": 97402,
+          "train_bytes": 299998439
+        },
+        "wp_bpe_pig_sp300": {
+          "class": "BpeTokenizer",
+          "scorer": "wp-bpe-pig",
+          "min_frequency": 1,
+          "pretokenizer": "space_prefix",
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 61.54,
+          "warnings": [],
+          "peak_rss_bytes": 3217928192,
+          "train_docs": 97402,
+          "train_bytes": 299998439
+        },
+        "wp_bpe_ppig_sp300": {
+          "class": "BpeTokenizer",
+          "scorer": "wp-bpe-ppig",
+          "min_frequency": 2,
+          "penalty": 0.35,
+          "pretokenizer": "space_prefix",
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 57.54,
+          "warnings": [],
+          "peak_rss_bytes": 3379777536,
+          "train_docs": 97402,
+          "train_bytes": 299998439
+        }
+      },
+      "duplicates": {},
+      "morphology": null,
+      "tokenmonster_why": "every prebuilt englishcode vocabulary NFD-normalizes its input (lossy on 1,053 of 14,982 val documents); capcode also folds U+0130 to I (2 documents). Used: the nocapcode vocabulary of the same size and mode, normalization flag cleared (same tokens and ids), lossless on all val documents",
+      "pools": {
+        "/home/andey/.cache/tokenisers/nanogpt-swap-pool-g2": [
+          "python",
+          "-m",
+          "tokenisers.benchmarks.nanogpt_swap",
+          "--job-dir",
+          "/home/andey/.cache/tokenisers/nanogpt-swap-pool-g2",
+          "--prepare-only",
+          "--tokenizers",
+          "bpe_frequency_g2",
+          "wp_bpe_pig_g2",
+          "wp_bpe_ppig_g2",
+          "wp_bpe_npmi_g2",
+          "unigram_lm_g2",
+          "length_penalized_g2",
+          "morpheme_bpe_g2",
+          "mdl_bits_g2"
+        ],
+        "/home/andey/.cache/tokenisers/nanogpt-swap-pool-sp300": [
+          "python",
+          "-m",
+          "tokenisers.benchmarks.nanogpt_swap",
+          "--job-dir",
+          "/home/andey/.cache/tokenisers/nanogpt-swap-pool-sp300",
+          "--variants",
+          "bpe_frequency",
+          "wp_bpe_pig",
+          "wp_bpe_ppig",
+          "wp_bpe_npmi",
+          "unigram_lm",
+          "length_penalized",
+          "morpheme_bpe",
+          "mdl_bits"
+        ]
+      }
+    },
+    "tokenizer_text": {
+      "docs": 16157,
+      "bytes": 49999797,
+      "docs_sha256": "5f91f00fe65030c9358beb8c57587a897aab3bae7fec66969bc1bb3bd08a588b",
+      "shard": "fineweb_train_000001.bin"
+    },
+    "source": {
+      "repo": "kjj0/fineweb10B-gpt2",
+      "val_shard": "fineweb_val_000000.bin",
+      "val_tokens": 10485760,
+      "train_shards": [
+        "fineweb_train_000001.bin",
+        "fineweb_train_000002.bin",
+        "fineweb_train_000003.bin",
+        "fineweb_train_000004.bin",
+        "fineweb_train_000005.bin",
+        "fineweb_train_000006.bin",
+        "fineweb_train_000007.bin",
+        "fineweb_train_000008.bin",
+        "fineweb_train_000009.bin",
+        "fineweb_train_000010.bin",
+        "fineweb_train_000011.bin",
+        "fineweb_train_000012.bin",
+        "fineweb_train_000013.bin",
+        "fineweb_train_000014.bin",
+        "fineweb_train_000015.bin",
+        "fineweb_train_000016.bin",
+        "fineweb_train_000017.bin",
+        "fineweb_train_000018.bin",
+        "fineweb_train_000019.bin",
+        "fineweb_train_000020.bin",
+        "fineweb_train_000021.bin",
+        "fineweb_train_000022.bin",
+        "fineweb_train_000023.bin",
+        "fineweb_train_000024.bin",
+        "fineweb_train_000025.bin",
+        "fineweb_train_000026.bin",
+        "fineweb_train_000027.bin",
+        "fineweb_train_000028.bin",
+        "fineweb_train_000029.bin",
+        "fineweb_train_000030.bin",
+        "fineweb_train_000031.bin",
+        "fineweb_train_000032.bin",
+        "fineweb_train_000033.bin",
+        "fineweb_train_000034.bin",
+        "fineweb_train_000035.bin",
+        "fineweb_train_000036.bin",
+        "fineweb_train_000037.bin",
+        "fineweb_train_000038.bin",
+        "fineweb_train_000039.bin",
+        "fineweb_train_000040.bin",
+        "fineweb_train_000041.bin",
+        "fineweb_train_000042.bin",
+        "fineweb_train_000043.bin",
+        "fineweb_train_000044.bin",
+        "fineweb_train_000045.bin",
+        "fineweb_train_000046.bin",
+        "fineweb_train_000047.bin",
+        "fineweb_train_000048.bin",
+        "fineweb_train_000049.bin",
+        "fineweb_train_000050.bin",
+        "fineweb_train_000051.bin",
+        "fineweb_train_000052.bin",
+        "fineweb_train_000053.bin",
+        "fineweb_train_000054.bin",
+        "fineweb_train_000055.bin",
+        "fineweb_train_000056.bin",
+        "fineweb_train_000057.bin",
+        "fineweb_train_000058.bin",
+        "fineweb_train_000059.bin",
+        "fineweb_train_000060.bin",
+        "fineweb_train_000061.bin",
+        "fineweb_train_000062.bin",
+        "fineweb_train_000063.bin",
+        "fineweb_train_000064.bin",
+        "fineweb_train_000065.bin",
+        "fineweb_train_000066.bin",
+        "fineweb_train_000067.bin",
+        "fineweb_train_000068.bin",
+        "fineweb_train_000069.bin",
+        "fineweb_train_000070.bin",
+        "fineweb_train_000071.bin",
+        "fineweb_train_000072.bin",
+        "fineweb_train_000073.bin",
+        "fineweb_train_000074.bin",
+        "fineweb_train_000075.bin",
+        "fineweb_train_000076.bin",
+        "fineweb_train_000077.bin",
+        "fineweb_train_000078.bin",
+        "fineweb_train_000079.bin",
+        "fineweb_train_000080.bin",
+        "fineweb_train_000081.bin",
+        "fineweb_train_000082.bin",
+        "fineweb_train_000083.bin",
+        "fineweb_train_000084.bin",
+        "fineweb_train_000085.bin",
+        "fineweb_train_000086.bin",
+        "fineweb_train_000087.bin",
+        "fineweb_train_000088.bin",
+        "fineweb_train_000089.bin",
+        "fineweb_train_000090.bin",
+        "fineweb_train_000091.bin",
+        "fineweb_train_000092.bin",
+        "fineweb_train_000093.bin",
+        "fineweb_train_000094.bin",
+        "fineweb_train_000095.bin",
+        "fineweb_train_000096.bin",
+        "fineweb_train_000097.bin",
+        "fineweb_train_000098.bin",
+        "fineweb_train_000099.bin",
+        "fineweb_train_000100.bin",
+        "fineweb_train_000101.bin",
+        "fineweb_train_000102.bin",
+        "fineweb_train_000103.bin"
+      ],
+      "tokenizer": {
+        "kind": "tiktoken",
+        "encoding": "gpt2"
+      }
+    }
+  },
+  "models": {
+    "mdl_bits_g2": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 4.454349983064159,
+      "val_targets": 10442351,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 30.94,
+      "spec": {
+        "name": "mdl_bits_g2",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/mdl_bits_g2",
+        "pretokenizer": "gpt2",
+        "ids_sha256": "82d35570a992f6f2767b4ad4bbb12bd769ceeddba4579d48e8d5b0618c45b470",
+        "ids_docs": 200,
+        "tokenizer_text": {
+          "docs": 16157,
+          "bytes": 49999797,
+          "docs_sha256": "5f91f00fe65030c9358beb8c57587a897aab3bae7fec66969bc1bb3bd08a588b",
+          "shard": "fineweb_train_000001.bin"
+        }
+      },
+      "curve": [
+        [
+          0,
+          3.5678689047892793,
+          11.015867071831455
+        ],
+        [
+          100,
+          2.0934940155604633,
+          6.463704919239668
+        ],
+        [
+          200,
+          1.9519600707218807,
+          6.026716015190842
+        ],
+        [
+          300,
+          1.8317485665940159,
+          5.655560576099481
+        ],
+        [
+          400,
+          1.7455558892721779,
+          5.389438949638348
+        ],
+        [
+          500,
+          1.700920757889179,
+          5.251627082899402
+        ],
+        [
+          600,
+          1.690952121417202,
+          5.220848717103701
+        ]
+      ],
+      "final_bpb": 1.690952121417202,
+      "final_nats_per_token": 5.220848717103701,
+      "reached_target_step": null,
+      "train_bytes_per_token": 4.474349116205103,
+      "train_tokens": 317961442,
+      "train_docs": 463125,
+      "params": 124475904,
+      "mbs": 32,
+      "grad_accum_steps": 16,
+      "ms_per_step": 2654.7720432281494,
+      "tokens_per_s": 197488.89601928924,
+      "eval_seconds": [
+        65.3,
+        39.4,
+        39.4,
+        39.3,
+        39.3,
+        39.3,
+        39.4
+      ],
+      "eval_targets": 10442351,
+      "peak_memory_bytes": 18502883328,
+      "trainer_seconds": 2018.9,
+      "wall_seconds": 2136.3,
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "torch": "2.11.0+cu130"
+    },
+    "unigram_lm_g2": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 4.421443473559297,
+      "val_targets": 10520068,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 21.86,
+      "spec": {
+        "name": "unigram_lm_g2",
+        "kind": "tokenisers",
+        "class": "UnigramTokenizer",
+        "path": "tokenizers/unigram_lm_g2",
+        "pretokenizer": "gpt2",
+        "ids_sha256": "6834531e3b50d098d75499faf9c0f98d49b0b8af6b42bcd93e26fc9819ae1a37",
+        "ids_docs": 200,
+        "tokenizer_text": {
+          "docs": 16157,
+          "bytes": 49999797,
+          "docs_sha256": "5f91f00fe65030c9358beb8c57587a897aab3bae7fec66969bc1bb3bd08a588b",
+          "shard": "fineweb_train_000001.bin"
+        }
+      },
+      "curve": [
+        [
+          0,
+          3.5924388642092193,
+          11.00978718311205
+        ],
+        [
+          100,
+          2.1056993804136925,
+          6.453360217465761
+        ],
+        [
+          200,
+          1.9466487501887593,
+          5.965915989099796
+        ],
+        [
+          300,
+          1.8250015046256656,
+          5.59310232805055
+        ],
+        [
+          400,
+          1.7368209061057625,
+          5.32285427092814
+        ],
+        [
+          500,
+          1.6914672050699955,
+          5.1838582809490035
+        ],
+        [
+          600,
+          1.681748661875856,
+          5.154073753962792
+        ]
+      ],
+      "final_bpb": 1.681748661875856,
+      "final_nats_per_token": 5.154073753962792,
+      "reached_target_step": null,
+      "train_bytes_per_token": 4.441139881457837,
+      "train_tokens": 318129677,
+      "train_docs": 460000,
+      "params": 124475904,
+      "mbs": 32,
+      "grad_accum_steps": 16,
+      "ms_per_step": 2657.38046169281,
+      "tokens_per_s": 197295.0458384935,
+      "eval_seconds": [
+        49.1,
+        39.7,
+        39.7,
+        39.7,
+        39.7,
+        39.7,
+        39.7
+      ],
+      "eval_targets": 10520068,
+      "peak_memory_bytes": 18502883328,
+      "trainer_seconds": 1914.8,
+      "wall_seconds": 2010.2,
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "torch": "2.11.0+cu130"
+    },
+    "wp_bpe_npmi_g2": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 4.429038889349647,
+      "val_targets": 10502027,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 32.12,
+      "spec": {
+        "name": "wp_bpe_npmi_g2",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/wp_bpe_npmi_g2",
+        "pretokenizer": "gpt2",
+        "ids_sha256": "f4b6d8550b65e36edc627cb7daf65d469c06f7b32330275fe330171261e52f57",
+        "ids_docs": 200,
+        "tokenizer_text": {
+          "docs": 16157,
+          "bytes": 49999797,
+          "docs_sha256": "5f91f00fe65030c9358beb8c57587a897aab3bae7fec66969bc1bb3bd08a588b",
+          "shard": "fineweb_train_000001.bin"
+        }
+      },
+      "curve": [
+        [
+          0,
+          3.5855425880365104,
+          11.007529042345494
+        ],
+        [
+          100,
+          2.0959341569996592,
+          6.434467179666572
+        ],
+        [
+          200,
+          1.9563731920225975,
+          6.0060183919465455
+        ],
+        [
+          300,
+          1.8450051959020033,
+          5.664121336874451
+        ],
+        [
+          400,
+          1.7630449898203073,
+          5.412505486104446
+        ],
+        [
+          500,
+          1.7189310737387262,
+          5.2770768304639315
+        ],
+        [
+          600,
+          1.7092896809456477,
+          5.247477987730177
+        ]
+      ],
+      "final_bpb": 1.7092896809456477,
+      "final_nats_per_token": 5.247477987730177,
+      "reached_target_step": null,
+      "train_bytes_per_token": 4.449792644460174,
+      "train_tokens": 318954102,
+      "train_docs": 462000,
+      "params": 124475904,
+      "mbs": 32,
+      "grad_accum_steps": 16,
+      "ms_per_step": 2655.202865600586,
+      "tokens_per_s": 197456.8522776169,
+      "eval_seconds": [
+        47.3,
+        39.6,
+        39.6,
+        39.6,
+        39.6,
+        39.6,
+        39.6
+      ],
+      "eval_targets": 10502027,
+      "peak_memory_bytes": 18502883328,
+      "trainer_seconds": 1896.0,
+      "wall_seconds": 1972.6,
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "torch": "2.11.0+cu130"
+    },
+    "wp_bpe_pig_g2": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 4.466684496061128,
+      "val_targets": 10413515,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 31.05,
+      "spec": {
+        "name": "wp_bpe_pig_g2",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/wp_bpe_pig_g2",
+        "pretokenizer": "gpt2",
+        "ids_sha256": "30b930ba5ce46f245ac24be89b15e1d70ab94a8e8e9f7d5b589134aa986ffad8",
+        "ids_docs": 200,
+        "tokenizer_text": {
+          "docs": 16157,
+          "bytes": 49999797,
+          "docs_sha256": "5f91f00fe65030c9358beb8c57587a897aab3bae7fec66969bc1bb3bd08a588b",
+          "shard": "fineweb_train_000001.bin"
+        }
+      },
+      "curve": [
+        [
+          0,
+          3.554046251079355,
+          11.003575141007316
+        ],
+        [
+          100,
+          2.1046742945644206,
+          6.516218448353859
+        ],
+        [
+          200,
+          1.9639040583724598,
+          6.080383976282718
+        ],
+        [
+          300,
+          1.8479234271637623,
+          5.721299850683964
+        ],
+        [
+          400,
+          1.7587907671844922,
+          5.445338917057427
+        ],
+        [
+          500,
+          1.7126823235581836,
+          5.3025839588396195
+        ],
+        [
+          600,
+          1.7028637112901788,
+          5.272184850263417
+        ]
+      ],
+      "final_bpb": 1.7028637112901788,
+      "final_nats_per_token": 5.272184850263417,
+      "reached_target_step": null,
+      "train_bytes_per_token": 4.487326294781973,
+      "train_tokens": 318959762,
+      "train_docs": 466000,
+      "params": 124475904,
+      "mbs": 32,
+      "grad_accum_steps": 16,
+      "ms_per_step": 2655.163884162903,
+      "tokens_per_s": 197459.75121429953,
+      "eval_seconds": [
+        46.1,
+        39.2,
+        39.2,
+        39.3,
+        39.2,
+        39.2,
+        39.2
+      ],
+      "eval_targets": 10413515,
+      "peak_memory_bytes": 18502883328,
+      "trainer_seconds": 1893.1,
+      "wall_seconds": 1971.1,
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "torch": "2.11.0+cu130"
+    },
+    "wp_bpe_ppig_g2": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 4.471832023141215,
+      "val_targets": 10401528,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 30.67,
+      "spec": {
+        "name": "wp_bpe_ppig_g2",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/wp_bpe_ppig_g2",
+        "pretokenizer": "gpt2",
+        "ids_sha256": "ade45fe327f61caa3cf35890bf871b2e41d28665a155f737115a5fea491d0d0d",
+        "ids_docs": 200,
+        "tokenizer_text": {
+          "docs": 16157,
+          "bytes": 49999797,
+          "docs_sha256": "5f91f00fe65030c9358beb8c57587a897aab3bae7fec66969bc1bb3bd08a588b",
+          "shard": "fineweb_train_000001.bin"
+        }
+      },
+      "curve": [
+        [
+          0,
+          3.5468107880967805,
+          10.99382864202597
+        ],
+        [
+          100,
+          2.097186145901545,
+          6.5005173650225565
+        ],
+        [
+          200,
+          1.9455752744385695,
+          6.0305785831946785
+        ],
+        [
+          300,
+          1.8320965871544201,
+          5.678835759272167
+        ],
+        [
+          400,
+          1.7493485547558383,
+          5.422346833584936
+        ],
+        [
+          500,
+          1.70438241648812,
+          5.282968093543884
+        ],
+        [
+          600,
+          1.6945814720595829,
+          5.2525887161215055
+        ]
+      ],
+      "final_bpb": 1.6945814720595829,
+      "final_nats_per_token": 5.2525887161215055,
+      "reached_target_step": null,
+      "train_bytes_per_token": 4.492200905391216,
+      "train_tokens": 318613650,
+      "train_docs": 466000,
+      "params": 124475904,
+      "mbs": 32,
+      "grad_accum_steps": 16,
+      "ms_per_step": 2654.421806335449,
+      "tokens_per_s": 197514.9536327098,
+      "eval_seconds": [
+        45.1,
+        39.2,
+        39.3,
+        39.2,
+        39.2,
+        39.2,
+        39.3
+      ],
+      "eval_targets": 10401528,
+      "peak_memory_bytes": 18502883328,
+      "trainer_seconds": 1889.4,
+      "wall_seconds": 1966.7,
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "torch": "2.11.0+cu130"
+    },
+    "mdl_bits_sp300": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 4.719074282432936,
+      "val_targets": 9856570,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 32.75,
+      "spec": {
+        "name": "mdl_bits_sp300",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/mdl_bits_sp300",
+        "pretokenizer": "space_prefix",
+        "ids_sha256": "ab4fc876a02f11099852bb59235dd99bca2db85e3af371fd4e2469a959a64971",
+        "ids_docs": 200,
+        "tokenizer_text": {
+          "docs": 97402,
+          "bytes": 299998439,
+          "docs_sha256": "07f0f9a4268692a976c018f30bd00a2c04779cce00e64e3f55e2f0b34afdc715",
+          "shards": [
+            "fineweb_train_000001.bin"
+          ],
+          "starts_with": {
+            "docs": 16157,
+            "docs_sha256": "5f91f00fe65030c9358beb8c57587a897aab3bae7fec66969bc1bb3bd08a588b"
+          },
+          "val_disjoint_sha256": true
+        }
+      },
+      "curve": [
+        [
+          0,
+          3.3598353966936205,
+          10.99006537374313
+        ],
+        [
+          100,
+          2.095955402726972,
+          6.855897440418576
+        ],
+        [
+          200,
+          1.9568940684327059,
+          6.401026003455353
+        ],
+        [
+          300,
+          1.8543890224019206,
+          6.06573066186645
+        ],
+        [
+          400,
+          1.7750990350972342,
+          5.80637207994922
+        ],
+        [
+          500,
+          1.732087077645892,
+          5.665679406520014
+        ],
+        [
+          600,
+          1.7225722513836343,
+          5.634556285802574
+        ]
+      ],
+      "final_bpb": 1.7225722513836343,
+      "final_nats_per_token": 5.634556285802574,
+      "reached_target_step": null,
+      "train_bytes_per_token": 4.738822900419517,
+      "train_tokens": 318728327,
+      "train_docs": 492000,
+      "params": 124475904,
+      "mbs": 32,
+      "grad_accum_steps": 16,
+      "ms_per_step": 2654.332160949707,
+      "tokens_per_s": 197521.6243517964,
+      "eval_seconds": [
+        43.2,
+        37.1,
+        37.1,
+        37.1,
+        37.1,
+        37.1,
+        37.1
+      ],
+      "eval_targets": 9856570,
+      "peak_memory_bytes": 18502883328,
+      "trainer_seconds": 1876.7,
+      "wall_seconds": 1953.2,
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "torch": "2.11.0+cu130"
+    },
+    "unigram_lm_sp300": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 4.704256445208183,
+      "val_targets": 9887617,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 25.39,
+      "spec": {
+        "name": "unigram_lm_sp300",
+        "kind": "tokenisers",
+        "class": "UnigramTokenizer",
+        "path": "tokenizers/unigram_lm_sp300",
+        "pretokenizer": "space_prefix",
+        "ids_sha256": "70cbe0dee0bfe3c921b2948b901bce37991c61a8fbc44e40bb7983627a21991d",
+        "ids_docs": 200,
+        "tokenizer_text": {
+          "docs": 97402,
+          "bytes": 299998439,
+          "docs_sha256": "07f0f9a4268692a976c018f30bd00a2c04779cce00e64e3f55e2f0b34afdc715",
+          "shards": [
+            "fineweb_train_000001.bin"
+          ],
+          "starts_with": {
+            "docs": 16157,
+            "docs_sha256": "5f91f00fe65030c9358beb8c57587a897aab3bae7fec66969bc1bb3bd08a588b"
+          },
+          "val_disjoint_sha256": true
+        }
+      },
+      "curve": [
+        [
+          0,
+          3.368404580440976,
+          10.983498597073087
+        ],
+        [
+          100,
+          2.1117228669810375,
+          6.885783638216319
+        ],
+        [
+          200,
+          1.9526947223969038,
+          6.367233873417489
+        ],
+        [
+          300,
+          1.8385461809548311,
+          5.995024919639494
+        ],
+        [
+          400,
+          1.7546978809679934,
+          5.721617238561044
+        ],
+        [
+          500,
+          1.7121151828040888,
+          5.582766042282953
+        ],
+        [
+          600,
+          1.7025955328012148,
+          5.551724918821025
+        ]
+      ],
+      "final_bpb": 1.7025955328012148,
+      "final_nats_per_token": 5.551724918821025,
+      "reached_target_step": null,
+      "train_bytes_per_token": 4.721363922716286,
+      "train_tokens": 318621748,
+      "train_docs": 490000,
+      "params": 124475904,
+      "mbs": 32,
+      "grad_accum_steps": 16,
+      "ms_per_step": 2655.012369155884,
+      "tokens_per_s": 197471.0197552445,
+      "eval_seconds": [
+        43.3,
+        37.3,
+        37.2,
+        37.2,
+        37.2,
+        37.2,
+        37.2
+      ],
+      "eval_targets": 9887617,
+      "peak_memory_bytes": 18502883328,
+      "trainer_seconds": 1875.0,
+      "wall_seconds": 1965.0,
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "torch": "2.11.0+cu130"
+    },
+    "wp_bpe_npmi_sp300": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 4.693031274407198,
+      "val_targets": 9911267,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 33.44,
+      "spec": {
+        "name": "wp_bpe_npmi_sp300",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/wp_bpe_npmi_sp300",
+        "pretokenizer": "space_prefix",
+        "ids_sha256": "d3230bd9d729f35ea6742ee3f835d41c14a9c11affcbefe56bc0fdae010726a3",
+        "ids_docs": 200,
+        "tokenizer_text": {
+          "docs": 97402,
+          "bytes": 299998439,
+          "docs_sha256": "07f0f9a4268692a976c018f30bd00a2c04779cce00e64e3f55e2f0b34afdc715",
+          "shards": [
+            "fineweb_train_000001.bin"
+          ],
+          "starts_with": {
+            "docs": 16157,
+            "docs_sha256": "5f91f00fe65030c9358beb8c57587a897aab3bae7fec66969bc1bb3bd08a588b"
+          },
+          "val_disjoint_sha256": true
+        }
+      },
+      "curve": [
+        [
+          0,
+          3.375161396147479,
+          10.979269727392845
+        ],
+        [
+          100,
+          2.0959142291592485,
+          6.817928077065072
+        ],
+        [
+          200,
+          1.9565955542424083,
+          6.36472980579991
+        ],
+        [
+          300,
+          1.8505391542248242,
+          6.019732430729658
+        ],
+        [
+          400,
+          1.771963000801502,
+          5.76412723698681
+        ],
+        [
+          500,
+          1.7298017634317502,
+          5.6269783594097245
+        ],
+        [
+          600,
+          1.720677882007517,
+          5.59729872535378
+        ]
+      ],
+      "final_bpb": 1.720677882007517,
+      "final_nats_per_token": 5.59729872535378,
+      "reached_target_step": null,
+      "train_bytes_per_token": 4.712794103429614,
+      "train_tokens": 317971003,
+      "train_docs": 488000,
+      "params": 124475904,
+      "mbs": 32,
+      "grad_accum_steps": 16,
+      "ms_per_step": 2653.7821292877197,
+      "tokens_per_s": 197562.56333699854,
+      "eval_seconds": [
+        43.2,
+        37.4,
+        37.4,
+        37.4,
+        37.4,
+        37.4,
+        37.3
+      ],
+      "eval_targets": 9911267,
+      "peak_memory_bytes": 18502883328,
+      "trainer_seconds": 1875.4,
+      "wall_seconds": 1950.2,
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "torch": "2.11.0+cu130"
+    },
+    "wp_bpe_pig_sp300": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 4.800403196052171,
+      "val_targets": 9689579,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 36.65,
+      "spec": {
+        "name": "wp_bpe_pig_sp300",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/wp_bpe_pig_sp300",
+        "pretokenizer": "space_prefix",
+        "ids_sha256": "bb6da49505a33938deb66c4b1b59726bfdb4ad2bca4d6d8bae4f9e1b4871df04",
+        "ids_docs": 200,
+        "tokenizer_text": {
+          "docs": 97402,
+          "bytes": 299998439,
+          "docs_sha256": "07f0f9a4268692a976c018f30bd00a2c04779cce00e64e3f55e2f0b34afdc715",
+          "shards": [
+            "fineweb_train_000001.bin"
+          ],
+          "starts_with": {
+            "docs": 16157,
+            "docs_sha256": "5f91f00fe65030c9358beb8c57587a897aab3bae7fec66969bc1bb3bd08a588b"
+          },
+          "val_disjoint_sha256": true
+        }
+      },
+      "curve": [
+        [
+          0,
+          3.289611221131167,
+          10.945806128200674
+        ],
+        [
+          100,
+          2.1154461121401065,
+          7.038905652254948
+        ],
+        [
+          200,
+          1.9814415687343614,
+          6.5930208185106824
+        ],
+        [
+          300,
+          1.8841664101924125,
+          6.269348823579917
+        ],
+        [
+          400,
+          1.8149268249764485,
+          6.038962001178951
+        ],
+        [
+          500,
+          1.7740867843813461,
+          5.903071424277247
+        ],
+        [
+          600,
+          1.764393928611153,
+          5.870819552260388
+        ]
+      ],
+      "final_bpb": 1.764393928611153,
+      "final_nats_per_token": 5.870819552260388,
+      "reached_target_step": null,
+      "train_bytes_per_token": 4.820525740873997,
+      "train_tokens": 318457796,
+      "train_docs": 500000,
+      "params": 124475904,
+      "mbs": 32,
+      "grad_accum_steps": 16,
+      "ms_per_step": 2657.914638519287,
+      "tokens_per_s": 197255.3942861305,
+      "eval_seconds": [
+        42.6,
+        36.5,
+        36.5,
+        36.6,
+        36.5,
+        36.5,
+        36.5
+      ],
+      "eval_targets": 9689579,
+      "peak_memory_bytes": 18502883328,
+      "trainer_seconds": 1875.9,
+      "wall_seconds": 1951.2,
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "torch": "2.11.0+cu130"
+    },
+    "wp_bpe_ppig_sp300": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 4.807345125417197,
+      "val_targets": 9675587,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 33.71,
+      "spec": {
+        "name": "wp_bpe_ppig_sp300",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/wp_bpe_ppig_sp300",
+        "pretokenizer": "space_prefix",
+        "ids_sha256": "5c01b9df793d665edccff69844ed3bccd0f2eb25c41042b6ed8b9a15d629b052",
+        "ids_docs": 200,
+        "tokenizer_text": {
+          "docs": 97402,
+          "bytes": 299998439,
+          "docs_sha256": "07f0f9a4268692a976c018f30bd00a2c04779cce00e64e3f55e2f0b34afdc715",
+          "shards": [
+            "fineweb_train_000001.bin"
+          ],
+          "starts_with": {
+            "docs": 16157,
+            "docs_sha256": "5f91f00fe65030c9358beb8c57587a897aab3bae7fec66969bc1bb3bd08a588b"
+          },
+          "val_disjoint_sha256": true
+        }
+      },
+      "curve": [
+        [
+          0,
+          3.28466958480945,
+          10.94516850034362
+        ],
+        [
+          100,
+          2.0942086775186466,
+          6.978317379723015
+        ],
+        [
+          200,
+          1.9454932600265427,
+          6.482768204677315
+        ],
+        [
+          300,
+          1.839631508506077,
+          6.130015917661445
+        ],
+        [
+          400,
+          1.7608471347149275,
+          5.867490806969614
+        ],
+        [
+          500,
+          1.718543234922058,
+          5.726525848547025
+        ],
+        [
+          600,
+          1.7089507366813415,
+          5.694561747783452
+        ]
+      ],
+      "final_bpb": 1.7089507366813415,
+      "final_nats_per_token": 5.694561747783452,
+      "reached_target_step": null,
+      "train_bytes_per_token": 4.82685559512456,
+      "train_tokens": 318040176,
+      "train_docs": 500000,
+      "params": 124475904,
+      "mbs": 32,
+      "grad_accum_steps": 16,
+      "ms_per_step": 2655.341863632202,
+      "tokens_per_s": 197446.51608920682,
+      "eval_seconds": [
+        42.6,
+        36.5,
+        36.5,
+        36.5,
+        36.5,
+        36.6,
+        36.6
+      ],
+      "eval_targets": 9675587,
+      "peak_memory_bytes": 18502883328,
+      "trainer_seconds": 1870.9,
+      "wall_seconds": 1947.3,
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "torch": "2.11.0+cu130"
+    }
+  }
+}

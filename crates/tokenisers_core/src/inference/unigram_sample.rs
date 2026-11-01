@@ -1,7 +1,7 @@
 use fastrand::Rng;
 
-use crate::curricula::super_bpe::SuperBpeTrainer;
 use crate::engine::unigram::{CompactTrie, logsumexp2};
+use crate::pretokenizer::Pretokenizer;
 use crate::vocab::TokenId;
 
 /// Upper bound on the k-best path entries (24 bytes each, so about 24 MB) that
@@ -23,14 +23,16 @@ pub struct LatticeEdge {
 /// `P(s)^(1/temperature) = prod_{t in s} p(t)^(1/temperature)`. `temperature = 1` samples the
 /// model's exact posterior; SentencePiece's smoothing parameter is `alpha = 1/temperature`
 /// (alpha = 0.1 <=> temperature = 10); `temperature -> 0` approaches Viterbi. No hidden scaling.
-/// Like `UnigramModel::encode`, the lattice never spans a `segment_bytes` boundary.
+/// Like `UnigramModel::encode`, the lattice never spans a `pretokenizer` segment boundary.
 pub struct UnigramSampler<'a> {
     pub trie: &'a CompactTrie,
+    /// The model's segmentation (`UnigramModel::pretokenizer`); `new` uses `Whitespace`.
+    pub pretokenizer: Pretokenizer,
 }
 
 impl<'a> UnigramSampler<'a> {
     pub fn new(trie: &'a CompactTrie) -> Self {
-        Self { trie }
+        Self { trie, pretokenizer: Pretokenizer::Whitespace }
     }
 
     /// Positions processed together: the lattice and the k-best rows are built one block at a
@@ -70,7 +72,7 @@ impl<'a> UnigramSampler<'a> {
     /// Forward-Filtering Backward-Sampling: an exact sample from `P(s)^(1/temperature)`
     /// (normalised over all segmentations). `seed = None` draws a fresh random seed.
     ///
-    /// The lattice never spans a `segment_bytes` boundary, so `P(s)` factorises over segments
+    /// The lattice never spans a `pretokenizer` segment boundary, so `P(s)` factorises over segments
     /// and sampling each segment on its own draws from exactly the same distribution. Memory
     /// grows with the longest segment, not the whole document: an 8-byte forward table per byte
     /// of it, plus one block of the lattice (see `block_len`), which is never built whole.
@@ -80,13 +82,13 @@ impl<'a> UnigramSampler<'a> {
             rng.seed(s);
         }
         let mut tokens = Vec::with_capacity(bytes.len());
-        for seg in SuperBpeTrainer::segment_bytes(bytes) {
+        for seg in self.pretokenizer.segment_bytes(bytes) {
             tokens.extend(self.sample_ffbs_segment(seg, temperature, &mut rng));
         }
         tokens
     }
 
-    /// FFBS over one segment (`seg` must not span a `segment_bytes` boundary).
+    /// FFBS over one segment (`seg` must not span a `pretokenizer` segment boundary).
     fn sample_ffbs_segment(&self, seg: &[u8], temperature: f64, rng: &mut Rng) -> Vec<TokenId> {
         let n = seg.len();
         let block = self.block_len(n);
@@ -158,7 +160,7 @@ impl<'a> UnigramSampler<'a> {
     /// probability proportional to `P(s)^(1/temperature)` renormalised over those `k`
     /// (SentencePiece `nbest_size = k`). `k = 1` is deterministic Viterbi.
     ///
-    /// The k-best choice is made per `segment_bytes` segment (word or whitespace run), like a
+    /// The k-best choice is made per `pretokenizer` segment (word or whitespace run), like a
     /// k-best encoder applied to each pre-token: the lattice never spans segments, so they are
     /// independent, and each one draws from its own top `k`.
     ///
@@ -176,7 +178,7 @@ impl<'a> UnigramSampler<'a> {
             rng.seed(s);
         }
         let mut tokens = Vec::with_capacity(bytes.len());
-        for seg in SuperBpeTrainer::segment_bytes(bytes) {
+        for seg in self.pretokenizer.segment_bytes(bytes) {
             tokens.extend(self.sample_kbest_segment(seg, k, temperature, &mut rng));
         }
         tokens
@@ -205,7 +207,7 @@ impl<'a> UnigramSampler<'a> {
         }
     }
 
-    /// k-best sampling over one segment (`seg` must not span a `segment_bytes` boundary).
+    /// k-best sampling over one segment (`seg` must not span a `pretokenizer` segment boundary).
     fn sample_kbest_segment(&self, seg: &[u8], k: usize, temperature: f64, rng: &mut Rng) -> Vec<TokenId> {
         let n = seg.len();
         let l = self.trie.max_token_len.max(1);

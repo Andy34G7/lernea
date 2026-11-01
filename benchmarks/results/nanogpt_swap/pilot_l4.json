@@ -1,0 +1,746 @@
+{
+  "meta": {
+    "benchmark": "nanogpt_swap",
+    "created_utc": "2026-10-31T18:43:38Z",
+    "command": [
+      "python",
+      "-m",
+      "tokenisers.benchmarks.nanogpt_swap",
+      "--job-dir",
+      "JOB",
+      "--pilot",
+      "--gpu",
+      "L4",
+      "--timeout",
+      "1200",
+      "--poll-interval",
+      "30"
+    ],
+    "git_commit": "c83ba0da10f65c11ba27b61dda6c4cccf55706ea",
+    "git_dirty": false,
+    "mode": "pilot",
+    "requested_gpu": "L4",
+    "backend": {
+      "gpu": "NVIDIA L4",
+      "torch": "2.11.0+cu130",
+      "kind": "colab",
+      "requested_gpu": "L4",
+      "session": "tokenisers-swap_job-690089c7"
+    },
+    "timings": {
+      "setup": {},
+      "download": {
+        "fineweb_val_000000.bin": 3.4,
+        "fineweb_train_000001.bin": 2.4
+      },
+      "decode": {
+        "train_decode": 11.0
+      }
+    },
+    "data": {
+      "val_docs": 14982,
+      "val_bytes": 46513886,
+      "train_docs_decoded": 144719,
+      "train_bytes_decoded": 445562933,
+      "train_docs_dropped_as_val": 0,
+      "shards": [
+        "fineweb_val_000000.bin",
+        "fineweb_train_000001.bin"
+      ]
+    },
+    "recipe": {
+      "upstream": "karpathy/llm.c@f1e2ace651495b74ae22d45d1723443fd00ecd3a",
+      "trainer": "vendor/llmc/train_gpt2_swap.py",
+      "args": {
+        "val_loss_every": "20",
+        "sample_every": "0",
+        "write_tensors": "0",
+        "model": "d12",
+        "sequence_length": "1024",
+        "total_batch_size": "524288",
+        "dtype": "bfloat16",
+        "compile": "1",
+        "tensorcores": "1",
+        "flash": "1",
+        "num_iterations": "20",
+        "weight_decay": "0.1",
+        "zero_stage": "1",
+        "learning_rate": "0.0006",
+        "warmup_iters": "1",
+        "learning_rate_decay_frac": "0.0",
+        "overfit_single_batch": "0"
+      },
+      "mbs_requested": 16
+    },
+    "target": {
+      "nats_per_gpt2_token": 3.28,
+      "bpb": 1.0667255759702663
+    },
+    "prepared": {
+      "command": [
+        "python",
+        "-m",
+        "tokenisers.benchmarks.nanogpt_swap",
+        "--job-dir",
+        "/home/andey/.claude/jobs/a596b8d6/tmp/nanogpt-swap/job",
+        "--prepare-only"
+      ],
+      "git_commit": "a04d3c3ff3d3942855463b7e54159ef039e7522e",
+      "git_dirty": false,
+      "native_extension": {
+        "file": "_core.cpython-313-x86_64-linux-gnu.so",
+        "sha256": "4da4c190961ff5aa3b1c70b3eb824d37e01c9442c4af3cb390e60ecb486ad1db",
+        "built_utc": "2026-10-31T17:56:55Z",
+        "stale_sources": []
+      },
+      "created_utc": "2026-10-31T18:05:01Z",
+      "val_docs": 14982,
+      "val_bytes": 46513886,
+      "train_docs_dropped_as_val": 0,
+      "variants": {
+        "bpe_frequency": {
+          "class": "BpeTokenizer",
+          "scorer": "frequency",
+          "min_frequency": 1,
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 2.48,
+          "warnings": []
+        },
+        "wp_bpe_pig": {
+          "class": "BpeTokenizer",
+          "scorer": "wp-bpe-pig",
+          "min_frequency": 1,
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 13.53,
+          "warnings": []
+        },
+        "wp_bpe_ppig": {
+          "class": "BpeTokenizer",
+          "scorer": "wp-bpe-ppig",
+          "min_frequency": 2,
+          "penalty": 0.35,
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 11.7,
+          "warnings": []
+        },
+        "wp_bpe_npmi": {
+          "class": "BpeTokenizer",
+          "scorer": "wp-bpe-npmi",
+          "min_frequency": 2,
+          "alpha": 0.5,
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 11.01,
+          "warnings": []
+        },
+        "super_bpe": {
+          "class": "SuperBpeTokenizer",
+          "v_switch": 45256,
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 15.76,
+          "warnings": []
+        },
+        "unigram_lm": {
+          "class": "UnigramTokenizer",
+          "num_iterations": 10,
+          "shrinking_factor": 0.75,
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 11.47,
+          "warnings": []
+        },
+        "length_penalized": {
+          "class": "BpeTokenizer",
+          "scorer": "length_penalized",
+          "min_frequency": 1,
+          "beta": 0.5,
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 2.87,
+          "warnings": []
+        },
+        "morpheme_bpe": {
+          "class": "MorphemeBpeTokenizer",
+          "scorer": "frequency",
+          "min_frequency": 1,
+          "lambda_weight": 2.0,
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 3.2,
+          "warnings": []
+        },
+        "mdl_bits": {
+          "class": "BpeTokenizer",
+          "scorer": "mdl",
+          "min_frequency": 2,
+          "penalty": 24.0,
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 12.75,
+          "warnings": []
+        }
+      },
+      "duplicates": {},
+      "morphology": {
+        "gold_source": "SIGMORPHON 2022 test split, surface entries (eng, fra, hun, rus, spa)",
+        "gold": [
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "eng",
+            "split": "test",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/eng.word.test.gold.tsv",
+            "sha256": "fe2e2ad0a9fddb3dc2ed4a2edb62641826fb80d8762f0db870f82f71ebb04c46"
+          },
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "fra",
+            "split": "test",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/fra.word.test.gold.tsv",
+            "sha256": "4db5cb53f54862dc30de6721abfd08ef191ca2ca5d2cf6ea536b7786f0fb6da2"
+          },
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "hun",
+            "split": "test",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/hun.word.test.gold.tsv",
+            "sha256": "58b0c2e8b7ceae36df97af72b864b1ffd8efad7ffe2e93ceed819128dc948a28"
+          },
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "rus",
+            "split": "test",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/rus.word.test.gold.tsv",
+            "sha256": "778bab661d1a8fd75dbd6b9a75823d99fac80758a2985b08cbcb1c643fcd43f4"
+          },
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "spa",
+            "split": "test",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/spa.word.test.gold.tsv",
+            "sha256": "bccf8150c7e9f513554fd5ad7061166b2bdab07220aaaa548b1ed01b9bd7e930"
+          }
+        ],
+        "lexicon": [
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "eng",
+            "split": "train",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/eng.word.train.tsv",
+            "sha256": "c8affc34852fd83dd8ab8f9ada076b6e66db9e294fc1970555515ced730d2cc1"
+          },
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "fra",
+            "split": "train",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/fra.word.train.tsv",
+            "sha256": "2b08ae6602c5125daae6a71344a007312a9c5f2686ab9f39c2fc622f3da33812"
+          },
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "hun",
+            "split": "train",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/hun.word.train.tsv",
+            "sha256": "853a13765bbef162b71c7d10f9bf5de318a6c2d35fc208f33d872cc060d8ffa2"
+          },
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "rus",
+            "split": "train",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/rus.word.train.tsv",
+            "sha256": "def10b71b7d2852c4c54f9fd3d362e28c267ca85d30ec384a329b007a04b0fe3"
+          },
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "spa",
+            "split": "train",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/spa.word.train.tsv",
+            "sha256": "593cbe11792fbc2cc421c6f3b888e777a1ea4dc8f5f28d5c459a422603dbf7a8"
+          }
+        ],
+        "gold_entries": 126622,
+        "lexicon_entries": 36214,
+        "lexicon_words_dropped_as_gold": 854
+      },
+      "tokenmonster_why": "every prebuilt englishcode vocabulary NFD-normalizes its input (lossy on 1,053 of 14,982 val documents); capcode also folds U+0130 to I (2 documents). Used: the nocapcode vocabulary of the same size and mode, normalization flag cleared (same tokens and ids), lossless on all val documents"
+    },
+    "tokenizer_text": {
+      "docs": 16157,
+      "bytes": 49999797,
+      "docs_sha256": "5f91f00fe65030c9358beb8c57587a897aab3bae7fec66969bc1bb3bd08a588b",
+      "shard": "fineweb_train_000001.bin"
+    },
+    "source": {
+      "repo": "kjj0/fineweb10B-gpt2",
+      "val_shard": "fineweb_val_000000.bin",
+      "val_tokens": 10485760,
+      "train_shards": [
+        "fineweb_train_000001.bin",
+        "fineweb_train_000002.bin",
+        "fineweb_train_000003.bin",
+        "fineweb_train_000004.bin",
+        "fineweb_train_000005.bin",
+        "fineweb_train_000006.bin",
+        "fineweb_train_000007.bin",
+        "fineweb_train_000008.bin",
+        "fineweb_train_000009.bin",
+        "fineweb_train_000010.bin",
+        "fineweb_train_000011.bin",
+        "fineweb_train_000012.bin",
+        "fineweb_train_000013.bin",
+        "fineweb_train_000014.bin",
+        "fineweb_train_000015.bin",
+        "fineweb_train_000016.bin",
+        "fineweb_train_000017.bin",
+        "fineweb_train_000018.bin",
+        "fineweb_train_000019.bin",
+        "fineweb_train_000020.bin",
+        "fineweb_train_000021.bin",
+        "fineweb_train_000022.bin",
+        "fineweb_train_000023.bin",
+        "fineweb_train_000024.bin",
+        "fineweb_train_000025.bin",
+        "fineweb_train_000026.bin",
+        "fineweb_train_000027.bin",
+        "fineweb_train_000028.bin",
+        "fineweb_train_000029.bin",
+        "fineweb_train_000030.bin",
+        "fineweb_train_000031.bin",
+        "fineweb_train_000032.bin",
+        "fineweb_train_000033.bin",
+        "fineweb_train_000034.bin",
+        "fineweb_train_000035.bin",
+        "fineweb_train_000036.bin",
+        "fineweb_train_000037.bin",
+        "fineweb_train_000038.bin",
+        "fineweb_train_000039.bin",
+        "fineweb_train_000040.bin",
+        "fineweb_train_000041.bin",
+        "fineweb_train_000042.bin",
+        "fineweb_train_000043.bin",
+        "fineweb_train_000044.bin",
+        "fineweb_train_000045.bin",
+        "fineweb_train_000046.bin",
+        "fineweb_train_000047.bin",
+        "fineweb_train_000048.bin",
+        "fineweb_train_000049.bin",
+        "fineweb_train_000050.bin",
+        "fineweb_train_000051.bin",
+        "fineweb_train_000052.bin",
+        "fineweb_train_000053.bin",
+        "fineweb_train_000054.bin",
+        "fineweb_train_000055.bin",
+        "fineweb_train_000056.bin",
+        "fineweb_train_000057.bin",
+        "fineweb_train_000058.bin",
+        "fineweb_train_000059.bin",
+        "fineweb_train_000060.bin",
+        "fineweb_train_000061.bin",
+        "fineweb_train_000062.bin",
+        "fineweb_train_000063.bin",
+        "fineweb_train_000064.bin",
+        "fineweb_train_000065.bin",
+        "fineweb_train_000066.bin",
+        "fineweb_train_000067.bin",
+        "fineweb_train_000068.bin",
+        "fineweb_train_000069.bin",
+        "fineweb_train_000070.bin",
+        "fineweb_train_000071.bin",
+        "fineweb_train_000072.bin",
+        "fineweb_train_000073.bin",
+        "fineweb_train_000074.bin",
+        "fineweb_train_000075.bin",
+        "fineweb_train_000076.bin",
+        "fineweb_train_000077.bin",
+        "fineweb_train_000078.bin",
+        "fineweb_train_000079.bin",
+        "fineweb_train_000080.bin",
+        "fineweb_train_000081.bin",
+        "fineweb_train_000082.bin",
+        "fineweb_train_000083.bin",
+        "fineweb_train_000084.bin",
+        "fineweb_train_000085.bin",
+        "fineweb_train_000086.bin",
+        "fineweb_train_000087.bin",
+        "fineweb_train_000088.bin",
+        "fineweb_train_000089.bin",
+        "fineweb_train_000090.bin",
+        "fineweb_train_000091.bin",
+        "fineweb_train_000092.bin",
+        "fineweb_train_000093.bin",
+        "fineweb_train_000094.bin",
+        "fineweb_train_000095.bin",
+        "fineweb_train_000096.bin",
+        "fineweb_train_000097.bin",
+        "fineweb_train_000098.bin",
+        "fineweb_train_000099.bin",
+        "fineweb_train_000100.bin",
+        "fineweb_train_000101.bin",
+        "fineweb_train_000102.bin",
+        "fineweb_train_000103.bin"
+      ],
+      "tokenizer": {
+        "kind": "tiktoken",
+        "encoding": "gpt2"
+      }
+    },
+    "note": "the L4 session reached the job's 1,200 s timeout about a minute after its job had finished, and was stopped before the run files of bpe_frequency (trained) and 8 val-only tokenizers were downloaded. Their val statistics and encode MB/s here come from the A100 pilot (same tokenizers and documents; encode measured on that VM's CPU). bpe_frequency's L4 ms/step is estimated from GPT-2's (identical model and padded vocabulary; on the A100 they differ by 0.7%). L4 setup (pip, extension build) was not recorded (A100 VM: 5 s + 41 s); download and decode times are from the L4 job log"
+  },
+  "models": {
+    "gpt2": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 4.436042259333341,
+      "val_targets": 10485447,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 31.41,
+      "spec": {
+        "name": "gpt2",
+        "kind": "tiktoken",
+        "encoding": "gpt2"
+      },
+      "curve": [
+        [
+          0,
+          3.5537389444478227,
+          10.97760997255713
+        ],
+        [
+          20,
+          2.4950577713965814,
+          7.707310948144246
+        ]
+      ],
+      "final_bpb": 2.4950577713965814,
+      "final_nats_per_token": 7.707310948144246,
+      "reached_target_step": null,
+      "train_bytes_per_token": 4.458480986910487,
+      "train_tokens": 11041893,
+      "train_docs": 16000,
+      "params": 124475904,
+      "mbs": 16,
+      "grad_accum_steps": 32,
+      "ms_per_step": 13440.812349319458,
+      "tokens_per_s": 39007.166112734696,
+      "eval_seconds": [
+        49.8,
+        25.8
+      ],
+      "eval_targets": 1425896,
+      "peak_memory_bytes": 9693599744,
+      "trainer_seconds": 563.6,
+      "wall_seconds": 570.4,
+      "gpu": "NVIDIA L4",
+      "torch": "2.11.0+cu130"
+    },
+    "tm_englishcode_50256": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 5.322276448737407,
+      "val_targets": 8739472,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 67.28,
+      "spec": {
+        "name": "tm_englishcode_50256",
+        "kind": "tokenmonster",
+        "clear_normalization": true,
+        "requested": "englishcode-50256-consistent-v1",
+        "vocab": "englishcode-50256-consistent-nocapcode-v1",
+        "vocab_sha256": "875b8dae84e79909f51f8e6299d55701a8c938ec74f5e44b3e6ca7182ba658d8"
+      }
+    },
+    "tm_englishcode_32000": {
+      "vocab_size": 32001,
+      "padded_vocab_size": 32128,
+      "val_bytes_per_token": 4.95353543830174,
+      "val_targets": 9390038,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 69.73,
+      "spec": {
+        "name": "tm_englishcode_32000",
+        "kind": "tokenmonster",
+        "clear_normalization": true,
+        "requested": "englishcode-32000-consistent-v1",
+        "vocab": "englishcode-32000-consistent-nocapcode-v1",
+        "vocab_sha256": "adf653f934fea8d41fc3f3059e73d8157c5738db685c6e2d073f050d66a9b801"
+      }
+    },
+    "bpe_frequency": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 2.7503379540590616,
+      "val_targets": 16912062,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 33.37,
+      "spec": {
+        "name": "bpe_frequency",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/bpe_frequency",
+        "ids_sha256": "313cbbfb7150b55f1de8488c88998bb361925000da3ed3f526e481b608b89abe",
+        "ids_docs": 200
+      }
+    },
+    "wp_bpe_pig": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 2.733410492398833,
+      "val_targets": 17016795,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 33.94,
+      "spec": {
+        "name": "wp_bpe_pig",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/wp_bpe_pig",
+        "ids_sha256": "d1876c8173d75c668cbb49c19ed6ca0f7124c352bc7f92499dd54b7d578d7772",
+        "ids_docs": 200
+      }
+    },
+    "wp_bpe_ppig": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 2.7359026907010726,
+      "val_targets": 17001294,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 33.69,
+      "spec": {
+        "name": "wp_bpe_ppig",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/wp_bpe_ppig",
+        "ids_sha256": "e78ebe75328160558ccb4bdadd223cc225351a1eac350e348e8ec45b2d65d7dc",
+        "ids_docs": 200
+      }
+    },
+    "wp_bpe_npmi": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 2.701950969757291,
+      "val_targets": 17214926,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 32.12,
+      "spec": {
+        "name": "wp_bpe_npmi",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/wp_bpe_npmi",
+        "ids_sha256": "18d53002a8471f44526ab95bd432db135c30268cd17d2cbfec6c6c7756e120f3",
+        "ids_docs": 200
+      }
+    },
+    "super_bpe": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 5.0310513564586605,
+      "val_targets": 9245361,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 26.88,
+      "spec": {
+        "name": "super_bpe",
+        "kind": "tokenisers",
+        "class": "SuperBpeTokenizer",
+        "path": "tokenizers/super_bpe",
+        "ids_sha256": "904b94597fbdd39466f4175a3e35fa969757e1ba6ae6bcc402599c85cb41db70",
+        "ids_docs": 200
+      }
+    },
+    "unigram_lm": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 2.7254057078739247,
+      "val_targets": 17066775,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 29.05,
+      "spec": {
+        "name": "unigram_lm",
+        "kind": "tokenisers",
+        "class": "UnigramTokenizer",
+        "path": "tokenizers/unigram_lm",
+        "ids_sha256": "6a1ebb58ffcfb5d9ce42c18dc86989bf93e372b96c9c006b3c47c8a86ade57fa",
+        "ids_docs": 200
+      }
+    },
+    "length_penalized": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 2.7486850434387144,
+      "val_targets": 16922232,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 31.45,
+      "spec": {
+        "name": "length_penalized",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/length_penalized",
+        "ids_sha256": "dddb4e112fc5a1dd86a210e8014c2892e9ffd20d2d0e8087fc6858f23b5aa340",
+        "ids_docs": 200
+      }
+    },
+    "morpheme_bpe": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 2.7176435937883516,
+      "val_targets": 17115521,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 31.08,
+      "spec": {
+        "name": "morpheme_bpe",
+        "kind": "tokenisers",
+        "class": "MorphemeGuidedTokenizer",
+        "path": "tokenizers/morpheme_bpe",
+        "ids_sha256": "9948b73da600acda987b1b1b0484ced37c19fd36226e81107316f0a820579862",
+        "ids_docs": 200
+      }
+    },
+    "mdl_bits": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 2.7175162562660216,
+      "val_targets": 17116323,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 37.21,
+      "spec": {
+        "name": "mdl_bits",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/mdl_bits",
+        "ids_sha256": "51b5f02d923309e6cbd0ad68983f01244029f99573d52a960ac5ee2789aa5f8b",
+        "ids_docs": 200
+      }
+    }
+  },
+  "projection": {
+    "steps": 600,
+    "evals_per_run": 13,
+    "per_tokenizer": {
+      "gpt2": {
+        "ms_per_step": 13440.812349319458,
+        "estimated_from": null,
+        "train_hours": 2.240135391553243,
+        "eval_hours": 0.685108973936388,
+        "compile_and_start_hours": 0.0675510425037808,
+        "encode_hours": 0.012464296727698039,
+        "total_hours": 3.00525970472111
+      },
+      "tm_englishcode_50256": {
+        "ms_per_step": 13440.812349319458,
+        "estimated_from": "gpt2",
+        "train_hours": 2.240135391553243,
+        "eval_hours": 0.5710286547312473,
+        "compile_and_start_hours": 0.0675510425037808,
+        "encode_hours": 0.0069815441228279675,
+        "total_hours": 2.8856966329110993
+      },
+      "tm_englishcode_32000": {
+        "ms_per_step": 12130.863582261556,
+        "estimated_from": "gpt2",
+        "train_hours": 2.0218105970435927,
+        "eval_hours": 0.5537404606300925,
+        "compile_and_start_hours": 0.0675510425037808,
+        "encode_hours": 0.006269539604558312,
+        "total_hours": 2.649371639782024
+      },
+      "bpe_frequency": {
+        "ms_per_step": 13440.812349319458,
+        "estimated_from": "gpt2",
+        "train_hours": 2.240135391553243,
+        "eval_hours": 1.1050177874122658,
+        "compile_and_start_hours": 0.0675510425037808,
+        "encode_hours": 0.007273943048198455,
+        "total_hours": 3.419978164517488
+      },
+      "wp_bpe_pig": {
+        "ms_per_step": 13440.812349319458,
+        "estimated_from": "gpt2",
+        "train_hours": 2.240135391553243,
+        "eval_hours": 1.111860940419217,
+        "compile_and_start_hours": 0.0675510425037808,
+        "encode_hours": 0.007107764994309504,
+        "total_hours": 3.4266551394705504
+      },
+      "wp_bpe_ppig": {
+        "ms_per_step": 13440.812349319458,
+        "estimated_from": "gpt2",
+        "train_hours": 2.240135391553243,
+        "eval_hours": 1.1108481200592468,
+        "compile_and_start_hours": 0.0675510425037808,
+        "encode_hours": 0.007167037495801457,
+        "total_hours": 3.4257015916120723
+      },
+      "wp_bpe_npmi": {
+        "ms_per_step": 13440.812349319458,
+        "estimated_from": "gpt2",
+        "train_hours": 2.240135391553243,
+        "eval_hours": 1.124806628487164,
+        "compile_and_start_hours": 0.0675510425037808,
+        "encode_hours": 0.007424068465817932,
+        "total_hours": 3.439917131010006
+      },
+      "super_bpe": {
+        "ms_per_step": 13440.812349319458,
+        "estimated_from": "gpt2",
+        "train_hours": 2.240135391553243,
+        "eval_hours": 0.6040829531045743,
+        "compile_and_start_hours": 0.0675510425037808,
+        "encode_hours": 0.016518458904456523,
+        "total_hours": 2.9282878460660546
+      },
+      "unigram_lm": {
+        "ms_per_step": 13440.812349319458,
+        "estimated_from": "gpt2",
+        "train_hours": 2.240135391553243,
+        "eval_hours": 1.1151265853189856,
+        "compile_and_start_hours": 0.0675510425037808,
+        "encode_hours": 0.00827989949998567,
+        "total_hours": 3.4310929188759953
+      },
+      "length_penalized": {
+        "ms_per_step": 13440.812349319458,
+        "estimated_from": "gpt2",
+        "train_hours": 2.240135391553243,
+        "eval_hours": 1.1056822853840673,
+        "compile_and_start_hours": 0.0675510425037808,
+        "encode_hours": 0.007713373661340438,
+        "total_hours": 3.4210820931024317
+      },
+      "morpheme_bpe": {
+        "ms_per_step": 13440.812349319458,
+        "estimated_from": "gpt2",
+        "train_hours": 2.240135391553243,
+        "eval_hours": 1.1183116018512806,
+        "compile_and_start_hours": 0.0675510425037808,
+        "encode_hours": 0.007717053859637004,
+        "total_hours": 3.433715089767942
+      },
+      "mdl_bits": {
+        "ms_per_step": 13440.812349319458,
+        "estimated_from": "gpt2",
+        "train_hours": 2.240135391553243,
+        "eval_hours": 1.1183640037562348,
+        "compile_and_start_hours": 0.0675510425037808,
+        "encode_hours": 0.006445439284219529,
+        "total_hours": 3.432495877097478
+      }
+    },
+    "setup_hours": 0.0,
+    "source_text_gb": 1.6909858389019163,
+    "source_decode_hours": 0.014126455772800561,
+    "total_hours": 38.91338028470705,
+    "tokenizers_measured": 12,
+    "tokenizers_projected": 12
+  }
+}

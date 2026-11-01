@@ -10,7 +10,7 @@ import warnings
 import pytest
 
 from tokenisers.benchmarks import common
-from tokenisers.benchmarks.report import render_colab, render_intrinsic, render_tokka
+from tokenisers.benchmarks.report import render_colab, render_colab_compare, render_intrinsic, render_tokka
 
 
 def _gen_module(repo_root):
@@ -25,6 +25,7 @@ def test_readme_tables_match_committed_results(repo_root):
     gen = _gen_module(repo_root)
     readme = (repo_root / "README.md").read_text(encoding="utf-8")
     assert gen.render_readme(readme, repo_root) == readme, "run: uv run python scripts/gen_readme_tables.py"
+    assert "_Not yet run." not in readme  # every section, the GPT-2 tokenizer swap included, renders committed JSON
 
 
 def _meta(**kw):
@@ -109,6 +110,44 @@ def test_leaderboards_state_data_and_backend():
     col["meta"]["backend"] = {"kind": "local", "device": "cpu", "cpu": "Some CPU"}
     assert "local CPU `Some CPU`" in render_colab(col)
     assert render_tokka({"meta": _meta(duplicates={}), "models": {}}).count("|") > 0
+    # The seeds vary only the LM's initialization (one LM text, one order): the sd says so.
+    assert "the seed sets only the LM's initialization: every seed trains on the same LM text in the same order" in md
+
+    # A --resume of a job prepared (tokenizers, LM text, ids) at another, dirty commit says so.
+    assert "resuming a job" not in md
+    col["meta"]["job_prepared"] = {"git_commit": "3186c1ba815c3136", "git_dirty": True}
+    assert ("commit `0123456789`, resuming a job (tokenizers, LM text and its ids) prepared at commit `3186c1ba81` "
+            "from a dirty tree (uncommitted changes: not reproducible from any commit)") in render_colab(col)
+    col["meta"]["job_prepared"] = {"git_commit": "0123456789abcdef", "git_dirty": False}  # the same commit
+    assert "resuming a job" not in render_colab(col)
+
+
+def test_colab_compare_ranks_both_tiers_against_bpe_frequency():
+    """Small vs big proxy LM: rank per tier and delta to bpe_frequency ± its standard error over the seeds."""
+    def doc(bpb, gpu):  # name -> (mean, sd) over 4 seeds
+        return {"meta": {"lm": {"d_model": 8, "n_layers": 1}, "byte_budget": 10, "seeds": [0, 1, 2, 3],
+                         "backend": {"gpu": gpu}},
+                "models": {n: {"macro_val_bpb": m, "macro_val_bpb_sd": sd,
+                               "macro_val_bpb_by_seed": dict.fromkeys("0123")} for n, (m, sd) in bpb.items()}}
+    small = doc({"bpe_frequency": (2.0, 0.04), "a": (1.9, 0.03), "only_small": (5.0, 0.1)}, "T4")
+    big = doc({"bpe_frequency": (1.5, 0.0), "a": (1.6, 0.02)}, "L4")
+    md = render_colab_compare(small, big)
+    assert ("| `bpe_frequency` | 2 | reference | 1 | reference |\n"
+            "| `a` | 1 | -0.100 ± 0.025 | 2 | +0.100 ± 0.010 |") in md
+    assert "- small LM: 1 tokenizers beat `bpe_frequency`, by 0.100–0.100 BPB, i.e. 4.0–4.0 standard errors" in md
+    assert "- big LM:" not in md and "only_small" not in md
+    assert "seeds vary only the LM's initialization (same LM text, same order)" in md
+
+
+def test_colab_compare_renders_a_single_seed_tier_without_standard_errors():
+    """--seeds 0 is legal and stores sd None: the comparison drops the ± instead of raising."""
+    def doc(bpb, seeds):
+        return {"meta": {"seeds": seeds}, "models": {
+            n: {"macro_val_bpb": m, "macro_val_bpb_sd": None if len(seeds) == 1 else 0.01,
+                "macro_val_bpb_by_seed": dict.fromkeys(map(str, seeds))} for n, m in bpb.items()}}
+    md = render_colab_compare(doc({"bpe_frequency": 2.0, "a": 1.9}, [0, 1]), doc({"bpe_frequency": 1.5, "a": 1.4}, [0]))
+    assert "| `a` | 1 | -0.100 ± 0.010 | 1 | -0.100 |" in md
+    assert "- big LM: 1 tokenizers beat `bpe_frequency`, by 0.100–0.100 BPB (single seed: no standard error)" in md
 
 
 def test_memory_preflight_refuses_runs_that_would_not_fit(monkeypatch):
@@ -212,3 +251,34 @@ def test_assert_disjoint():
     common.assert_disjoint(["a", "b"], ["c"])
     with pytest.raises(RuntimeError, match="1 test documents"):
         common.assert_disjoint(["a", "b"], ["b", "c"], "test")
+
+
+def test_readme_setup_paragraph_accounts_for_every_results_section(repo_root):
+    """'Scale and setup' says where each numbered results section's data and runs come from, so it
+    cannot claim one suite run for all of them while sections are added; the limitations pointer
+    names the last section."""
+    import re
+
+    readme = (repo_root / "README.md").read_text(encoding="utf-8")
+    results = readme[readme.index("## Benchmark Results"):readme.index("### Known limitations")]
+    sections = {int(n) for n in re.findall(r"^### (\d+)\. ", results, re.M)}
+    setup = re.search(r"\*\*Scale and setup\.\*\*(.+?)\n\n", results, re.S)[1]
+    named = set()
+    for m in re.finditer(r"[Ss]ections? (\d+(?:(?:-| and |, )\d+)*)", setup.replace("\n", " ")):
+        for part in re.split(r" and |, ", m[1]):
+            lo, _, hi = part.partition("-")
+            named |= set(range(int(lo), int(hi or lo) + 1))
+    assert sections - named == set(), f"Scale and setup says nothing about sections {sorted(sections - named)}"
+    assert f"listed after section {max(sections)}." in " ".join(setup.split())
+
+
+def test_swap_provenance_accepts_pools_recorded_as_command_lists():
+    """Ablation results written before pools carried provenance store each pool as its command list."""
+    from tokenisers.benchmarks.report import _swap_provenance
+
+    meta = {"git_commit": "950506bcafe", "git_dirty": False,
+            "prepared": {"git_commit": "950506bcafe", "git_dirty": False,
+                         "pools": {"/pool-g2": ["python", "-m", "x", "--prepare-only"], "/pool-sp300": ["python"]}}}
+    assert _swap_provenance(meta, {}) == ""
+    meta["prepared"]["pools"]["/pool-new"] = {"git_commit": "abcdef1234567", "git_dirty": True}
+    assert "`abcdef1234 (dirty)`" in _swap_provenance(meta, {})

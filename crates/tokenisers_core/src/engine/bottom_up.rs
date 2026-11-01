@@ -7,9 +7,10 @@ use rayon::prelude::*;
 
 use crate::arena::{SymbolArena, NULL_NODE};
 use crate::curricula::morpheme::PairMorphologyStats;
-use crate::curricula::super_bpe::{BoundaryJunction, SuperBpeTrainer};
+use crate::curricula::super_bpe::BoundaryJunction;
 use crate::error::{Result, TokeniserError};
 use crate::index::{InvertedIndex, OccurrenceRef, Pair};
+use crate::pretokenizer::Pretokenizer;
 use crate::scoring::{PairContext, PairScorer, ScoreDeps, ScoredPair};
 use crate::vocab::{SpecialToken, TokenId, Vocabulary, BASE_VOCAB_SIZE};
 
@@ -28,13 +29,15 @@ pub struct BottomUpModel {
     pub merge_ranks: AHashMap<Pair, u32>,
     /// `next_same_rank[r]`: next rank that merges the same pair as rank `r` (`u32::MAX` if none).
     next_same_rank: Vec<u32>,
-    /// True when training only ever merged inside `SuperBpeTrainer::segment_text` segments (every
-    /// training word was one segment), so no learned token spans a segment boundary. Encoding then
-    /// pre-splits input with `SuperBpeTrainer::segment_bytes` and caches repeated segments, and the
-    /// HF export emits the matching `Split` pre-tokenizer. False (the `new` default, SuperBPE
-    /// stage 2, models rebuilt from a bare merge list): the export is whole-text `ByteLevel` and a
-    /// span is cut only where no merge can ever join its two sides (see `may_join`).
+    /// True when training only ever merged inside `pretokenizer` segments (every training word was
+    /// one segment; an `Hf` trainer trusts its words), so no learned token spans a segment boundary. Encoding then pre-splits input
+    /// with `pretokenizer.segment_bytes` and caches repeated segments, and the HF export emits the
+    /// matching `Split` pre-tokenizer. False (the `new` default, SuperBPE stage 2, models rebuilt
+    /// from a bare merge list): the export is whole-text `ByteLevel` and a span is cut only where no
+    /// merge can ever join its two sides (see `may_join`).
     pub pretokenize: bool,
+    /// The segmentation of a `pretokenize` model (`Whitespace`, the `new` default, otherwise).
+    pub pretokenizer: Pretokenizer,
     /// Bit `a << 8 | b` is set iff some merge output contains byte `a` directly followed by `b`.
     joined_bigrams: Vec<u64>,
 }
@@ -137,6 +140,7 @@ impl BottomUpModel {
             merge_ranks,
             next_same_rank,
             pretokenize: false,
+            pretokenizer: Pretokenizer::Whitespace,
             joined_bigrams,
         }
     }
@@ -148,6 +152,16 @@ impl BottomUpModel {
     fn may_join(&self, a: u8, b: u8) -> bool {
         let bit = (a as usize) << 8 | b as usize;
         self.joined_bigrams[bit >> 6] & (1 << (bit & 63)) != 0
+    }
+
+    /// Segments that merge units never span: `pretokenizer`'s for a `pretokenize` model, else
+    /// `Whitespace` runs (joined again wherever `may_join` says a merge could span them).
+    fn segmentation(&self) -> Pretokenizer {
+        if self.pretokenize {
+            self.pretokenizer
+        } else {
+            Pretokenizer::Whitespace
+        }
     }
 
     /// Smallest rank >= `min_rank` that merges `pair`.
@@ -171,7 +185,7 @@ impl BottomUpModel {
 
     /// BPE-dropout encoding (Provilkov et al. 2020, HF `tokenizers` semantics with the training
     /// segment as the word): every popped merge is skipped with probability `p` and re-queued after
-    /// the next non-skipped pop in its segment (`SuperBpeTrainer::segment_bytes`; a merge belongs
+    /// the next non-skipped pop in its segment (`segmentation`; a merge belongs
     /// to the segment of its left symbol). For `pretokenize` models this is exactly HF dropout per
     /// segment; whole-text (SuperBPE) models get the same per-segment fragmentation instead of
     /// one document-wide re-queue that lets almost every merge through. `p <= 0` equals `encode`,
@@ -247,7 +261,7 @@ impl BottomUpModel {
         // so they are cached. Byte-level segmentation equals `segment_text` on valid UTF-8 and also
         // splits invalid input, so a merge never straddles a multi-byte whitespace character.
         let (mut start, mut end) = (0, 0);
-        for seg in SuperBpeTrainer::segment_bytes(span) {
+        for seg in self.segmentation().segment_bytes(span) {
             if end > start && (self.pretokenize || !self.may_join(span[end - 1], span[end])) {
                 self.encode_unit(&span[start..end], dropout, scratch, cache, out);
                 start = end;
@@ -306,9 +320,10 @@ impl BottomUpModel {
                 queue.push(queue_key(rank, i as u32));
             }
         }
-        // Dropout scope: start offset of every segment.
+        // Dropout scope: start offset of every segment (a `pretokenize` unit is one segment).
         let seg_starts: Vec<u32> = match dropout {
-            Some(_) => SuperBpeTrainer::segment_bytes(bytes)
+            Some(_) if self.pretokenize => vec![0],
+            Some(_) => self.segmentation().segment_bytes(bytes)
                 .iter()
                 .scan(0u32, |start, seg| {
                     let s = *start;
@@ -421,6 +436,8 @@ pub struct BottomUpTrainer<'a> {
     pub scorer: &'a dyn PairScorer,
     pub target_vocab_size: usize,
     pub min_frequency: u64,
+    /// The segmentation the word counts were made with; the model encodes with it.
+    pub pretokenizer: Pretokenizer,
 }
 
 impl<'a> BottomUpTrainer<'a> {
@@ -429,11 +446,17 @@ impl<'a> BottomUpTrainer<'a> {
             scorer,
             target_vocab_size,
             min_frequency: 1,
+            pretokenizer: Pretokenizer::Whitespace,
         }
     }
 
     pub fn with_min_frequency(mut self, min_frequency: u64) -> Self {
         self.min_frequency = min_frequency;
+        self
+    }
+
+    pub fn with_pretokenizer(mut self, pretokenizer: Pretokenizer) -> Self {
+        self.pretokenizer = pretokenizer;
         self
     }
 
@@ -460,11 +483,15 @@ impl<'a> BottomUpTrainer<'a> {
             merges.push((pair.0, pair.1, new_token));
         }
 
-        let pretokenize = word_counts.iter().all(|(word, _)| {
-            std::str::from_utf8(word).is_ok_and(|text| SuperBpeTrainer::segment_text(text).len() <= 1)
-        });
+        // `Hf` words are trusted to be segments: one cut inside a char need not split alone as it
+        // did in context.
+        let pretokenize = matches!(self.pretokenizer, Pretokenizer::Hf(_))
+            || word_counts.iter().all(|(word, _)| {
+                std::str::from_utf8(word).is_ok_and(|text| self.pretokenizer.segment_text(text).len() <= 1)
+            });
         let mut model = BottomUpModel::new(state.vocab, merges);
         model.pretokenize = pretokenize;
+        model.pretokenizer = self.pretokenizer;
         Ok(model)
     }
 }

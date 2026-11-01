@@ -31,6 +31,7 @@ A high-performance **Rust (`PyO3` / `maturin`) + Python** research and benchmark
 │   └── benchmarks/
 │       ├── tokka/                  # Tokka-Bench multilingual + code evaluation suite
 │       ├── intrinsic/              # Rényi efficiency, Morphological F1, Identifier F1, Throughput MB/s
+│       ├── flores.py               # FLORES+ cross-lingual tokenization premium / parity
 │       └── colab/                  # Extrinsic Proxy-LM fixed-byte-budget trainer & Colab GPU orchestrator
 ├── vendor/tokka-bench/             # Vendored bgub/tokka-bench reference suite
 ├── benchmarks/results/             # Generated JSON, CSV, and Markdown leaderboards
@@ -69,6 +70,47 @@ shrinking factor 0.75. The benchmark suite trains with these values and $\lambda
 `morpheme_bpe`; each result file records every training parameter under `meta.variants` (files
 written before this was added, including the committed results from `603a983`, list only the scorer
 and non-default values; that commit used the defaults above).
+
+**Pre-tokenizer.** Every variant except `super_bpe` (and `byte_entropy`) splits text into segments
+that no token spans, the same way for training, encoding, Unigram's lattice and the exported
+`tokenizer.json` (a `Split` regex that Hugging Face reproduces exactly; `from_pretrained` restores
+the mode). `pretokenizer="whitespace"` (the default, used by every committed result) isolates each
+maximal run of Unicode whitespace in a segment of its own, so no token mixes whitespace with other
+text (a run such as `"    "` or `" \n"` can still be one token). `pretokenizer="space_prefix"`
+is GPT-2-style: a word takes the one U+0020 space right before it (`"a  b"` -> `a`, ` `, ` b`),
+while newlines, tabs, other Unicode spaces and all but the last space of a run stay in
+whitespace-only segments; unlike GPT-2's `\s+(?!\S)| ?\S+` it does not split letters, digits and
+punctuation apart. `pretokenizer="gpt2"` is GPT-2's exact pre-split: the matches of tiktoken's gpt2
+`pat_str` (`'(?:[sdmt]|ll|ve|re)| ?\p{L}++| ?\p{N}++| ?[^\s\p{L}\p{N}]++|\s++$|\s+(?!\S)|\s`, run with
+fancy-regex as tiktoken's Rust core does), so contractions, letter runs, digit runs and punctuation
+runs are separate segments, each with the space before it (`"it's 2024!"` -> `it`, `'s`, ` 2024`,
+`!`); its export is Hugging Face's own `ByteLevel(use_regex=true)`. On all 14,982 FineWeb val
+documents of the tokenizer swap the native split equals Hugging Face's and tiktoken's, and GPT-2's
+merges loaded natively give tiktoken's ids. `pretokenizer={"hf": config}` runs any lossless Hugging
+Face `pre_tokenizer` config (a dict or a JSON string) with `tokenizers` itself: `Split` and
+`Punctuation` (any behavior but `Removed`), `Digits`, `FixedLength`, one `ByteLevel` without
+`add_prefix_space`, and `Sequence`s of these; a component that drops or rewrites text (`Whitespace`,
+`WhitespaceSplit`, `BertPreTokenizer`, `CharDelimiterSplit`, `Metaspace`, `UnicodeScripts`, which drops
+the spaces a piece starts with) is a `ValueError` naming it, and so is a field the component does
+not have (`tokenizers` would ignore a misspelt `"behaviour"`). The export writes the config back
+unchanged (followed by the byte-level map when it has no `ByteLevel`) and `from_pretrained` restores
+it; `.pretokenizer` reports `{"hf": config}`. Training rejects a config whose export is another
+pretokenizer's, with the same split, and names that one: a lone `ByteLevel(use_regex=true)` is `"gpt2"`,
+`Sequence[X, ByteLevel(use_regex=false)]` is `{"hf": X}`, and a lone `ByteLevel(use_regex=false)`
+splits nothing. For example, Llama-style single digits before GPT-2's split:
+
+```python
+from tokenisers import BpeTokenizer
+
+llama_digits = {"type": "Sequence", "pretokenizers": [
+    {"type": "Digits", "individual_digits": True},
+    {"type": "ByteLevel", "add_prefix_space": False, "trim_offsets": False, "use_regex": True}]}
+tok = BpeTokenizer.train(corpus, vocab_size=32000, pretokenizer={"hf": llama_digits})
+tok.encode("abc 2024")  # segments "abc", " ", "2", "0", "2", "4": no token holds two digits
+```
+
+Bytes that are not valid UTF-8 count as non-whitespace in every mode; in `gpt2` each invalid
+sequence is split exactly like one U+FFFD (a symbol), in `hf` each invalid byte like one U+0000.
 
 ---
 
@@ -182,20 +224,27 @@ test fails if they differ from the committed JSON. The numbers previously shown 
 synthetic data, evaluated on training text, with a proxy LM that silently ran on a local CPU; they
 are kept, marked invalid, in [`benchmarks/results/legacy_smoke/`](benchmarks/results/legacy_smoke/).
 
-**Scale and setup.** All committed results come from one run of the suite at commit `603a983` on
+**Scale and setup.** Sections 1-4 come from one run of the suite at commit `603a983` on
 the default dataset (`python -m tokenisers.data --preset small`): a 52.5 MB train split (11,102
 documents: FineWeb-Edu English 50%, FineWeb-2 in 10 languages 30%, StarCoder code in 6 languages
 20%; no fallback source was needed) with held-out val (3.1 MB) and test (3.1 MB) splits. Tokka and
 intrinsic results exist for V = 16,384 (sections 1 and 2) and V = 32,768 / 65,536 (section 4);
 the proxy LM (section 3) ran at V = 16,384 only, on a Colab T4 GPU with the default 10 MB byte
-budget and 3 seeds. Tokenizer training and every other step ran locally on an Intel Core Ultra 7
+budget and 3 seeds, and again with the big proxy LM (100 MB budget, 3 seeds) on a Colab L4: LMs
+trained at commit `6d260c2` on a job prepared from an uncommitted tree at `3186c1b` (section 3).
+In sections 1-5, tokenizer training and every other step ran locally on an Intel Core Ultra 7
 155H (22 threads, no GPU, 15 GB RAM shared with a desktop session). Runs whose arguments include
 `--skip-memory-check` started after the desktop's memory use had grown: the preflight estimate
 (4.2 GiB) exceeded the 3.0 GiB it then allowed, so they ran inside a hard 4 GiB cgroup limit
 (`systemd-run -p MemoryMax=4G`) instead, above the measured 2.9 GiB peak. Section 5 re-times the
-same tokenizers on a Colab CPU runtime and on one pinned laptop core. Each section's header
-lists the exact arguments, data sizes, backend and commit. Known limitations are listed after
-section 5.
+same tokenizers on a Colab CPU runtime and on one pinned laptop core. Sections 6 and 7 use other
+text and machines. The tokenizer swap (section 6) trains its tokenizers on FineWeb documents decoded
+from the speedrun's GPT-2 shards (`kjj0/fineweb10B-gpt2`), not on the default dataset: the first
+50 MB, locally, except the `_sp300` tokenizers, trained on the first 300 MB on a Colab L4. Its LMs
+trained on a Colab A100. FLORES+ (section 7) ran locally: it retrains its intrinsic tier on the
+default 52.5 MB split and loads its swap tier, `_sp300` included, from the swap's prepared jobs.
+Each section's header lists the exact arguments, data sizes, backend and commit. Known limitations
+are listed after section 7.
 
 ### 1. Tokka-Bench (natural languages + code, held-out test split)
 <!-- BEGIN GENERATED: tokka -->
@@ -289,7 +338,7 @@ Morph F1 by language:
 - arguments: `--skip-memory-check --gpu T4 --timeout 10800`
 - backend: Colab GPU `Tesla T4`
 - proxy LM: pre-LayerNorm causal Transformer (torch TransformerEncoderLayer: ReLU FFN, biases), no positional encoding of any kind (NoPE: order comes only from the causal mask), tied input/output embeddings; d_model=128, n_layers=2, n_heads=4, d_ffn=512, max_seq_len=128
-- fixed budget 10,000,000 UTF-8 bytes of LM training text per tokenizer, drawn from the same train split the tokenizers were trained on (each document used once); seeds [0, 1, 2] (mean ± sample sd)
+- fixed budget 10,000,000 UTF-8 bytes of LM training text per tokenizer, drawn from the same train split the tokenizers were trained on (each document used once); seeds [0, 1, 2] (mean ± sample sd; the seed sets only the LM's initialization: every seed trains on the same LM text in the same order, so the sd leaves out data-sampling variance)
 
 | Tokenizer | \|V\| | Train bytes/token | Tokens trained | english BPB (↓) | multilingual BPB (↓) | code BPB (↓) | Macro BPB (↓) |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -308,6 +357,136 @@ Morph F1 by language:
 | `wp_bpe_ft` | 16384 | 1.013 | 9,877,504 | 3.703 ± 0.033 | 3.710 ± 0.077 | 4.150 ± 0.098 | **3.855 ± 0.069** |
 | `wp_bpe_base` | 16384 | 1.006 | 9,945,088 | 3.734 ± 0.019 | 3.829 ± 0.021 | 4.198 ± 0.044 | **3.920 ± 0.018** |
 <!-- END GENERATED: colab -->
+
+#### Big proxy LM (Colab L4)
+<!-- BEGIN GENERATED: colab_big -->
+- requested V = 16384; real corpus: tokenizers trained on the train split (52.5 MB); evaluated on the held-out val split (3.1 MB); commit `6d260c23b6`, resuming a job (tokenizers, LM text and its ids) prepared at commit `3186c1ba81` from a dirty tree (uncommitted changes: not reproducible from any commit); generated 2026-10-31T20:24:38Z
+- arguments: `--preset big --job-dir /home/andey/.cache/tokenisers/big-lm-job --resume --concurrency 1`
+- backend: Colab GPU `NVIDIA L4`
+- proxy LM: pre-LayerNorm causal Transformer (torch TransformerEncoderLayer: ReLU FFN, biases), no positional encoding of any kind (NoPE: order comes only from the causal mask), tied input/output embeddings; d_model=512, n_layers=8, n_heads=8, d_ffn=2048, max_seq_len=512
+- fixed budget 100,000,000 UTF-8 bytes of LM training text per tokenizer, drawn from the train split the tokenizers were trained on plus an LM text pool with no val or test document (each document used once; 62.1 MB of the 110.0 MB of LM text came from the pool, `meta.lm_text`); seeds [0, 1, 2] (mean ± sample sd; the seed sets only the LM's initialization: every seed trains on the same LM text in the same order, so the sd leaves out data-sampling variance)
+
+| Tokenizer | \|V\| | Train bytes/token | Tokens trained | english BPB (↓) | multilingual BPB (↓) | code BPB (↓) | Macro BPB (↓) |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `wp_bpe_ppig` | 16384 | 2.599 | 38,502,400 | 2.318 ± 0.005 | 2.715 ± 0.005 | 2.533 ± 0.006 | **2.522 ± 0.005** |
+| `wp_bpe_pig` | 16384 | 2.591 | 38,600,704 | 2.318 ± 0.001 | 2.723 ± 0.006 | 2.542 ± 0.005 | **2.528 ± 0.001** |
+| `wp_bpe_npmi` | 16384 | 2.529 | 39,550,976 | 2.326 ± 0.001 | 2.718 ± 0.002 | 2.549 ± 0.008 | **2.531 ± 0.003** |
+| `super_bpe` | 16384 | 3.670 | 27,262,976 | 2.253 ± 0.003 | 2.806 ± 0.006 | 2.553 ± 0.001 | **2.537 ± 0.003** |
+| `bpe_frequency` | 16384 | 2.634 | 37,978,112 | 2.341 ± 0.002 | 2.752 ± 0.002 | 2.555 ± 0.003 | **2.549 ± 0.001** |
+| `morpheme_bpe` | 16384 | 2.519 | 39,714,816 | 2.289 ± 0.005 | 2.773 ± 0.005 | 2.590 ± 0.005 | **2.551 ± 0.005** |
+| `unigram_lm` | 16384 | 2.578 | 38,830,080 | 2.308 ± 0.003 | 2.776 ± 0.005 | 2.570 ± 0.004 | **2.551 ± 0.004** |
+| `bpe_dropout_p0.1` | 16384 | 2.494 | 40,108,032 | 2.356 ± 0.006 | 2.750 ± 0.009 | 2.564 ± 0.007 | **2.557 ± 0.007** |
+| `length_penalized` | 16384 | 2.628 | 38,076,416 | 2.353 ± 0.004 | 2.760 ± 0.001 | 2.585 ± 0.004 | **2.566 ± 0.003** |
+| `mdl_bits` | 16384 | 2.398 | 41,746,432 | 2.325 ± 0.002 | 2.739 ± 0.008 | 2.664 ± 0.006 | **2.576 ± 0.005** |
+| `wp_bpe_scp` | 16384 | 1.621 | 61,702,144 | 3.015 ± 0.008 | 2.802 ± 0.009 | 3.161 ± 0.029 | **2.993 ± 0.015** |
+<!-- END GENERATED: colab_big -->
+
+Setup of this run: `--preset big --resume --concurrency 1` from commit `6d260c2` on one Colab L4 (22 GB);
+the 33 runs (11 tokenizers x 3 seeds) trained one after another. The job it resumed (the tokenizers, the
+choice of LM text from the pool, and the encoded ids: all of the LMs' training data) was prepared with
+`--prepare-only` at commit `3186c1b` from a tree with uncommitted changes (`meta.job_prepared`,
+`git_dirty: true`); the LM text pool code was committed only afterwards (`c0d0c7f`, `35c661e`), so the
+code that drew and encoded the LM text is not tied to any commit. Model: 8 layers, d_model 512, 8 heads,
+FFN 2048, sequence length 512; 100 MB byte budget per run; seeds 0, 1, 2. Measured wall time: 5 h 03 min
+from launch (20:51 IST) to the result on the laptop (01:54:38 IST). Of that, uploading the job took
+7 min 20 s and training plus evaluation on the VM 17,699.8 s (4 h 55 min, `meta.lm_seconds`), a mean of
+536 s (8.9 min) per run; the run files do not record per-run time. Two earlier launches of the same job
+ran out of GPU memory, with `--concurrency 3` (processes at 9.1, 7.1 and 5.1 GiB) and with
+`--concurrency 2` (one process at 11.1 GiB, the other at 9.1 GiB and asking for 2 GiB more). The
+failing allocation is the fp32 logits of one 64 x 512 x 16,384 batch (2 GiB). The preset now defaults
+to `--concurrency 1`.
+
+##### Small vs big proxy LM
+<!-- BEGIN GENERATED: colab_compare -->
+- the 11 tokenizers both proxy-LM tiers trained; small LM: d_model=128, n_layers=2, 10,000,000-byte budget, seeds [0, 1, 2], `Tesla T4`; big LM: d_model=512, n_layers=8, 100,000,000-byte budget, seeds [0, 1, 2], `NVIDIA L4`
+- rank: by mean macro val BPB (1 = best); Δ: macro val BPB minus `bpe_frequency`'s in the same tier (negative = better) ± its standard error √(sd²/n + sd_ref²/n) over the n seeds (sample sd). The seeds vary only the LM's initialization (same LM text, same order), so the standard errors measure initialization noise on this one text sample, not data-sampling variance
+- small LM: 4 tokenizers beat `bpe_frequency`, by 0.006–0.038 BPB, i.e. 0.6–2.3 standard errors
+- big LM: 4 tokenizers beat `bpe_frequency`, by 0.012–0.027 BPB, i.e. 6.4–23.8 standard errors
+
+| Tokenizer | Small LM rank | Small LM Δ BPB | Big LM rank | Big LM Δ BPB |
+| :--- | ---: | ---: | ---: | ---: |
+| `wp_bpe_ppig` | 2 | -0.018 ± 0.009 | 1 | -0.027 ± 0.003 |
+| `wp_bpe_pig` | 1 | -0.038 ± 0.017 | 2 | -0.022 ± 0.001 |
+| `wp_bpe_npmi` | 4 | -0.006 ± 0.010 | 3 | -0.018 ± 0.002 |
+| `super_bpe` | 3 | -0.008 ± 0.009 | 4 | -0.012 ± 0.002 |
+| `bpe_frequency` | 5 | reference | 5 | reference |
+| `morpheme_bpe` | 9 | +0.076 ± 0.009 | 6 | +0.002 ± 0.003 |
+| `unigram_lm` | 8 | +0.059 ± 0.012 | 7 | +0.002 ± 0.002 |
+| `bpe_dropout_p0.1` | 7 | +0.027 ± 0.008 | 8 | +0.008 ± 0.004 |
+| `length_penalized` | 6 | +0.017 ± 0.008 | 9 | +0.017 ± 0.002 |
+| `mdl_bits` | 10 | +0.197 ± 0.010 | 10 | +0.027 ± 0.003 |
+| `wp_bpe_scp` | 11 | +0.632 ± 0.021 | 11 | +0.444 ± 0.009 |
+<!-- END GENERATED: colab_compare -->
+
+The seeds vary only the LMs' initialization: every seed trains on the same LM text in the same order,
+so these standard errors measure initialization noise on this one text sample, not the variance from
+drawing other training text, and the separations below hold for this sample only.
+With the small LM, the four tokenizers ahead of `bpe_frequency` are within about two standard errors
+of it, so the order of the top five is not resolved by 3 seeds. With the big LM, `wp_bpe_ppig`,
+`wp_bpe_pig`, `wp_bpe_npmi` and `super_bpe` beat `bpe_frequency` by several standard errors; among the
+three wp_bpe variants, neighbouring means differ by less than two standard errors of their difference,
+so their order is not resolved. Below `bpe_frequency` the order changes: `morpheme_bpe` and
+`unigram_lm` move from clearly worse to within one standard error of it, and `length_penalized` drops
+from 6th to 9th.
+
+#### Big proxy LM: settings and how to run
+
+`--preset big` selects a larger proxy LM (same architecture as above): 8 layers, d_model 512, 8 heads,
+FFN 2048, sequence length 512 (~25M non-embedding parameters, ~8.4M embedding parameters at V = 16,384).
+One hyperparameter set for every tokenizer: AdamW lr 6e-4, weight decay 0.1, warmup 2% of steps then
+cosine decay, gradient clip 1.0, 64 x 512 = 32,768 tokens per step, bf16 autocast when the GPU supports
+it, 100 MB byte budget per run, seeds 0/1/2. Default GPU L4; 11 variants (wordpiece_pmi, wp_bpe_base and
+wp_bpe_ft are left out); `--concurrency N` (variant, seed) runs share the GPU as separate processes, each
+writing its own result file (default 1: on the L4, 2 and 3 ran out of memory). Results go to
+`benchmarks/results/colab_big/`. Explicit flags override the preset.
+
+LM text. A 100 MB budget needs 110 MB of LM text (budget + 10%, each document used once), but the
+tokenizers stay the ones trained on the 52.5 MB default train split. The preset therefore adds an LM text
+pool (`--lm-text-bytes 120000000`, `DataPipeline.lm_pool`): the train split of the dataset with the same
+sources, revisions, seed and split rule but a 120 MB train budget (cached under its own key next to the
+default dataset), minus every default train/val/test document by sha256. The LM trains on 110.0 MB drawn
+from the train split plus the pool (62.1 MB of it from the pool). At runtime the CLI checks that this text
+shares no document with val or test, and that every variant's encoded LM text covers the budget. BPB is
+measured on the same val split as the small tier. The pool's provenance (its dataset manifest, document
+and byte counts) is in `meta.lm_text` of the results.
+
+```bash
+# 1. Locally: pool, tokenizers, encodings into the job dir; no LM training.
+uv run python -m tokenisers.benchmarks.colab --preset big --prepare-only --skip-memory-check
+# 2. On Colab (L4): uploads the job, trains, downloads each finished run as it lands.
+uv run python -m tokenisers.benchmarks.colab --preset big --resume
+```
+
+Without `--prepare-only` one command does both steps. The job (`config.json` and one compressed `.npz` of
+token ids per tokenizer) is kept in `benchmarks/results/colab_big/job/` (gitignored; `--job-dir` moves
+it). If a run fails or is interrupted, re-run it with `--resume`: no tokenizer training or encoding, and
+the finished (variant, seed) run files already downloaded are uploaded to the new session and not
+retrained. `--resume` refuses a job prepared with different model, training or data arguments;
+`--concurrency` may change (e.g. lower it after an out-of-memory error). Ctrl-C or `kill <pid>` stops
+the Colab session before the CLI exits (a job started with `&` from a script ignores SIGINT; use `kill`).
+`--gpu none` runs on a CPU runtime (for a smoke test with toy sizes).
+
+Measured on the laptop (full scale, `--prepare-only`): 372 s and 3.2 GiB peak RSS with the pool
+downloaded from Hugging Face (~3 min of that; the pool's dataset is 135 MB on disk), 254 s and 3.5 GiB
+once cached (tokenizer training 104 s, encoding 144 s). Every tokenizer reproduces the committed V = 16,384
+small-tier run exactly (validation bytes/token per domain identical). The job is 463 MB (11 files of
+41-47 MB). Smoke test on a Colab CPU runtime through the same code path (`--preset big --gpu none`,
+d_model 32, 1 layer, 200 KB budget, bpe_frequency + bpe_dropout_p0.1, 2 seeds, `--concurrency 2`): the
+first session was dropped after the two bpe_frequency runs had been downloaded; `--resume` uploaded them
+into a new session, which trained the two missing runs (11 min on the VM: one wave of two concurrent
+runs, as in the first session) and returned the full result.
+
+Upload: the job uploads these pre-encoded ids, about 5 min at ~1.5 MB/s (again after each resume into a
+new session). The alternative, uploading the LM text (~38 MB compressed) and saved tokenizers and encoding
+on the VM after building the extension there (as `benchmarks/throughput.py` does), would take ~4 min
+(~1 min build, ~2 min encoding, under a minute of upload) and needs a clean git tree and more code, so it
+is not used.
+
+GPU time: the estimate made before the run (~1.3B training tokens at ~230 MFLOP per token, about 2-4 h
+of L4 time at 20-40 TFLOPS sustained in bf16) was low. The measured run trained 1.33 billion tokens in
+4 h 55 min including evaluation (about 75,000 tokens/s) at concurrency 1. Compute units used were not
+recorded. The default `--timeout` is 6 h (this run took 5 h 03 min); a job past it stops, and
+`--resume` continues it.
 
 ### 4. Larger Vocabularies (V = 32,768 and 65,536)
 
@@ -624,11 +803,350 @@ extension on the VM, and runs the job there detached, polled like the proxy-LM j
 | `unigram_lm` | 65536 | 8.86 / 8.73 | 74.76 / 74.15 |
 <!-- END GENERATED: throughput_local -->
 
+### 6. Tokenizer Swap on llm.c's GPT-2 (124M) Recipe
+
+How much does the tokenizer matter when everything else is fixed? `python -m
+tokenisers.benchmarks.nanogpt_swap` trains GPT-2 small (12 layers, 12 heads x 64, d = 768, context
+1024, learned positions, pre-LayerNorm, GELU, tied embeddings, no dropout) with llm.c's PyTorch
+recipe once per tokenizer and scores validation bits per byte on the same text. The trainer is
+[`vendor/llmc/train_gpt2_swap.py`](vendor/llmc/): llm.c's `train_gpt2.py` at `f1e2ace`, changed
+only inside delimited `SWAP` blocks; the hyperparameters are those of llm.c's
+`scripts/pyrun_gpt2_124M.sh` (AdamW (0.9, 0.95), lr 6e-4, weight decay 0.1 on 2-D weights, grad
+clip 1.0, 524,288 tokens per step, bf16 autocast, SDPA flash attention, `torch.compile`). Identical
+for every tokenizer, the only changes are: the vocabulary (tokenizer + one document separator,
+padded to a multiple of 128; padded ids are kept out of the softmax as in llm.c's CUDA trainer),
+600 steps with the warmup scaled by the same fraction (700 of 18,865 -> 22) and the same cosine
+decay to 0, the micro-batch (gradient accumulation keeps 524,288 tokens per step), val BPB on the
+whole val set every 50 steps (`--eval-every`; 100 in the committed run) and after the last, data
+paths and a result file. A test checks that the run arguments differ from llm.c's script only in
+those fields and that the trainer differs from llm.c's file only inside `SWAP` blocks.
+
+**Tokenizers (12).** GPT-2 (tiktoken, 50,257 with `<|endoftext|>`, the baseline); TokenMonster
+`englishcode-50256` and `englishcode-32000` (`consistent` mode, as in @alexjc's TokenMonster
+speedrun record); and our 9 variants `bpe_frequency`, `wp_bpe_pig`, `wp_bpe_ppig`, `wp_bpe_npmi`,
+`super_bpe`, `unigram_lm`, `length_penalized`, `morpheme_bpe` (SIGMORPHON train-split lexicon) and
+`mdl_bits`, trained with the suite's default parameters at 50,256 tokens on the first 50 MB of
+FineWeb train documents, so that with the separator they have 50,257 like GPT-2. Each tokenizer
+gets one separator id, placed between documents exactly where GPT-2's shards have `<|endoftext|>`.
+Every prebuilt TokenMonster `englishcode` vocabulary NFD-normalizes its input and so is lossy
+(decode(encode(x)) != x on 1,053 of the 14,982 val documents; capcode also turns U+0130 into "I");
+the benchmark uses the closest lossless variant: the `nocapcode` vocabulary of the same size and
+mode with the normalization flag cleared (same tokens and ids). Every tokenizer must reproduce
+every val document exactly before it is trained. On the val text GPT-2 gives 4.44 bytes per token,
+TokenMonster 5.32 (50,256) and 4.95 (32,000), `super_bpe` 5.03, and the other 8 of ours 2.70-2.75:
+their pre-tokenizer isolates every whitespace run as its own token, so at 524,288 tokens per step
+they see about 40% fewer bytes than GPT-2.
+
+**Data.** The text is the speedrun's own pre-tokenized GPT-2 FineWeb shards
+(`kjj0/fineweb10B-gpt2`), decoded back to documents and re-encoded by each tokenizer into llm.c
+`.bin` files. Val = the 14,982 complete documents (46.5 MB) in the speedrun's val window (the first
+20 x 524,288 GPT-2 tokens of `fineweb_val_000000.bin`); BPB = NLL in bits over every val token
+(separators included) / UTF-8 bytes of those documents, with the last window padded and masked, so
+every tokenizer is scored on the same bytes. Train = the train-shard documents in order (one pass,
+no repeats), minus any document whose sha256 equals a val document's; each tokenizer's stream
+holds 600 x 524,288 tokens plus 1%. A tokenizer with more bytes per token therefore sees more text
+in the same 600 steps: compute and tokens per step are fixed, text is not. The step at which a
+curve first reaches the speedrun's target (3.28 nats per GPT-2 token, converted to BPB with GPT-2's
+bytes per token on this val text) is reported; at 600 of llm.c's ~19,000 steps it is not expected
+to be reached.
+
+```bash
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap --prepare-only  # local CPU: tokenizers
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap --pilot --gpu L4  # ~20 timed steps
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap --gpu L4  # 12 x 600 steps, one session
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap --gpu L4 --resume  # after a drop
+```
+
+One Colab GPU session (L4, A100 or H100; a T4 has no bf16) runs the tokenizers one after another;
+each finished tokenizer's result file is downloaded on the next poll, and `--resume` uploads the
+finished ones to a new session so they are not retrained. The VM builds the native extension from
+`git archive HEAD`, downloads and decodes the shards and encodes the text; only the saved
+tokenizers and the code are uploaded.
+
+Pilot timings (`--pilot`: 20 steps of GPT-2 and `bpe_frequency`, val encoding of all 12, projected
+full-run time): [L4](benchmarks/results/nanogpt_swap/pilot_l4.md),
+[A100](benchmarks/results/nanogpt_swap/pilot_a100.md).
+
+Results: one run of all 12 tokenizers in one Colab A100 session (`--gpu A100 --eval-every 100`),
+rendered from [`nanogpt_swap.json`](benchmarks/results/nanogpt_swap/nanogpt_swap.json); every run's
+per-step train loss and lr are in
+[`nanogpt_swap_steps.csv`](benchmarks/results/nanogpt_swap/nanogpt_swap_steps.csv). A 3x peak lr
+(`--lr 1.8e-3`) was stopped after GPT-2, which it made worse at every val pass:
+[note](benchmarks/results/nanogpt_swap_lr1p8e-3/README.md).
+
+<!-- BEGIN GENERATED: nanogpt_swap -->
+- NVIDIA A100-SXM4-40GB, 40960 MiB, 580.82.07, torch 2.11.0+cu130, Colab session `tokenisers-swap_job-4c6b4d48`; commit `ceb11bac38`, tokenizers prepared at commit `a04d3c3ff3`; generated 2026-11-01T02:01:33Z
+- recipe: `karpathy/llm.c@f1e2ace651495b74ae22d45d1723443fd00ecd3a` scripts/pyrun_gpt2_124M.sh (GPT-2 124M, tied embeddings, AdamW lr 0.0006, wd 0.1, 524288 tokens/step, bf16, compiled) with 600 steps, warmup 22, val every 100 steps
+- val: 14982 FineWeb documents (46.5 MB, the speedrun's first 10,485,760 GPT-2 val tokens), the same bytes for every tokenizer; BPB = NLL bits over every val token (one separator per document included) / UTF-8 bytes
+- our tokenizers: trained on the first 16,157 train documents (50.0 MB) at 50,256 tokens + 1 separator; TokenMonster: every prebuilt englishcode vocabulary NFD-normalizes its input (lossy on 1,053 of 14,982 val documents); capcode also folds U+0130 to I (2 documents). Used: the nocapcode vocabulary of the same size and mode, normalization flag cleared (same tokens and ids), lossless on all val documents
+- target: the speedrun's 3.28 nats per GPT-2 token = 1.0667 BPB on this val text
+
+| Tokenizer | \|V\| | Params | Val B/token | Train B/token | Final BPB | GPT-2-equivalent steps | Step at target | ms/step | tok/s |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `gpt2` | 50,257 | 124.5 M | 4.436 | 4.452 | **1.6851** | 600 | not reached | 2665 | 196,731 |
+| `tm_englishcode_50256` | 50,257 | 124.5 M | 5.322 | 5.357 | **1.8678** | 253 | not reached | 2670 | 196,359 |
+| `tm_englishcode_32000` | 32,001 | 110.5 M | 4.954 | 4.986 | **1.9518** | 183 | not reached | 2434 | 215,379 |
+| `wp_bpe_ppig` | 50,257 | 124.5 M | 2.736 | 2.740 | **1.9561** | 181 | not reached | 2679 | 195,680 |
+| `mdl_bits` | 50,257 | 124.5 M | 2.718 | 2.722 | **1.9684** | 172 | not reached | 2680 | 195,611 |
+| `morpheme_bpe` | 50,257 | 124.5 M | 2.718 | 2.721 | **1.9695** | 171 | not reached | 2681 | 195,561 |
+| `wp_bpe_npmi` | 50,257 | 124.5 M | 2.702 | 2.706 | **1.9835** | 160 | not reached | 2679 | 195,693 |
+| `wp_bpe_pig` | 50,257 | 124.5 M | 2.733 | 2.738 | **2.0077** | 144 | not reached | 2679 | 195,678 |
+| `unigram_lm` | 50,257 | 124.5 M | 2.725 | 2.729 | **2.0239** | 135 | not reached | 2684 | 195,351 |
+| `bpe_frequency` | 50,257 | 124.5 M | 2.750 | 2.754 | **2.0259** | 133 | not reached | 2683 | 195,414 |
+| `super_bpe` | 50,257 | 124.5 M | 5.031 | 5.054 | **2.0301** | 130 | not reached | 2671 | 196,261 |
+| `length_penalized` | 50,257 | 124.5 M | 2.749 | 2.752 | **2.0393** | 125 | not reached | 2680 | 195,659 |
+
+- GPT-2-equivalent steps: the first step at which GPT-2's train loss, in bits per byte of its train text (nats / ln 2 / 4.452 bytes per token) and smoothed by a centred 21-step rolling mean, reaches the tokenizer's final val BPB: how many of GPT-2's 600 steps buy the same quality (GPT-2: 600 by definition). The train text is one pass over unseen documents; at GPT-2's val passes (steps 100-600) the smoothed train BPB is within 0.0074 of val BPB (largest at step 100).
+- train: each tokenizer's first 600 x 524,288 tokens of the same FineWeb train documents in the same order, one pass; one run per tokenizer, llm.c's fixed seed
+
+Findings (one seed per tokenizer: the seed-to-seed spread is not measured here):
+
+- Lowest final BPB: `gpt2` (1.6851), GPT-2's own tokenizer; next `tm_englishcode_50256` (1.8678, +0.1828).
+- More val bytes per token than GPT-2's 4.436: `tm_englishcode_50256` 5.322, `tm_englishcode_32000` 4.954, `super_bpe` 5.031. Their final BPB is 1.8678-2.0301, all above GPT-2's: more text per step did not give a lower BPB.
+- Our 8 whitespace-isolating tokenizers (the repo's pre-tokenizer makes every whitespace run its own token) get 2.70-2.75 val bytes per token, so each 524,288-token step holds 38-39% less text than GPT-2's (train bytes per token). The comparison is confounded by that design choice: they train on less text, not only on different tokens.
+- Early training: after 600 steps GPT-2 is at 5.18 nats per token on val, far from the speedrun's target of 3.28; no tokenizer reaches the target. The ranking at this budget need not hold for longer training.
+<!-- END GENERATED: nanogpt_swap -->
+
+**Space-prefix retrain.** The 8 whitespace-isolating variants above (all of ours but `super_bpe`)
+retrained with `pretokenizer="space_prefix"` as `<variant>_sp`: the same 50 MB of training text,
+parameters, size and lexicon, but a word carries the space before it, so that space no longer
+costs a token of its own. They run as a separate job with the same recipe, data source and val documents,
+and the table compares each with its whitespace run above (GPT-2's row for reference).
+
+```bash
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap-sp --prepare-only --tokenizers \
+  bpe_frequency_sp wp_bpe_pig_sp wp_bpe_ppig_sp wp_bpe_npmi_sp unigram_lm_sp length_penalized_sp morpheme_bpe_sp mdl_bits_sp
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap-sp --gpu A100 --steps 600 --eval-every 100 \
+  --output-dir benchmarks/results/nanogpt_swap_sp
+```
+
+<!-- BEGIN GENERATED: nanogpt_swap_sp -->
+- space-prefix run: NVIDIA A100-SXM4-40GB, 40960 MiB, 580.82.07, commit `2df09a7847`, generated 2026-11-01T10:53:38Z; whitespace run: NVIDIA A100-SXM4-40GB, 40960 MiB, 580.82.07
+- same recipe, val documents and tokenizer training text as the whitespace run
+
+| Variant | Val B/token whitespace | Val B/token space_prefix | Final BPB whitespace | Final BPB space_prefix | Change |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| `bpe_frequency` | 2.750 | 4.831 | 2.0259 | 1.8000 | -0.2259 |
+| `wp_bpe_pig` | 2.733 | 4.769 | 2.0077 | 1.7749 | -0.2328 |
+| `wp_bpe_ppig` | 2.736 | 4.777 | 1.9561 | 1.7552 | -0.2009 |
+| `wp_bpe_npmi` | 2.702 | 4.658 | 1.9835 | 1.7436 | -0.2399 |
+| `unigram_lm` | 2.725 | 4.692 | 2.0239 | 1.7088 | -0.3151 |
+| `length_penalized` | 2.749 | 4.822 | 2.0393 | 1.9008 | -0.1385 |
+| `morpheme_bpe` | 2.718 | 4.710 | 1.9695 | 1.7742 | -0.1953 |
+| `mdl_bits` | 2.718 | 4.689 | 1.9684 | 1.7067 | -0.2617 |
+| `gpt2` (reference) | 4.436 | | 1.6851 | | |
+<!-- END GENERATED: nanogpt_swap_sp -->
+
+**Pre-split and data-scaling ablation.** Two follow-ups to the space-prefix retrain in one job of six
+tokenizers, with the same recipe (600 steps, lr 6e-4, val every 100), train stream and val
+documents: three variants retrained with `pretokenizer="gpt2"` (`<variant>_g2`: GPT-2's exact regex
+pre-split, the same 50 MB of text), and three space-prefix variants trained on 300 MB instead of 50
+(`<variant>_sp300`: the first train documents up to 300 MB, an extension of the same ordered stream
+whose first documents are the 50 MB, checked by sha256 like their disjointness from val). Training
+takes about 60-75 bytes of RAM per byte of text, about 20 GB at 300 MB, so `train_tokenizers` trains
+those on a Colab VM (default L4, 53 GB RAM) and downloads each tokenizer as it finishes. All 8 `_g2`
+tokenizers are prepared locally in a pool, and any three of them make the job with any three
+`_sp300`:
+
+```bash
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir POOL_G2 --prepare-only --tokenizers bpe_frequency_g2 \
+  wp_bpe_pig_g2 wp_bpe_ppig_g2 wp_bpe_npmi_g2 unigram_lm_g2 length_penalized_g2 morpheme_bpe_g2 mdl_bits_g2
+uv run python -m tokenisers.benchmarks.nanogpt_swap.train_tokenizers --job-dir POOL_SP300 --variants A B C  # Colab L4
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir JOB --prepare-only --from-pool POOL_G2 POOL_SP300 \
+  --tokenizers X_g2 Y_g2 Z_g2 A_sp300 B_sp300 C_sp300
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir JOB --gpu A100 --steps 600 --eval-every 100 \
+  --output-dir benchmarks/results/nanogpt_swap_ablation
+```
+
+<!-- BEGIN GENERATED: nanogpt_swap_ablation -->
+- ablation run: NVIDIA A100-SXM4-40GB, 40960 MiB, 580.82.07, commit `950506beba`, generated 2026-11-01T16:28:54Z
+- same recipe and val documents as the whitespace run
+- training text: `mdl_bits_g2` 16,157 docs, 50.0 MB; `unigram_lm_g2` 16,157 docs, 50.0 MB; `wp_bpe_npmi_g2` 16,157 docs, 50.0 MB; `wp_bpe_pig_g2` 16,157 docs, 50.0 MB; `wp_bpe_ppig_g2` 16,157 docs, 50.0 MB; `mdl_bits_sp300` 97,402 docs, 300.0 MB; `unigram_lm_sp300` 97,402 docs, 300.0 MB; `wp_bpe_npmi_sp300` 97,402 docs, 300.0 MB; `wp_bpe_pig_sp300` 97,402 docs, 300.0 MB; `wp_bpe_ppig_sp300` 97,402 docs, 300.0 MB
+- cells: final val BPB (val bytes per token)
+
+| Variant | whitespace, 50 MB | space_prefix, 50 MB | gpt2, 50 MB | space_prefix, 300 MB |
+| :--- | ---: | ---: | ---: | ---: |
+| `mdl_bits` | **1.9684** (2.72) | **1.7067** (4.69) | **1.6910** (4.45) | **1.7226** (4.72) |
+| `unigram_lm` | **2.0239** (2.73) | **1.7088** (4.69) | **1.6817** (4.42) | **1.7026** (4.70) |
+| `wp_bpe_npmi` | **1.9835** (2.70) | **1.7436** (4.66) | **1.7093** (4.43) | **1.7207** (4.69) |
+| `wp_bpe_pig` | **2.0077** (2.73) | **1.7749** (4.77) | **1.7029** (4.47) | **1.7644** (4.80) |
+| `wp_bpe_ppig` | **1.9561** (2.74) | **1.7552** (4.78) | **1.6946** (4.47) | **1.7090** (4.81) |
+| `gpt2` (reference) | **1.6851** (4.44) | | | |
+<!-- END GENERATED: nanogpt_swap_ablation -->
+
+### 7. Cross-lingual Tokenization Parity (FLORES+)
+
+How many more tokens does the same content cost in another language? `python -m
+tokenisers.benchmarks.flores` encodes the parallel FLORES+ sentences
+([`openlanguagedata/flores_plus`](https://huggingface.co/datasets/openlanguagedata/flores_plus), CC BY-SA
+4.0, pinned revision) one sentence at a time, with no separator, and reports each language's
+**premium**: its token count divided by English's on the same sentences (Petrov et al. 2023,
+[Language Model Tokenizers Introduce Unfairness Between Languages](https://arxiv.org/abs/2305.15425)).
+Only the devtest split (1,012 sentences per language) is read; dev is never read, and nothing is
+trained or tuned on FLORES+. The languages are English, the 10 FineWeb-2 languages of the training
+mix ("in-mix") and 7 in no tokenizer's training mix ("out-of-mix": Korean, Thai, Tamil, Amharic,
+Greek, Hebrew, Bengali). Two tiers of tokenizers:
+
+- **intrinsic**: the 13 variants at V = 16,384 / 32,768 / 65,536, retrained exactly as for the
+  intrinsic results of sections 2 and 4 (same 52.5 MB train split with 30% FineWeb-2 text,
+  parameters and SIGMORPHON lexicon; training is deterministic). The run checks each retrained
+  tokenizer's test-split bytes/token against the committed leaderboard.
+- **GPT-2 swap**: the tokenizers of section 6 and its follow-ups, loaded read-only from their prepared
+  job directories exactly as the swap job loads them: GPT-2's own (trained by OpenAI on WebText), the
+  two prebuilt TokenMonster English+code vocabularies (50,256 and 32,000 tokens; not trained on
+  FineWeb), and our 9 whitespace variants with their 8 `_sp`, 8 `_g2` and 8 `_sp300` retrains, trained
+  on English FineWeb text at 50,256 tokens.
+
+```bash
+# FLORES+ is gated (approved automatically): accept its terms on Hugging Face with the account whose
+# token is used. The TokenMonster vocabularies need the tokenmonster package.
+uv run --with tokenmonster==1.1.12 python -m tokenisers.benchmarks.flores --skip-memory-check
+```
+
+The files are cached in the data pipeline's cache dir (`flores_plus-<revision>/devtest/`);
+`--flores-dir` reads a local copy instead, and `--vocab-sizes` or `--swap-jobs` with no value skips
+that tier. The committed run trained inside a 5 GiB `systemd-run -p MemoryMax=` scope (hence
+`--skip-memory-check`). Every tokenizer's per-language numbers are in
+[`flores_by_language.csv`](benchmarks/results/flores/flores_by_language.csv), the provenance
+(dataset revision and file hashes, training records, job directories and hashes) in
+[`flores.json`](benchmarks/results/flores/flores.json).
+
+<!-- BEGIN GENERATED: flores -->
+- FLORES+ `openlanguagedata/flores_plus` at `1147e2dc59f3` (CC BY-SA 4.0), devtest split only: 1,012 parallel sentences per language, each encoded on its own with no separator; never used for training
+- in-mix: the 10 FineWeb-2 languages of the data pipeline's training mix (FineWeb-2 config -> FLORES+ file): deu_Latn, fra_Latn, spa_Latn, rus_Cyrl, cmn_Hani -> cmn_Hans, jpn_Jpan, arb_Arab, hin_Deva, hun_Latn, fin_Latn; out-of-mix (in no tokenizer's training mix): kor_Hang, tha_Thai, tam_Taml, amh_Ethi, ell_Grek, heb_Hebr, ben_Beng
+- intrinsic tier: 13 variants x V = 16,384 / 32,768 / 65,536, retrained as the committed intrinsic results (real dataset `hf-fb5b8df7af00b10f`, 52.5 MB train split); 39 of 39 reproduce the committed test-split bytes/token exactly
+- swap tier: the GPT-2-swap tokenizers from the prepared jobs `nanogpt-swap-job`, `nanogpt-swap-job-sp`, `nanogpt-swap-pool-g2`, `nanogpt-swap-pool-sp300`: `gpt2` (tiktoken's `gpt2` encoding: GPT-2's own BPE, trained by OpenAI on WebText); `tm_englishcode_50256` (TokenMonster's prebuilt `englishcode-50256-consistent-nocapcode-v1` vocabulary, 50,256 tokens); `tm_englishcode_32000` (TokenMonster's prebuilt `englishcode-32000-consistent-nocapcode-v1` vocabulary, 32,000 tokens); 33 of ours, trained on English FineWeb text at 50,256 tokens
+- premium = tokens(language) / tokens(English) on the same sentences; σ ln = standard deviation of ln(premium) over the group's languages; <= 1.5 = share of them with premium <= 1.5; byte fallback = share of tokens that are one byte >= 0x80, a piece of a multi-byte character
+- commit `d9b38ad6e9`; generated 2026-11-01T12:21:34Z; per-language tokens, bytes/token, characters/token and one-byte shares of every tokenizer are in `flores_by_language.csv`
+
+How to read: premium 1.0 is parity with English; 2.0 means the same content costs twice the tokens (so half the context and twice the price). Bytes or characters per token are not comparable across scripts: UTF-8 spends 1 byte on a Latin letter, 2 on Cyrillic, Greek, Hebrew or Arabic, 3 on Devanagari, Han, Kana, Hangul or Thai, so a script's bytes per token can rise while its text still costs more tokens. The premium counts tokens for the same parallel sentences, which is comparable.
+
+Intrinsic tier (30% multilingual mix), sorted by mean in-mix premium:
+
+| Tokenizer | \|V\| | EN tokens/sentence | In-mix mean | In-mix max | In-mix σ ln | In-mix <= 1.5 | Out-of-mix mean | Out-of-mix max | Out-of-mix σ ln | Out-of-mix <= 1.5 | Out-of-mix byte fallback |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `wp_bpe_scp@16384` | 16,384 | 86.3 | 1.04 | 1.35 hun_Latn | 0.43 | 100% | 2.75 | 4.81 tam_Taml | 0.41 | 14% | 77.8% |
+| `wp_bpe_scp@32768` | 32,768 | 73.9 | 1.10 | 1.46 hun_Latn | 0.42 | 100% | 2.99 | 5.62 tam_Taml | 0.50 | 14% | 73.6% |
+| `wp_bpe_scp@65536` | 65,536 | 60.8 | 1.15 | 1.51 spa_Latn | 0.40 | 80% | 3.59 | 6.83 tam_Taml | 0.52 | 14% | 72.9% |
+| `wp_bpe_npmi@65536` | 65,536 | 47.8 | 1.16 | 1.39 spa_Latn | 0.25 | 100% | 4.93 | 8.70 tam_Taml | 0.43 | 0% | 74.8% |
+| `mdl_bits@65536` | 65,536 | 47.2 | 1.17 | 1.42 hin_Deva | 0.25 | 100% | 4.98 | 8.81 tam_Taml | 0.44 | 0% | 74.4% |
+| `wp_bpe_pig@65536` | 65,536 | 46.9 | 1.17 | 1.41 hin_Deva | 0.25 | 100% | 5.07 | 8.86 tam_Taml | 0.41 | 0% | 75.8% |
+| `wp_bpe_ppig@65536` | 65,536 | 46.8 | 1.17 | 1.44 hin_Deva | 0.25 | 100% | 5.01 | 8.88 tam_Taml | 0.44 | 0% | 74.0% |
+| `bpe_frequency@65536` | 65,536 | 46.3 | 1.19 | 1.46 hin_Deva | 0.23 | 100% | 5.22 | 8.97 tam_Taml | 0.41 | 0% | 77.7% |
+| `morpheme_bpe@65536` | 65,536 | 47.1 | 1.19 | 1.47 hin_Deva | 0.23 | 100% | 5.20 | 8.82 tam_Taml | 0.38 | 0% | 79.4% |
+| `length_penalized@65536` | 65,536 | 46.3 | 1.19 | 1.50 hin_Deva | 0.24 | 100% | 5.08 | 8.97 tam_Taml | 0.44 | 0% | 74.1% |
+| `unigram_lm@65536` | 65,536 | 47.5 | 1.20 | 1.51 hin_Deva | 0.20 | 90% | 5.13 | 7.25 tam_Taml | 0.29 | 0% | 78.3% |
+| `wp_bpe_npmi@32768` | 32,768 | 49.8 | 1.22 | 1.44 hin_Deva | 0.24 | 100% | 4.93 | 8.35 tam_Taml | 0.38 | 0% | 79.5% |
+| `mdl_bits@32768` | 32,768 | 49.2 | 1.23 | 1.48 hin_Deva | 0.24 | 100% | 5.00 | 8.45 tam_Taml | 0.38 | 0% | 80.0% |
+| `wp_bpe_ppig@32768` | 32,768 | 48.7 | 1.23 | 1.51 hin_Deva | 0.23 | 90% | 5.02 | 8.53 tam_Taml | 0.39 | 0% | 79.1% |
+| `wp_bpe_pig@32768` | 32,768 | 48.8 | 1.24 | 1.48 hin_Deva | 0.23 | 100% | 5.16 | 8.52 tam_Taml | 0.36 | 0% | 82.6% |
+| `unigram_lm@32768` | 32,768 | 49.2 | 1.25 | 1.59 hin_Deva | 0.18 | 90% | 5.37 | 7.78 tam_Taml | 0.32 | 0% | 87.7% |
+| `bpe_frequency@32768` | 32,768 | 48.1 | 1.25 | 1.54 hin_Deva | 0.21 | 90% | 5.36 | 8.64 tam_Taml | 0.34 | 0% | 85.3% |
+| `length_penalized@32768` | 32,768 | 48.2 | 1.25 | 1.58 hin_Deva | 0.22 | 90% | 5.11 | 8.62 tam_Taml | 0.38 | 0% | 79.6% |
+| `morpheme_bpe@32768` | 32,768 | 49.4 | 1.26 | 1.59 hin_Deva | 0.19 | 90% | 5.60 | 8.41 tam_Taml | 0.34 | 0% | 92.8% |
+| `wp_bpe_npmi@16384` | 16,384 | 52.4 | 1.29 | 1.51 hin_Deva | 0.23 | 90% | 5.24 | 7.93 tam_Taml | 0.36 | 0% | 92.2% |
+| `mdl_bits@16384` | 16,384 | 52.0 | 1.29 | 1.55 hin_Deva | 0.22 | 90% | 5.33 | 8.00 tam_Taml | 0.34 | 0% | 92.8% |
+| `wp_bpe_ppig@16384` | 16,384 | 51.4 | 1.30 | 1.58 hin_Deva | 0.22 | 80% | 5.34 | 8.09 tam_Taml | 0.36 | 0% | 91.7% |
+| `wp_bpe_pig@16384` | 16,384 | 51.4 | 1.30 | 1.55 hin_Deva | 0.21 | 80% | 5.38 | 8.08 tam_Taml | 0.34 | 0% | 92.8% |
+| `unigram_lm@16384` | 16,384 | 51.6 | 1.30 | 1.65 hin_Deva | 0.16 | 80% | 5.31 | 7.77 tam_Taml | 0.34 | 0% | 91.7% |
+| `length_penalized@16384` | 16,384 | 50.8 | 1.31 | 1.67 hin_Deva | 0.20 | 80% | 5.42 | 8.18 tam_Taml | 0.35 | 0% | 92.3% |
+| `bpe_frequency@16384` | 16,384 | 50.6 | 1.32 | 1.63 hin_Deva | 0.19 | 80% | 5.50 | 8.21 tam_Taml | 0.34 | 0% | 93.5% |
+| `morpheme_bpe@16384` | 16,384 | 52.3 | 1.34 | 1.74 hin_Deva | 0.15 | 90% | 5.32 | 7.94 tam_Taml | 0.34 | 0% | 93.5% |
+| `wordpiece_pmi@65536` | 65,536 | 130.3 | 1.37 | 2.44 hin_Deva | 0.35 | 70% | 2.00 | 3.20 tam_Taml | 0.49 | 29% | 88.8% |
+| `wp_bpe_ft@65536` | 65,536 | 130.3 | 1.37 | 2.44 hin_Deva | 0.34 | 70% | 2.00 | 3.20 tam_Taml | 0.49 | 29% | 88.9% |
+| `wordpiece_pmi@32768` | 32,768 | 130.3 | 1.38 | 2.47 hin_Deva | 0.33 | 70% | 2.04 | 3.20 tam_Taml | 0.48 | 29% | 89.8% |
+| `wp_bpe_ft@32768` | 32,768 | 130.3 | 1.38 | 2.47 hin_Deva | 0.32 | 70% | 2.05 | 3.20 tam_Taml | 0.45 | 29% | 90.5% |
+| `wordpiece_pmi@16384` | 16,384 | 130.3 | 1.39 | 2.47 hin_Deva | 0.31 | 70% | 2.06 | 3.20 tam_Taml | 0.45 | 29% | 90.5% |
+| `wp_bpe_ft@16384` | 16,384 | 130.3 | 1.39 | 2.47 hin_Deva | 0.31 | 70% | 2.05 | 3.20 tam_Taml | 0.45 | 29% | 90.5% |
+| `wp_bpe_base@65536` | 65,536 | 130.3 | 1.41 | 2.55 hin_Deva | 0.30 | 70% | 2.04 | 3.20 tam_Taml | 0.48 | 29% | 90.3% |
+| `wp_bpe_base@32768` | 32,768 | 130.4 | 1.41 | 2.55 hin_Deva | 0.30 | 70% | 2.06 | 3.20 tam_Taml | 0.45 | 29% | 91.1% |
+| `wp_bpe_base@16384` | 16,384 | 130.4 | 1.41 | 2.55 hin_Deva | 0.30 | 70% | 2.06 | 3.19 tam_Taml | 0.45 | 29% | 91.0% |
+| `super_bpe@65536` | 65,536 | 25.1 | 1.68 | 2.03 rus_Cyrl | 0.12 | 20% | 9.62 | 16.45 tam_Taml | 0.41 | 0% | 79.0% |
+| `super_bpe@32768` | 32,768 | 28.0 | 1.72 | 2.11 rus_Cyrl | 0.12 | 20% | 9.72 | 14.78 tam_Taml | 0.36 | 0% | 92.0% |
+| `super_bpe@16384` | 16,384 | 31.5 | 1.75 | 2.19 rus_Cyrl | 0.13 | 10% | 8.80 | 13.13 tam_Taml | 0.35 | 0% | 93.9% |
+
+GPT-2-swap tier (English-centric), sorted by mean in-mix premium:
+
+| Tokenizer | \|V\| | EN tokens/sentence | In-mix mean | In-mix max | In-mix σ ln | In-mix <= 1.5 | Out-of-mix mean | Out-of-mix max | Out-of-mix σ ln | Out-of-mix <= 1.5 | Out-of-mix byte fallback |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `wp_bpe_npmi` | 50,256 | 46.1 | 2.08 | 3.01 hin_Deva | 0.19 | 0% | 4.24 | 5.52 ben_Beng | 0.29 | 0% | 60.8% |
+| `mdl_bits` | 50,256 | 45.8 | 2.09 | 3.12 hin_Deva | 0.21 | 0% | 4.24 | 5.56 ben_Beng | 0.32 | 0% | 59.2% |
+| `wp_bpe_ppig` | 50,256 | 45.5 | 2.11 | 3.13 hin_Deva | 0.22 | 0% | 4.25 | 5.59 ben_Beng | 0.33 | 0% | 56.6% |
+| `wp_bpe_pig` | 50,256 | 45.5 | 2.19 | 3.36 hin_Deva | 0.24 | 0% | 4.42 | 5.60 ben_Beng | 0.27 | 0% | 63.0% |
+| `length_penalized` | 50,256 | 45.4 | 2.21 | 3.50 hin_Deva | 0.28 | 0% | 4.44 | 5.76 tam_Taml | 0.32 | 0% | 58.5% |
+| `morpheme_bpe` | 50,256 | 46.0 | 2.30 | 3.96 hin_Deva | 0.32 | 0% | 5.15 | 7.37 ben_Beng | 0.33 | 0% | 75.5% |
+| `bpe_frequency` | 50,256 | 45.3 | 2.33 | 3.87 hin_Deva | 0.31 | 0% | 4.94 | 7.47 ben_Beng | 0.33 | 0% | 69.6% |
+| `unigram_lm` | 50,256 | 45.8 | 2.43 | 4.46 hin_Deva | 0.38 | 0% | 5.20 | 6.95 ben_Beng | 0.26 | 0% | 75.6% |
+| `mdl_bits_g2` | 50,256 | 27.0 | 3.16 | 4.88 hin_Deva | 0.31 | 0% | 7.16 | 9.68 tam_Taml | 0.36 | 0% | 59.0% |
+| `wp_bpe_ppig_g2` | 50,256 | 26.8 | 3.20 | 4.97 hin_Deva | 0.32 | 0% | 7.21 | 9.74 tam_Taml | 0.36 | 0% | 58.1% |
+| `wp_bpe_npmi_g2` | 50,256 | 27.1 | 3.21 | 4.85 hin_Deva | 0.30 | 0% | 7.13 | 9.63 tam_Taml | 0.36 | 0% | 59.4% |
+| `length_penalized_g2` | 50,256 | 26.8 | 3.26 | 5.40 hin_Deva | 0.37 | 0% | 7.42 | 9.75 tam_Taml | 0.34 | 0% | 61.1% |
+| `wp_bpe_npmi_sp300` | 50,256 | 26.0 | 3.30 | 5.62 hin_Deva | 0.32 | 0% | 7.60 | 12.41 tam_Taml | 0.30 | 0% | 60.9% |
+| `wp_bpe_pig_g2` | 50,256 | 26.9 | 3.30 | 5.19 hin_Deva | 0.34 | 0% | 7.41 | 9.73 tam_Taml | 0.33 | 0% | 61.8% |
+| `mdl_bits_sp` | 50,256 | 26.1 | 3.33 | 5.21 hin_Deva | 0.33 | 0% | 7.51 | 9.75 ben_Beng | 0.30 | 0% | 63.5% |
+| `wp_bpe_npmi_sp` | 50,256 | 26.3 | 3.34 | 5.15 hin_Deva | 0.32 | 0% | 7.46 | 9.68 ben_Beng | 0.30 | 0% | 64.1% |
+| `wp_bpe_ppig_sp300` | 50,256 | 25.4 | 3.35 | 5.85 hin_Deva | 0.34 | 0% | 7.91 | 12.70 tam_Taml | 0.32 | 0% | 58.5% |
+| `mdl_bits_sp300` | 50,256 | 25.9 | 3.37 | 5.84 hin_Deva | 0.34 | 0% | 7.87 | 12.47 tam_Taml | 0.30 | 0% | 61.1% |
+| `wp_bpe_ppig_sp` | 50,256 | 25.6 | 3.41 | 5.38 hin_Deva | 0.34 | 0% | 7.78 | 10.21 tam_Taml | 0.31 | 0% | 62.2% |
+| `bpe_frequency_g2` | 50,256 | 26.7 | 3.41 | 5.55 hin_Deva | 0.38 | 0% | 8.13 | 12.66 ben_Beng | 0.36 | 0% | 70.9% |
+| `gpt2` | 50,256 | 26.7 | 3.46 | 7.41 hin_Deva | 0.43 | 0% | 8.24 | 15.54 tam_Taml | 0.40 | 0% | 70.6% |
+| `morpheme_bpe_g2` | 50,256 | 27.6 | 3.46 | 6.27 hin_Deva | 0.44 | 0% | 8.44 | 12.28 ben_Beng | 0.35 | 0% | 76.4% |
+| `wp_bpe_pig_sp300` | 50,256 | 25.4 | 3.49 | 6.30 hin_Deva | 0.36 | 0% | 8.30 | 12.69 tam_Taml | 0.29 | 0% | 64.6% |
+| `length_penalized_sp300` | 50,256 | 25.3 | 3.52 | 6.82 hin_Deva | 0.40 | 0% | 8.35 | 12.79 tam_Taml | 0.29 | 0% | 64.9% |
+| `wp_bpe_pig_sp` | 50,256 | 25.6 | 3.55 | 5.69 hin_Deva | 0.36 | 0% | 7.93 | 10.20 tam_Taml | 0.28 | 0% | 64.9% |
+| `morpheme_bpe_sp300` | 50,256 | 26.2 | 3.56 | 7.57 hin_Deva | 0.45 | 0% | 9.62 | 15.87 tam_Taml | 0.33 | 0% | 84.7% |
+| `length_penalized_sp` | 50,256 | 25.4 | 3.58 | 6.07 hin_Deva | 0.40 | 0% | 7.99 | 10.28 tam_Taml | 0.30 | 0% | 62.8% |
+| `morpheme_bpe_sp` | 50,256 | 26.1 | 3.67 | 6.59 hin_Deva | 0.44 | 0% | 9.19 | 12.98 ben_Beng | 0.31 | 0% | 79.6% |
+| `bpe_frequency_sp300` | 50,256 | 25.1 | 3.71 | 7.02 hin_Deva | 0.42 | 0% | 9.18 | 16.51 tam_Taml | 0.32 | 0% | 75.8% |
+| `unigram_lm_g2` | 50,256 | 27.2 | 3.76 | 7.05 hin_Deva | 0.49 | 0% | 9.08 | 14.69 tam_Taml | 0.34 | 0% | 84.1% |
+| `bpe_frequency_sp` | 50,256 | 25.3 | 3.79 | 6.47 hin_Deva | 0.42 | 0% | 9.13 | 13.39 ben_Beng | 0.31 | 0% | 75.5% |
+| `unigram_lm_sp300` | 50,256 | 26.1 | 3.84 | 7.90 hin_Deva | 0.49 | 0% | 9.47 | 14.09 tam_Taml | 0.27 | 0% | 82.9% |
+| `unigram_lm_sp` | 50,256 | 26.2 | 4.04 | 7.36 hin_Deva | 0.52 | 0% | 9.50 | 15.12 tam_Taml | 0.31 | 0% | 84.5% |
+| `super_bpe` | 50,256 | 24.3 | 4.11 | 7.15 hin_Deva | 0.40 | 0% | 9.35 | 13.89 ben_Beng | 0.31 | 0% | 71.4% |
+| `tm_englishcode_32000` | 32,000 | 24.7 | 5.76 | 13.52 hin_Deva | 0.64 | 0% | 11.37 | 16.89 tam_Taml | 0.34 | 0% | 92.9% |
+| `tm_englishcode_50256` | 50,256 | 22.9 | 6.16 | 14.58 hin_Deva | 0.66 | 0% | 12.26 | 18.21 tam_Taml | 0.34 | 0% | 92.9% |
+
+Premium by language: the lowest and highest mean in-mix premium of each tier and GPT-2; "UTF-8 bytes" is the byte ratio, the premium of a tokenizer with one token per byte. The English row gives tokens (bytes) per sentence.
+
+| Language | Group | UTF-8 bytes | `wp_bpe_scp@16384` | `super_bpe@16384` | `wp_bpe_npmi` | `tm_englishcode_50256` | `gpt2` |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| eng_Latn | reference | (130.5) | 86.3 | 31.5 | 46.1 | 22.9 | 26.7 |
+| deu_Latn | in-mix | 1.18 | 1.33 | 1.71 | 1.65 | 2.35 | 2.14 |
+| fra_Latn | in-mix | 1.24 | 1.33 | 1.65 | 1.65 | 2.50 | 2.00 |
+| spa_Latn | in-mix | 1.21 | 1.33 | 1.63 | 1.70 | 2.33 | 1.98 |
+| rus_Cyrl | in-mix | 1.97 | 1.01 | 2.19 | 2.29 | 11.26 | 5.68 |
+| cmn_Hans | in-mix | 0.91 | 0.42 | 1.44 | 2.17 | 5.24 | 3.15 |
+| jpn_Jpan | in-mix | 1.27 | 0.44 | 1.52 | 2.25 | 7.49 | 2.97 |
+| arb_Arab | in-mix | 1.60 | 1.02 | 1.86 | 2.47 | 9.16 | 4.36 |
+| hin_Deva | in-mix | 2.55 | 0.95 | 2.11 | 3.01 | 14.58 | 7.41 |
+| hun_Latn | in-mix | 1.16 | 1.35 | 1.75 | 1.91 | 3.67 | 2.66 |
+| fin_Latn | in-mix | 1.10 | 1.26 | 1.69 | 1.70 | 3.02 | 2.28 |
+| kor_Hang | out-of-mix | 1.19 | 1.73 | 4.85 | 2.76 | 6.83 | 5.03 |
+| tha_Thai | out-of-mix | 2.76 | 2.80 | 11.37 | 3.55 | 15.72 | 8.98 |
+| tam_Taml | out-of-mix | 3.19 | 4.81 | 13.13 | 5.36 | 18.21 | 15.54 |
+| amh_Ethi | out-of-mix | 1.71 | 2.57 | 7.03 | 4.80 | 9.77 | 7.70 |
+| ell_Grek | out-of-mix | 2.17 | 1.99 | 8.90 | 5.06 | 12.39 | 6.51 |
+| heb_Hebr | out-of-mix | 1.39 | 1.41 | 5.66 | 2.63 | 7.93 | 4.35 |
+| ben_Beng | out-of-mix | 2.61 | 3.91 | 10.67 | 5.52 | 14.93 | 9.56 |
+
+Findings:
+
+- Mean in-mix premium: intrinsic tier (30% multilingual mix) 1.04-1.75 (median 1.29); GPT-2-swap tier (English-centric) 2.08-6.16 (median 3.39). 39 of 39 intrinsic-tier tokenizers are below the lowest swap-tier tokenizer.
+- Mean out-of-mix premium: intrinsic tier (30% multilingual mix) 2.00-9.72 (median 5.08); GPT-2-swap tier (English-centric) 4.24-12.26 (median 7.89). 12 of 39 intrinsic-tier tokenizers are below the lowest swap-tier tokenizer.
+- Absolute cost, mean tokens per sentence over the group's languages (English plays no part), median over each tier: in-mix intrinsic tier 66.5 vs swap tier 93.2; out-of-mix intrinsic tier 260.9 vs swap tier 207.5.
+- Latin vs non-Latin in-mix languages (premium averaged over the tier's tokenizers): intrinsic tier (30% multilingual mix) 1.31 on deu_Latn, fra_Latn, spa_Latn, hun_Latn, fin_Latn vs 1.29 on rus_Cyrl, cmn_Hans, jpn_Jpan, arb_Arab, hin_Deva; GPT-2-swap tier (English-centric) 2.17 on deu_Latn, fra_Latn, spa_Latn, hun_Latn, fin_Latn vs 4.54 on rus_Cyrl, cmn_Hans, jpn_Jpan, arb_Arab, hin_Deva.
+- Intrinsic tier (30% multilingual mix), 39 tokenizers: highest premium 16.45 (`super_bpe@65536` on tam_Taml); worst in-mix language hin_Deva for 32, rus_Cyrl for 3, hun_Latn for 2, spa_Latn for 2; worst out-of-mix language tam_Taml for 39; byte-fallback tokens are 72.9-93.9% of out-of-mix tokens. Its lowest in-mix premium, `wp_bpe_scp@16384` (1.04), comes with 86.3 tokens per English sentence against the tier's median 50.6: the premium is relative to each tokenizer's own English cost.
+- GPT-2-swap tier (English-centric), 36 tokenizers: highest premium 18.21 (`tm_englishcode_50256` on tam_Taml); worst in-mix language hin_Deva for 36; worst out-of-mix language tam_Taml for 22, ben_Beng for 14; byte-fallback tokens are 56.6-92.9% of out-of-mix tokens. Its lowest in-mix premium, `wp_bpe_npmi` (2.08), comes with 46.1 tokens per English sentence against the tier's median 26.2: the premium is relative to each tokenizer's own English cost.
+- 9 tokenizers encode English at under 1.5 bytes per token, close to raw bytes (`wordpiece_pmi@16384`, `wp_bpe_base@16384`, `wp_bpe_ft@16384`, `wordpiece_pmi@32768`, `wp_bpe_base@32768`, `wp_bpe_ft@32768`, `wordpiece_pmi@65536`, `wp_bpe_base@65536`, `wp_bpe_ft@65536`): their premium is on average 0.06 from the UTF-8 byte ratio (column "UTF-8 bytes"), so it reflects the script's byte length, not fair compression.
+<!-- END GENERATED: flores -->
+
 ### Known limitations
 
-- **One scale, one split.** Everything uses one 52.5 MB train split built with split seed 0; the
-  100 / 200 MB presets were not run. Tokenizer training is deterministic, so only the proxy LM has
-  seeds (3 per tokenizer, mean ± sample sd).
+- **One scale, one split.** Sections 1-5 and the intrinsic tier of section 7 use one 52.5 MB train
+  split built with split seed 0; the 100 / 200 MB presets were not run. The tokenizer swap (section
+  6) trains its tokenizers on other text: the first 50 MB of FineWeb train documents (300 MB for
+  `_sp300`). Tokenizer training is deterministic, so only the LMs have seeds: 3 per tokenizer for
+  the proxy LM (mean ± sample sd), one per tokenizer for the swap (llm.c's fixed seed).
 - **PMI-ranked variants barely compress.** `wordpiece_pmi`, `wp_bpe_ft` and `wp_bpe_base` encode
   held-out text at ~1.01–1.03 bytes per token and use 282–1,050 of their 16,384 tokens on it (tokka
   "unique tokens used"): their scores rank rare pairs highest, so the vocabulary fills with long
@@ -644,7 +1162,12 @@ extension on the VM, and runs the job there detached, polled like the proxy-LM j
   at this scale need not carry over to real LMs. Its training documents come from the split the
   tokenizers were trained on; only the val split it is scored on is held out. With 3 seeds, the
   macro BPB of the top five (2.854–2.892) differ by about the seed-to-seed spread (sd up to 0.029),
-  so their order is not significant; the gaps to `unigram_lm` and below are larger.
+  so their order is not significant; the gaps to `unigram_lm` and below are larger. The big proxy LM
+  (8 layers, d_model = 512, 100 MB per tokenizer, 11 of the variants) separates four tokenizers from
+  `bpe_frequency` and reorders the ones below it (section 3, small vs big proxy LM); it is still a
+  proxy: ~33M parameters trained on 27-62M tokens. In both tiers the seeds vary only the LM's
+  initialization (one fixed sample of LM text, in a fixed order), so the standard errors leave out
+  data-sampling variance and the separations hold for that sample only.
 - **Morphology.** Morph F1 uses SIGMORPHON 2022 gold for 5 languages (eng, fra, hun, rus, spa).
   `morpheme_bpe` is trained with a lexicon from the SIGMORPHON train split (gold test words
   removed), i.e. with supervision the other variants do not get.
