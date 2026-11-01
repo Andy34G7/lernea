@@ -194,6 +194,12 @@ def _calls(tmp_path: Path) -> list:
     return [json.loads(line)[0] for line in (tmp_path / "vm" / "calls.log").read_text().splitlines()]
 
 
+def test_tests_never_reach_the_signed_in_colab_cli():
+    """conftest gives an orchestrator built without colab_bin a CLI path that does not exist, so a
+    CLI's Colab path reached by mistake fails instead of opening a paid session."""
+    assert not Path(colab.ColabOrchestrator().colab_bin).exists()
+
+
 def _fake_colab(tmp_path: Path) -> Path:
     """A stand-in for the colab CLI: /content on the 'VM' is $FAKE_COLAB_ROOT/content. Like the real
     0.7.5 CLI, `exec` exits 0 when the executed code raises (the traceback is only printed), and

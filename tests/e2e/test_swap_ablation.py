@@ -44,9 +44,14 @@ def test_prepare_refuses_tokenizers_trained_on_more_text(tmp_path):
 
 
 def test_train_tokenizers_cli_checks_its_arguments(tmp_path, capsys):
-    for bad in (["--train-bytes", "2500000"], ["--variants", "super_bpe"], ["--pretokenizer", "whitespace"]):
+    # Each refusal by its own message: a missing check falls through to other exits (a dirty tree).
+    for bad, why in ((["--train-bytes", "2500000"], "--train-bytes must be a whole number of MB"),
+                     (["--train-bytes", "0"], "--train-bytes must be a whole number of MB"),
+                     (["--variants", "super_bpe"], "invalid choice: 'super_bpe'"),
+                     (["--pretokenizer", "whitespace"], "invalid choice: 'whitespace'")):
         with pytest.raises(SystemExit):
             tt.main(["--job-dir", str(tmp_path / "p"), "--variants", "mdl_bits", *bad])
+        assert why in capsys.readouterr().err
     (tmp_path / "p" / "remote" / "runs").mkdir(parents=True)
     (tmp_path / "p" / "remote" / "runs" / "mdl_bits_sp300.json").write_text("{}")
     with pytest.raises(SystemExit, match="pass --resume"):
@@ -121,20 +126,43 @@ def test_colab_training_downloads_each_tokenizer_resumes_and_makes_a_pool(tmp_pa
         assert rec["train_bytes"] == nbytes and rec["train_docs"] == len(docs) and rec["pretokenizer"] == "space_prefix"
     assert cfg_pool["source"] == swap.SOURCE and (pool / "tokenizers.tar.gz").is_file()
 
+    # A pool is made only of run files trained on this session's text, holding the files the VM
+    # saved, that reload as the tokenizer the VM trained.
+    for i, (edit, why) in enumerate((
+            (lambda r: r["tokenizer_text"].update(docs=1), "trained on another text than this session decoded"),
+            (lambda r: r["files"].update({"tokenizer.json": r["files"]["tokenizer.json"] + " "}),
+             "not the file the VM saved"),
+            (lambda r: r["record"].update(vocab_size=r["record"]["vocab_size"] + 1), "reloads as another tokenizer"))):
+        bad = tmp_path / f"bad{i}"
+        shutil.copytree(remote / "runs", bad / "remote" / "runs")
+        f = bad / "remote" / "runs" / f"{NAMES[0]}.json"
+        run = json.loads(f.read_text())
+        edit(run)
+        f.write_text(json.dumps(run))
+        with pytest.raises(RuntimeError, match=why):
+            tt.finish(bad, cfg, result, START)
+
 
 def test_failed_training_keeps_finished_tokenizers_and_stops(tmp_path, monkeypatch, toks, shards):
-    pool, remote, cfg, files, _ = _remote(tmp_path, toks, shards)
-    cfg["reference_text"]["docs_sha256"] = "0" * 64  # another stream than the swap's
-    (remote / "config.json").write_text(json.dumps(cfg))
-    monkeypatch.setenv("FAKE_COLAB_ROOT", str(tmp_path / "vm"))
-    with pytest.raises(colab.ColabError, match="differ from the swap's tokenizer text"):
-        _train(tmp_path, remote, files)
-    calls = [json.loads(line)[0] for line in (tmp_path / "vm" / "calls.log").read_text().splitlines()]
-    assert calls[-1] == "stop"
+    """A variant failing after another finished: the finished one's run file is downloaded (kept for
+    --resume). A training text that is not the swap's fails before any. The session always stops."""
+    for case, variants, ref_sha, why, kept in (
+            ("mid", [NAMES[0], "nonexistent_variant_sp1"], None, "unknown variant", [f"{NAMES[0]}.json"]),
+            ("ref", NAMES, "0" * 64, "differ from the swap's tokenizer text", [])):  # another stream than the swap's
+        pool, remote, cfg, files, _ = _remote(tmp_path / case, toks, shards)
+        cfg["variants"] = variants
+        cfg["reference_text"]["docs_sha256"] = ref_sha or cfg["reference_text"]["docs_sha256"]
+        (remote / "config.json").write_text(json.dumps(cfg))
+        monkeypatch.setenv("FAKE_COLAB_ROOT", str(tmp_path / case / "vm"))
+        with pytest.raises(colab.ColabError, match=why):
+            _train(tmp_path / case, remote, files)
+        calls = [json.loads(line)[0] for line in (tmp_path / case / "vm" / "calls.log").read_text().splitlines()]
+        assert calls[-1] == "stop" and sorted(p.name for p in (remote / "runs").glob("*.json")) == kept
 
 
 def _local_pool(tmp_path: Path, toks, shards, names: dict) -> Path:
-    """A pool as ``--prepare-only`` writes it: names -> stand-in tokenizer, the job's 20-doc text."""
+    """A hand-built pool shaped like ``--prepare-only``'s: names -> stand-in tokenizer, the job's 20-doc
+    text (a real one: test_prepare_writes_a_pool_that_assembles_and_passes_the_vm_checks)."""
     root, specs = toks
     s = _source(toks, shards)
     s.extend()
@@ -170,7 +198,6 @@ def test_assembled_job_runs_like_a_prepared_one(tmp_path, monkeypatch, toks, sha
     assert [t["name"] for t in a["tokenizers"]] == ["bpe_frequency_g2", "unigram_lm_sp1", "length_penalized_g2"]
     assert a["tokenizer_text"] == json.loads((local / "config.json").read_text())["tokenizer_text"]
     by = {t["name"]: t for t in a["tokenizers"]}
-    assert by["bpe_frequency_g2"]["tokenizer_text"]["docs"] == 20 and by["unigram_lm_sp1"]["tokenizer_text"]["docs"] > 20
     assert a["prepared"]["duplicates"] == {"length_penalized_g2": "bpe_frequency_g2"}
     assert set(a["prepared"]["variants"]) == set(by)
     with tarfile.open(job / "tokenizers.tar.gz") as tar:
@@ -180,38 +207,29 @@ def test_assembled_job_runs_like_a_prepared_one(tmp_path, monkeypatch, toks, sha
     rev = tmp_path / "job_rev"
     rev.mkdir()
     swap.assemble([pool, local], ["bpe_frequency_g2", "unigram_lm_sp1"], rev, START)
-    for p in (json.loads((rev / "config.json").read_text())["prepared"], a["prepared"]):
+    r = json.loads((rev / "config.json").read_text())
+    for p in (r["prepared"], a["prepared"]):
         assert not {"trained_on", "timings"} & set(p) and p["command"] == START["command"]
         assert p["pools"][str(pool)]["trained_on"]["kind"] == "colab" and "trained_on" not in p["pools"][str(local)]
         assert p["pools"][str(local)]["command"] == ["prepare"] and p["val_docs"] == p["pools"][str(local)]["val_docs"]
-    other = tmp_path / "other"
-    shutil.copytree(local, other)
-    c = json.loads((other / "config.json").read_text())
-    c["val_docs_sha256"] = "x"
-    (other / "config.json").write_text(json.dumps(c))
-    with pytest.raises(SystemExit, match="other val documents"):
-        swap.assemble([local, other], ["bpe_frequency_g2"], tmp_path / "job2", START)
+    # So does each tokenizer's training text: its own pool's, not the first pool's.
+    local_text = json.loads((local / "config.json").read_text())["tokenizer_text"]
+    for b in (by, {t["name"]: t for t in r["tokenizers"]}):
+        assert b["bpe_frequency_g2"]["tokenizer_text"] == local_text and b["unigram_lm_sp1"]["tokenizer_text"]["docs"] > 20
+    for key, value in (("val_docs_sha256", "x"), ("source", {**swap.SOURCE, "val_tokens": 1})):
+        other = tmp_path / f"other_{key}"
+        shutil.copytree(local, other)
+        c = json.loads((other / "config.json").read_text())
+        c[key] = value
+        (other / "config.json").write_text(json.dumps(c))
+        with pytest.raises(SystemExit, match="another source or other val documents"):
+            swap.assemble([local, other], ["bpe_frequency_g2"], tmp_path / f"job_{key}", START)
     with pytest.raises(SystemExit, match="in none of"):
         swap.assemble([local], ["mdl_bits_g2"], tmp_path / "job3", START)
 
-    # The swap VM on the assembled job (the stand-in source, the tiny CPU trainer).
-    root, specs = toks
-    d, window, *_ = shards
-    _cpu_trainer(job / "train_gpt2_swap.py")
-    shutil.copytree(root / "tokenizers" / "gpt2", job / "tokenizers" / "gpt2")  # the stand-in source tokenizer
-    (job / "tokenizers.tar.gz").unlink()
-    with tarfile.open(job / "tokenizers.tar.gz", "w:gz") as tar:
-        tar.add(job / "tokenizers", arcname="tokenizers")
-    a["tokenizers"] = [by["bpe_frequency_g2"], by["unigram_lm_sp1"]]
-    a.update(source={"local_dir": str(d), "val_shard": "val.bin", "val_tokens": window,
-                     "train_shards": ["t1.bin", "t2.bin"], "tokenizer": specs["gpt2"]},
-             train=["bpe_frequency_g2", "unigram_lm_sp1"], trainer_args={**swap.recipe_args(2, 2), **TINY_ARGS},
-             trainer_env={"CUDA_VISIBLE_DEVICES": ""}, mbs=2, mode="full", gpu="L4", eval_docs=None, pip=[])
-    (job / "config.json").write_text(json.dumps(a))
-    monkeypatch.setenv("FAKE_COLAB_ROOT", str(tmp_path / "vm_swap"))
-    result = colab.ColabOrchestrator(colab_bin=str(_fake_colab(tmp_path))).run_job(
-        job, gpu="L4", poll_interval=0.2, script=swap.JOB_SCRIPT,
-        files=[job / "config.json", job / "train_gpt2_swap.py", job / "tokenizers.tar.gz"])
+    # The swap VM on the assembled job.
+    a = _swap_vm_config(job, a, toks, shards, ["bpe_frequency_g2", "unigram_lm_sp1"], train=True)
+    result = _run_swap_vm(tmp_path, monkeypatch, job, a, "vm_swap")
     assert result["runs"] == ["bpe_frequency_g2", "unigram_lm_sp1"]
     doc = swap.collect(job, a, result, "L4", START)
     assert doc["models"]["unigram_lm_sp1"]["spec"]["tokenizer_text"]["docs"] > 20
@@ -220,13 +238,72 @@ def test_assembled_job_runs_like_a_prepared_one(tmp_path, monkeypatch, toks, sha
 
     # A training text the VM decodes differently is refused before any training.
     a["tokenizers"][1]["tokenizer_text"] = {**by["unigram_lm_sp1"]["tokenizer_text"], "docs_sha256": "0" * 64}
-    (job / "config.json").write_text(json.dumps(a))
     shutil.rmtree(job / "runs")
-    monkeypatch.setenv("FAKE_COLAB_ROOT", str(tmp_path / "vm_swap2"))
     with pytest.raises(colab.ColabError, match="differ from a tokenizer training text"):
-        colab.ColabOrchestrator(colab_bin=str(_fake_colab(tmp_path))).run_job(
-            job, gpu="L4", poll_interval=0.2, script=swap.JOB_SCRIPT,
-            files=[job / "config.json", job / "train_gpt2_swap.py", job / "tokenizers.tar.gz"])
+        _run_swap_vm(tmp_path, monkeypatch, job, a, "vm_swap2")
+
+
+def _swap_vm_config(job: Path, cfg: dict, toks, shards, names: list, train: bool) -> dict:
+    """An assembled job's ``cfg`` as a swap VM job for ``names`` (trained, or with ``train=False`` only
+    the VM's checks and val encoding): the stand-in source, the tiny CPU trainer."""
+    root, specs = toks
+    d, window, *_ = shards
+    _cpu_trainer(job / "train_gpt2_swap.py")
+    shutil.copytree(root / "tokenizers" / "gpt2", job / "tokenizers" / "gpt2")  # the stand-in source tokenizer
+    with tarfile.open(job / "tokenizers.tar.gz", "w:gz") as tar:
+        tar.add(job / "tokenizers", arcname="tokenizers")
+    return dict(cfg, tokenizers=[s for s in cfg["tokenizers"] if s["name"] in names],
+                source={"local_dir": str(d), "val_shard": "val.bin", "val_tokens": window,
+                        "train_shards": ["t1.bin", "t2.bin"], "tokenizer": specs["gpt2"]},
+                train=names if train else [], trainer_args={**swap.recipe_args(2, 2), **TINY_ARGS},
+                trainer_env={"CUDA_VISIBLE_DEVICES": ""}, mbs=2, mode="full", gpu="L4", eval_docs=None, pip=[])
+
+
+def _run_swap_vm(tmp_path: Path, monkeypatch, job: Path, cfg: dict, vm: str) -> dict:
+    (job / "config.json").write_text(json.dumps(cfg))
+    monkeypatch.setenv("FAKE_COLAB_ROOT", str(tmp_path / vm))
+    return colab.ColabOrchestrator(colab_bin=str(_fake_colab(tmp_path))).run_job(
+        job, gpu="L4", poll_interval=0.2, script=swap.JOB_SCRIPT,
+        files=[job / "config.json", job / "train_gpt2_swap.py", job / "tokenizers.tar.gz"])
+
+
+def test_prepare_writes_a_pool_that_assembles_and_passes_the_vm_checks(tmp_path, monkeypatch, toks, shards):
+    """swap.prepare (--prepare-only), which made the committed swap jobs, on the stand-in shards
+    (downloads and the GPT-2 decoder stubbed, sizes shrunk): its config.json assembles (--from-pool)
+    and the VM accepts its val documents, its training text and each tokenizer's ids."""
+    import types
+
+    import tiktoken
+
+    root, specs = toks
+    d, window, *_ = shards
+    stand_in = job_mod.load_tokenizer(specs["gpt2"], root)
+    heads = {swap.VAL_SHARD: "val.bin", swap.TRAIN_SHARDS[0]: "t1.bin"}
+
+    def fetch_head(name, ntok, path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(d / heads[name], path)
+
+    monkeypatch.setattr(swap, "fetch_head", fetch_head)
+    monkeypatch.setattr(job_mod, "TiktokenTok", lambda spec, job: stand_in)
+    monkeypatch.setattr(tiktoken, "get_encoding", lambda name: types.SimpleNamespace(eot_token=stand_in.sep))
+    monkeypatch.setattr(swap, "VAL_TOKENS", window)
+    monkeypatch.setattr(swap, "OUR_VOCAB", 300)
+    monkeypatch.setattr(swap, "IDS_DOCS", 5)
+    pool, job = tmp_path / "pool", tmp_path / "job"
+    names = ["gpt2", "tm_englishcode_32000", "bpe_frequency_g2", "unigram_lm_sp"]
+    swap.main(["--job-dir", str(pool), "--prepare-only", "--skip-memory-check", "--tokenizer-train-bytes", "20000",
+               "--tokenizers", *names])
+    p = json.loads((pool / "config.json").read_text())
+    assert {s["name"] for s in p["tokenizers"]} == set(names) and p["tokenizer_text"]["shard"] == swap.TRAIN_SHARDS[0]
+    swap.main(["--job-dir", str(job), "--prepare-only", "--from-pool", str(pool), "--tokenizers", *names])
+    a = json.loads((job / "config.json").read_text())
+    assert [s["name"] for s in a["tokenizers"]] == names and set(a["prepared"]["variants"]) == set(names[2:])
+    ours = a["tokenizers"][2:]
+    assert [s["pretokenizer"] for s in ours] == ["gpt2", "space_prefix"]
+    assert all(s["tokenizer_text"] == p["tokenizer_text"] and s["ids_docs"] == 5 for s in ours)
+    result = _run_swap_vm(tmp_path, monkeypatch, job, _swap_vm_config(job, a, toks, shards, names[2:], train=False), "vm")
+    assert result["runs"] == sorted(names[2:])
 
 
 def test_swap_cli_assembles_with_from_pool(tmp_path, toks, shards):
