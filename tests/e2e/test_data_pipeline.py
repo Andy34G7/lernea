@@ -271,6 +271,20 @@ def test_lm_pool_is_disjoint_and_leaves_the_default_splits_unchanged(tmp_path):
         DataPipeline(cache_dir=tmp_path, force_offline=False).lm_pool(base, 60_000)
 
 
+def test_lm_pool_refuses_a_larger_build_with_another_config_or_other_fallback_sources(tmp_path):
+    """Same offline mode is not enough: the larger build must have base's config (but train_bytes) and
+    have used the same fallback sources, or the pool would mix text from other sources into the LM text."""
+    pipeline = DataPipeline(cache_dir=tmp_path, force_offline=True)
+    base = pipeline.prepare(train_bytes=20_000)
+    m = base.manifest
+    other_config = {**m, "config": {**m["config"], "max_doc_bytes": m["config"]["max_doc_bytes"] - 1}}
+    other_sources = {**m, "fallbacks": [{"used": "some/fallback-repo"}]}
+    for manifest in (other_config, other_sources):
+        with pytest.raises(ValueError, match="does not read the same sources"):
+            pipeline.lm_pool(pl.PreparedDataset(base.root, manifest), 60_000)
+    assert pipeline.lm_pool(base, 60_000)[0]  # the unchanged base still gets its pool
+
+
 def test_lm_pool_on_the_real_path_dedups_against_every_split(tmp_path, monkeypatch):
     monkeypatch.setattr(pl, "_iter_hf_rows", _fake_hub)
     pipeline = DataPipeline(cache_dir=tmp_path)
