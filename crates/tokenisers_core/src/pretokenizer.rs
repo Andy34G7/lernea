@@ -51,12 +51,12 @@ pub enum Pretokenizer {
 }
 
 /// A Hugging Face pre-tokenizer that only splits: `Split` and `Punctuation` with any behavior but
-/// `Removed`, `Digits`, `FixedLength`, at most one `ByteLevel` without `add_prefix_space`, and
-/// `Sequence`s of these. Every other component drops, adds or rewrites text (`Whitespace`,
-/// `WhitespaceSplit`, `BertPreTokenizer` and `CharDelimiterSplit` drop what they split on,
-/// `Metaspace` turns spaces into U+2581, `UnicodeScripts` drops the U+0020 spaces a piece starts
-/// with) and is rejected. On top of that, every new config must cut a probe text into segments
-/// that concatenate to it.
+/// `Removed`, `Digits`, `FixedLength` with length > 0 (0 panics in `tokenizers`), at most one
+/// `ByteLevel` without `add_prefix_space`, and `Sequence`s of these. Every other component drops,
+/// adds or rewrites text (`Whitespace`, `WhitespaceSplit`, `BertPreTokenizer` and
+/// `CharDelimiterSplit` drop what they split on, `Metaspace` turns spaces into U+2581,
+/// `UnicodeScripts` drops the U+0020 spaces a piece starts with) and is rejected. On top of that,
+/// every new config must cut a probe text into segments that concatenate to it.
 ///
 /// HF works on chars: its pieces are mapped back to bytes of the text, one byte per char when the
 /// config has a `ByteLevel` (which turns every byte into one GPT-2 byte-level char), else as the
@@ -109,6 +109,7 @@ fn check_splits_only(config: &serde_json::Value, byte_levels: &mut usize) -> std
             return parts.into_iter().try_for_each(|p| check_splits_only(p, byte_levels));
         }
         "Split" | "Punctuation" if config["behavior"] == "Removed" => "with behavior Removed drops what it splits on",
+        "FixedLength" if config["length"] == 0 => "with length 0 panics in tokenizers (chunk size 0)",
         "Split" | "Punctuation" | "Digits" | "FixedLength" => return Ok(()),
         "ByteLevel" if config["add_prefix_space"] != false => "with add_prefix_space adds a space",
         "ByteLevel" => {
@@ -123,7 +124,8 @@ fn check_splits_only(config: &serde_json::Value, byte_levels: &mut usize) -> std
     };
     Err(format!(
         "{kind} {why}; only lossless splitters are allowed: Split and Punctuation (behavior not \
-         Removed), Digits, FixedLength, ByteLevel (add_prefix_space=false) and Sequences of these"
+         Removed), Digits, FixedLength (length > 0), ByteLevel (add_prefix_space=false) and \
+         Sequences of these"
     ))
 }
 
@@ -163,7 +165,10 @@ impl HfPreTokenizer {
 
     /// End offsets of the segments of `text` (ascending, the last one `text.len()`): HF's pieces
     /// mapped back to `text`. An error unless they concatenate to `text` exactly.
-    // ponytail: HF keeps ~16 bytes of alignments per byte of text; chunk huge inputs if that matters.
+    // ponytail: HF's PreTokenizedString (strings, alignments, one NormalizedString per piece) peaks
+    // at ~50 bytes of RAM per byte of text, ~90 with a ByteLevel (measured: 22 MB of mixed text,
+    // 4.9M pieces, ~2 GB; `gpt2` mode needs ~1/10 of that): a 100 MB document needs ~9 GB. Chunk
+    // huge inputs if that matters (no cut point is safe for every config: Split regexes span any).
     fn cuts(&self, text: &str) -> std::result::Result<Vec<usize>, String> {
         let mut pre = PreTokenizedString::from(text);
         self.pre_tokenizer.pre_tokenize(&mut pre).map_err(|e| e.to_string())?;
