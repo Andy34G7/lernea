@@ -83,11 +83,12 @@ class _CoreTokenizer:
     def token_to_id(self, token: str) -> Optional[int]:
         return None if self._model is None else self._model.token_to_id(token)
 
+    # The core takes u32 ids: one outside that range (e.g. HF's -100 label padding) is unknown, like a too-large one.
     def id_to_token(self, token_id: int) -> Optional[str]:
-        return None if self._model is None else self._model.id_to_token(token_id)
+        return None if self._model is None or not 0 <= token_id < 2**32 else self._model.id_to_token(token_id)
 
     def id_to_bytes(self, token_id: int) -> Optional[bytes]:
-        return None if self._model is None else self._model.id_to_bytes(token_id)
+        return None if self._model is None or not 0 <= token_id < 2**32 else self._model.id_to_bytes(token_id)
 
     def special_tokens(self) -> Dict[str, int]:
         """``{content: id}`` of the special tokens."""
@@ -95,7 +96,12 @@ class _CoreTokenizer:
 
     def decode_bytes(self, token_ids: Sequence[int]) -> bytes:
         """Raw bytes of ``token_ids``; ``ValueError`` on an unknown id."""
-        return self._require().decode_bytes(list(token_ids))
+        ids = list(token_ids)
+        try:
+            return self._require().decode_bytes(ids)
+        except OverflowError:  # outside u32, checked only on failure so decode stays one native call
+            bad = next(i for i in ids if not 0 <= i < 2**32)
+            raise ValueError(f"Token ID {bad} not found in vocabulary") from None
 
     def decode(self, token_ids: Sequence[int], errors: str = "replace") -> str:
         """UTF-8 text of ``token_ids`` (``errors`` as in ``bytes.decode``)."""

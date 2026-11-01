@@ -115,6 +115,21 @@ def test_decode_invalid_utf8_and_unknown_ids(trained, name):
             tok.decode_bytes([bad])
 
 
+@pytest.mark.parametrize("name", ["bpe", "unigram", "byte_entropy"])
+def test_negative_and_out_of_u32_ids_are_unknown_ids(trained, name):
+    """An id outside u32 (HF's -100 label padding) is an unknown id in every class and in the HF
+    wrapper: None from id_to_token/id_to_bytes, ValueError from decode; never OverflowError."""
+    from tokenisers.wrapper import DynamicResearchTokenizer
+
+    tok = trained[name]
+    for bad in (-1, -100, 2**32):
+        assert tok.id_to_token(bad) is None and tok.id_to_bytes(bad) is None
+        with pytest.raises(ValueError):
+            tok.decode_bytes([104, bad])
+        with pytest.raises(ValueError, match="Invalid token ID"):
+            DynamicResearchTokenizer(tokenizer=tok).decode([104, bad])
+
+
 @pytest.mark.parametrize("scorer,param,value", [
     ("wp-bpe-scp", "alpha", 1.0),  # discount; was silently replaced by 0.75
     ("wp-bpe-npmi", "alpha", 1.0),  # was replaced by 0.5
