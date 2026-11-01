@@ -510,3 +510,235 @@ fn unigram_encodes_and_samples_per_gpt2_segment() {
     let raw = b"\xff it\xc3's \x80\x80 x";
     assert_eq!(model.decode(&model.encode(raw)).unwrap(), raw);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Hf: lossless Hugging Face pre-tokenizers, run by `tokenizers`
+// ---------------------------------------------------------------------------------------------
+
+use serde_json::{json, Value};
+use tokenizers::{OffsetReferential, OffsetType, PreTokenizedString, PreTokenizer, PreTokenizerWrapper};
+
+fn byte_level(use_regex: bool) -> Value {
+    json!({"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": false, "use_regex": use_regex})
+}
+
+fn split(regex: &str, behavior: &str, invert: bool) -> Value {
+    json!({"type": "Split", "pattern": {"Regex": regex}, "behavior": behavior, "invert": invert})
+}
+
+fn seq(parts: &[Value]) -> Value {
+    json!({"type": "Sequence", "pretokenizers": parts})
+}
+
+const PUNCT: fn() -> Value = || json!({"type": "Punctuation", "behavior": "Isolated"});
+const DIGITS: fn() -> Value = || json!({"type": "Digits", "individual_digits": true});
+
+/// Every allowed component, alone and in Sequences. Names ending in "inside chars" have a splitter
+/// after ByteLevel that cuts inside multi-byte chars.
+fn hf_configs() -> Vec<(&'static str, Value)> {
+    vec![
+        ("split isolated", split(r"\p{N}+", "Isolated", false)),
+        ("split merged with previous", split(" ", "MergedWithPrevious", false)),
+        ("split merged with next", split(r"\s+", "MergedWithNext", false)),
+        ("split contiguous", split("[,.!?]", "Contiguous", false)),
+        ("split inverted", split(r"\p{L}+", "Isolated", true)),
+        ("split string", json!({"type": "Split", "pattern": {"String": " "}, "behavior": "MergedWithNext", "invert": false})),
+        ("digits", json!({"type": "Digits", "individual_digits": false})),
+        ("digits individual", DIGITS()),
+        ("punctuation", PUNCT()),
+        ("punctuation contiguous", json!({"type": "Punctuation", "behavior": "Contiguous"})),
+        ("punctuation default", json!({"type": "Punctuation"})),
+        ("fixed length", json!({"type": "FixedLength", "length": 3})),
+        ("byte level regex", byte_level(true)),
+        ("byte level", byte_level(false)),
+        ("llama digits", seq(&[DIGITS(), byte_level(true)])),
+        ("punctuation isolated", seq(&[split(r"\s+", "MergedWithNext", false), PUNCT(), byte_level(false)])),
+        ("nested", seq(&[seq(&[DIGITS(), PUNCT()]), split(r"\p{Han}+", "Isolated", false)])),
+        ("punctuation inside chars", seq(&[byte_level(true), PUNCT()])),
+        // Falcon's: `Digits` after ByteLevel isolates "¹" (byte B9) inside "ス" (E3 82 B9).
+        ("falcon inside chars", seq(&[
+            json!({"type": "Punctuation", "behavior": "Contiguous"}),
+            json!({"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": true, "use_regex": true}),
+            json!({"type": "Digits", "individual_digits": false}),
+            split("[0-9][0-9][0-9]", "Isolated", false),
+        ])),
+    ]
+}
+
+const HF_EDGE: &[&str] = &[
+    "",
+    " ",
+    "   ",
+    "hello",
+    " lead",
+    "trail  ",
+    "abc123def 2024-11-01 3.14159 $1,299.00 a1b2",
+    "日本語のテキスト、中文文本。한국어 텍스트",
+    "Привет, мир! Héllo wörld e\u{301}t\u{e9} naïve x²+½ ٣٤ १२",
+    "emoji 🚀🔥 party 👩\u{200d}👩\u{200d}👧!",
+    "a  b\t\t c\n\n\r\n  \u{3000}x\u{a0} y \u{2028}z   ",
+    "it's don't 'll mixed中文text123ДА",
+    "\u{fffd}\u{200b}\u{feff}\0\u{1c}",
+];
+
+/// HF's own boundaries (`get_splits` offsets in the original text) of `config` on `text`.
+fn hf_own(config: &Value, text: &str) -> Vec<(usize, usize)> {
+    let pre: PreTokenizerWrapper = serde_json::from_value(config.clone()).unwrap();
+    let mut pts = PreTokenizedString::from(text);
+    pre.pre_tokenize(&mut pts).unwrap();
+    pts.get_splits(OffsetReferential::Original, OffsetType::Byte).into_iter().map(|(_, o, _)| o).collect()
+}
+
+fn spans(segments: &[Vec<u8>]) -> Vec<(usize, usize)> {
+    let mut pos = 0;
+    segments.iter().map(|s| { pos += s.len(); (pos - s.len(), pos) }).collect()
+}
+
+#[test]
+fn hf_segments_tile_the_text_and_equal_hfs_own_boundaries() {
+    let mut rng = fastrand::Rng::with_seed(31);
+    let texts: Vec<String> = HF_EDGE.iter().map(|s| s.to_string()).chain((0..3000).map(|_| random_text(&mut rng))).collect();
+    for (name, config) in hf_configs() {
+        let p = Pretokenizer::hf(config.clone()).unwrap();
+        let (mut compared, mut cut_chars) = (0, 0);
+        for text in &texts {
+            let got = segs(p, text.as_bytes());
+            assert_eq!(got.concat(), text.as_bytes(), "{name}: {text:?}");
+            assert!(got.iter().all(|s| !s.is_empty()), "{name}: empty segment for {text:?}");
+            // A segment on its own splits into itself, unless it is part of a char.
+            for s in got.iter().filter(|s| std::str::from_utf8(s).is_ok()) {
+                assert_eq!(segs(p, s), [s.clone()], "{name}: segment {s:?} of {text:?} splits again");
+            }
+            // HF's own offsets in the original text are per char: they tile exactly unless a piece
+            // starts or ends inside a char (tests/e2e checks those pieces against Python's HF).
+            let own = hf_own(&config, text);
+            if own == spans(&got) {
+                compared += 1;
+            } else {
+                assert!(name.ends_with("inside chars"), "{name}: {text:?}: native {:?} != HF {own:?}", spans(&got));
+                assert!(got.iter().any(|s| std::str::from_utf8(s).is_err()), "{name}: {text:?}");
+                cut_chars += 1;
+            }
+        }
+        assert!(compared > texts.len() / 3, "{name}: {compared}");
+        assert_eq!(cut_chars > 0, name.ends_with("inside chars"), "{name}: {cut_chars}");
+    }
+}
+
+#[test]
+fn hf_edge_cases() {
+    let llama = Pretokenizer::hf(seq(&[DIGITS(), byte_level(true)])).unwrap();
+    assert_eq!(strs(llama, "it's 2024 abc123def!"), ["it", "'s", " ", "2", "0", "2", "4", " abc", "1", "2", "3", "def", "!"]);
+    assert_eq!(strs(llama, "  x \u{3000}中文"), [" ", " x", " ", "\u{3000}", "中文"]);
+    let punct = Pretokenizer::hf(PUNCT()).unwrap();
+    assert_eq!(strs(punct, "a,b!! c... 中文。"), ["a", ",", "b", "!", "!", " c", ".", ".", ".", " 中文", "。"]);
+    let fixed = Pretokenizer::hf(json!({"type": "FixedLength", "length": 2})).unwrap();
+    assert_eq!(strs(fixed, "abcde中文🚀"), ["ab", "cd", "e中", "文🚀"]);
+    let triples = Pretokenizer::hf(seq(&[byte_level(true), split("[0-9][0-9][0-9]", "Isolated", false)])).unwrap();
+    assert_eq!(strs(triples, "x 1234567 é"), ["x", " ", "123", "456", "7", " é"]);
+    // After ByteLevel, "á" (C3 A1) is "Ã¡" and "¡" is punctuation: the cut is inside the char.
+    let inside = Pretokenizer::hf(seq(&[byte_level(true), PUNCT()])).unwrap();
+    assert_eq!(segs(inside, "á, x".as_bytes()), [&b"\xc3"[..], b"\xa1", b",", b" x"]);
+    let digits = Pretokenizer::hf(seq(&[byte_level(true), json!({"type": "Digits", "individual_digits": false})])).unwrap();
+    assert_eq!(segs(digits, "ス".as_bytes()), [&b"\xe3\x82"[..], b"\xb9"]);
+}
+
+#[test]
+fn hf_reads_each_invalid_utf8_byte_as_one_nul() {
+    let mut rng = fastrand::Rng::with_seed(32);
+    let probes: Vec<Vec<u8>> = (0..2000).map(|_| random_bytes(&mut rng)).chain([b"it\xc3's \xff\xfe!! 12\x803".to_vec()]).collect();
+    for (name, config) in hf_configs() {
+        let p = Pretokenizer::hf(config).unwrap();
+        for bytes in &probes {
+            let got = segs(p, bytes);
+            assert_eq!(got.concat(), *bytes, "{name}");
+            let nul: Vec<u8> = bytes.utf8_chunks().flat_map(|c| c.valid().bytes().chain(c.invalid().iter().map(|_| 0))).collect();
+            let lens = |s: &[Vec<u8>]| s.iter().map(Vec::len).collect::<Vec<_>>();
+            assert_eq!(lens(&got), lens(&segs(p, &nul)), "{name}: {bytes:?}");
+        }
+    }
+    let llama = Pretokenizer::hf(seq(&[DIGITS(), byte_level(true)])).unwrap();
+    assert_eq!(segs(llama, b"a\xff,b \xe3\x80 12"), [&b"a"[..], b"\xff,", b"b", b" \xe3\x80", b" ", b"1", b"2"]);
+}
+
+#[test]
+fn hf_rejects_every_component_that_is_not_a_lossless_splitter() {
+    let bl = byte_level(true);
+    let cases: Vec<(Value, &str)> = vec![
+        (json!({"type": "Whitespace"}), "Whitespace drops whitespace"),
+        (json!({"type": "WhitespaceSplit"}), "WhitespaceSplit drops whitespace"),
+        (json!({"type": "BertPreTokenizer"}), "BertPreTokenizer drops whitespace"),
+        (json!({"type": "CharDelimiterSplit", "delimiter": "x"}), "CharDelimiterSplit drops the delimiter"),
+        (json!({"type": "Metaspace", "replacement": "▁", "prepend_scheme": "always", "split": true}), "Metaspace replaces spaces"),
+        (json!({"type": "UnicodeScripts"}), "UnicodeScripts drops the U+0020 spaces"),
+        (split("x", "Removed", false), "Split with behavior Removed"),
+        (json!({"type": "Punctuation", "behavior": "Removed"}), "Punctuation with behavior Removed"),
+        (json!({"type": "ByteLevel", "add_prefix_space": true, "trim_offsets": false, "use_regex": true}), "ByteLevel with add_prefix_space"),
+        (seq(&[DIGITS(), seq(&[PUNCT(), json!({"type": "Whitespace"})])]), "Whitespace drops whitespace"),
+        (seq(&[DIGITS(), json!({"type": "Metaspace"})]), "Metaspace replaces spaces"),
+        (seq(&[bl.clone(), PUNCT(), bl]), "2 ByteLevels"),
+        (json!({"type": "Bogus"}), "Bogus is not a known lossless splitter"),
+        (json!({"type": "Digits"}), "missing field `individual_digits`"),
+        (json!("Digits"), "HF pre-tokenizer"),
+    ];
+    for (config, expected) in cases {
+        let err = Pretokenizer::hf(config.clone()).unwrap_err().to_string();
+        assert!(err.contains(expected) && err.contains("HF pre-tokenizer"), "{config}: {err}");
+    }
+}
+
+#[test]
+fn hf_configs_are_interned_and_named_hf() {
+    let a = Pretokenizer::hf(seq(&[DIGITS(), byte_level(true)])).unwrap();
+    let b = Pretokenizer::hf(seq(&[DIGITS(), byte_level(true)])).unwrap();
+    let (Pretokenizer::Hf(x), Pretokenizer::Hf(y)) = (a, b) else { panic!("not Hf") };
+    assert!(a == b && std::ptr::eq(x, y));
+    assert_ne!(a, Pretokenizer::hf(seq(&[DIGITS(), byte_level(false)])).unwrap());
+    assert_ne!(Pretokenizer::hf(byte_level(true)).unwrap(), Gpt2);
+    assert_eq!(a.name(), "hf");
+    assert!(x.byte_level() && !matches!(Pretokenizer::hf(DIGITS()).unwrap(), Pretokenizer::Hf(h) if h.byte_level()));
+    assert!(Pretokenizer::from_name("hf").is_err());
+}
+
+#[test]
+fn hf_byte_level_regex_is_the_gpt2_mode() {
+    // HF's ByteLevel(use_regex=true) through `Hf` (char -> byte mapping, NUL for invalid bytes)
+    // against the native fancy-regex `Gpt2`: the same segments, training and ids.
+    let hf = Pretokenizer::hf(byte_level(true)).unwrap();
+    let mut rng = fastrand::Rng::with_seed(33);
+    for _ in 0..20_000 {
+        let text = random_text(&mut rng);
+        assert_eq!(strs(hf, &text), strs(Gpt2, &text), "for {text:?}");
+        let bytes = random_bytes(&mut rng);
+        assert_eq!(segs(hf, &bytes), segs(Gpt2, &bytes), "for {bytes:?}");
+    }
+    for text in HF_EDGE {
+        assert_eq!(strs(hf, text), strs(Gpt2, text), "for {text:?}");
+    }
+    let text = common::pseudo_text(6, 40_000) + " it's 1999, don't 3.14 — naïve!! \n\n  end 中文 🚀";
+    let counts = |p: Pretokenizer| {
+        let mut counts: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
+        for seg in p.segment_text(&text) {
+            *counts.entry(seg).or_insert(0) += 1;
+        }
+        counts.into_iter().collect::<Vec<_>>()
+    };
+    let corpus = counts(Gpt2);
+    assert_eq!(counts(hf), corpus);
+    let native = BottomUpTrainer::new(&BpeScorer, 700).with_pretokenizer(Gpt2).train(&corpus).unwrap();
+    let via_hf = BottomUpTrainer::new(&BpeScorer, 700).with_pretokenizer(hf).train(&corpus).unwrap();
+    assert!(via_hf.pretokenize && via_hf.merges == native.merges);
+    assert_eq!(via_hf.vocab.id_to_bytes_map(), native.vocab.id_to_bytes_map());
+    let mut unigram_native = UnigramTrainer::new(500, 0.2).train(&corpus).unwrap();
+    unigram_native.pretokenizer = Gpt2;
+    let mut unigram_hf = unigram_native.clone();
+    unigram_hf.pretokenizer = hf;
+    let mut probes = vec![text.into_bytes(), b"\xff  \xe3\x80 \x80\n x it\xc3's 12".to_vec()];
+    probes.extend((0..300).map(|_| random_bytes(&mut rng)));
+    probes.extend((0..300).map(|_| random_text(&mut rng).into_bytes()));
+    for probe in &probes {
+        assert_eq!(via_hf.encode(probe), native.encode(probe));
+        assert_eq!(via_hf.encode_with_dropout(probe, 0.2, Some(4)), native.encode_with_dropout(probe, 0.2, Some(4)));
+        assert_eq!(unigram_hf.encode(probe), unigram_native.encode(probe));
+    }
+}

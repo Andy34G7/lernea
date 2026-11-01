@@ -85,8 +85,28 @@ fancy-regex as tiktoken's Rust core does), so contractions, letter runs, digit r
 runs are separate segments, each with the space before it (`"it's 2024!"` -> `it`, `'s`, ` 2024`,
 `!`); its export is Hugging Face's own `ByteLevel(use_regex=true)`. On all 14,982 FineWeb val
 documents of the tokenizer swap the native split equals Hugging Face's and tiktoken's, and GPT-2's
-merges loaded natively give tiktoken's ids. Bytes that are not valid UTF-8 count as non-whitespace in
-every mode; in `gpt2` each invalid sequence is split exactly like one U+FFFD (a symbol).
+merges loaded natively give tiktoken's ids. `pretokenizer={"hf": config}` runs any lossless Hugging
+Face `pre_tokenizer` config (a dict or a JSON string) with `tokenizers` itself: `Split` and
+`Punctuation` (any behavior but `Removed`), `Digits`, `FixedLength`, one `ByteLevel` without
+`add_prefix_space`, and `Sequence`s of these; a component that drops or rewrites text (`Whitespace`,
+`WhitespaceSplit`, `BertPreTokenizer`, `CharDelimiterSplit`, `Metaspace`, `UnicodeScripts`, which drops
+the spaces a piece starts with) is a `ValueError` naming it. The export writes the config back
+unchanged (followed by the byte-level map when it has no `ByteLevel`) and `from_pretrained` restores
+it; `.pretokenizer` reports `{"hf": config}`. For example, Llama-style single digits before GPT-2's
+split:
+
+```python
+from tokenisers import BpeTokenizer
+
+llama_digits = {"type": "Sequence", "pretokenizers": [
+    {"type": "Digits", "individual_digits": True},
+    {"type": "ByteLevel", "add_prefix_space": False, "trim_offsets": False, "use_regex": True}]}
+tok = BpeTokenizer.train(corpus, vocab_size=32000, pretokenizer={"hf": llama_digits})
+tok.encode("abc 2024")  # segments "abc", " ", "2", "0", "2", "4": no token holds two digits
+```
+
+Bytes that are not valid UTF-8 count as non-whitespace in every mode; in `gpt2` each invalid
+sequence is split exactly like one U+FFFD (a symbol), in `hf` each invalid byte like one U+0000.
 
 ---
 

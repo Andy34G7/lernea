@@ -17,8 +17,9 @@ fastrand = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 fancy-regex = { workspace = true }
+# `Pretokenizer::Hf`: Hugging Face pre-tokenizers, run by tokenizers itself
+tokenizers = { version = "=0.21.4", default-features = false, features = ["onig"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 env_logger = { workspace = true }
-tokenizers = { version = "=0.21.4", default-features = false, features = ["onig"] }

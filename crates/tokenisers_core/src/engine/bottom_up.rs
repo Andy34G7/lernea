@@ -30,7 +30,7 @@ pub struct BottomUpModel {
     /// `next_same_rank[r]`: next rank that merges the same pair as rank `r` (`u32::MAX` if none).
     next_same_rank: Vec<u32>,
     /// True when training only ever merged inside `pretokenizer` segments (every training word was
-    /// one segment), so no learned token spans a segment boundary. Encoding then pre-splits input
+    /// one segment; an `Hf` trainer trusts its words), so no learned token spans a segment boundary. Encoding then pre-splits input
     /// with `pretokenizer.segment_bytes` and caches repeated segments, and the HF export emits the
     /// matching `Split` pre-tokenizer. False (the `new` default, SuperBPE stage 2, models rebuilt
     /// from a bare merge list): the export is whole-text `ByteLevel` and a span is cut only where no
@@ -320,8 +320,9 @@ impl BottomUpModel {
                 queue.push(queue_key(rank, i as u32));
             }
         }
-        // Dropout scope: start offset of every segment.
+        // Dropout scope: start offset of every segment (a `pretokenize` unit is one segment).
         let seg_starts: Vec<u32> = match dropout {
+            Some(_) if self.pretokenize => vec![0],
             Some(_) => self.segmentation().segment_bytes(bytes)
                 .iter()
                 .scan(0u32, |start, seg| {
@@ -482,9 +483,12 @@ impl<'a> BottomUpTrainer<'a> {
             merges.push((pair.0, pair.1, new_token));
         }
 
-        let pretokenize = word_counts.iter().all(|(word, _)| {
-            std::str::from_utf8(word).is_ok_and(|text| self.pretokenizer.segment_text(text).len() <= 1)
-        });
+        // `Hf` words are trusted to be segments: one cut inside a char need not split alone as it
+        // did in context.
+        let pretokenize = matches!(self.pretokenizer, Pretokenizer::Hf(_))
+            || word_counts.iter().all(|(word, _)| {
+                std::str::from_utf8(word).is_ok_and(|text| self.pretokenizer.segment_text(text).len() <= 1)
+            });
         let mut model = BottomUpModel::new(state.vocab, merges);
         model.pretokenize = pretokenize;
         model.pretokenizer = self.pretokenizer;
