@@ -138,6 +138,9 @@ REJECTED = {
     "2 ByteLevels": seq(byte_level(), DIGITS, byte_level(False)),
     "Whitespace drops whitespace ": seq(DIGITS, seq(PUNCT, {"type": "Whitespace"})),
     "Bogus is not a known lossless splitter": {"type": "Bogus"},
+    # tokenizers panics on it (chunk size 0): a PanicException is a BaseException, not a ValueError.
+    "FixedLength with length 0": {"type": "FixedLength", "length": 0},
+    "FixedLength with length 0 ": seq(byte_level(), {"type": "FixedLength", "length": 0}),
 }
 
 
