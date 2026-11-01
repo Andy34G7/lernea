@@ -588,8 +588,9 @@ def _single_seed(doc):
 
 
 def test_single_seed_proxy_run_keeps_the_api_up(tmp_path, monkeypatch) -> None:
-    """A single-seed big LM has no standard errors for the small vs big comparison: the comparison is left out
-    with the reason and both proxy-LM files still show (the TypeError used to make /api/benchmarks a 500)."""
+    """A single-seed big LM has no standard errors for the small vs big comparison: the comparison still
+    shows, without ± for the big LM, and so do both proxy-LM files (a TypeError used to make /api/benchmarks
+    a 500, then left the comparison out)."""
     _write_results(tmp_path, None, proxy_lm=json.loads((REAL_RESULTS / "colab/extrinsic_bpb_results.json").read_text()))
     big = tmp_path / "benchmarks/results/colab_big/extrinsic_bpb_results.json"
     big.parent.mkdir(parents=True)
@@ -599,11 +600,13 @@ def test_single_seed_proxy_run_keeps_the_api_up(tmp_path, monkeypatch) -> None:
     data = server_mod.load_benchmark_data()
     res = data["results"]
     assert res["proxy_small"]["available"] and res["proxy_big"]["available"] and res["proxy_big"]["provenance"]
-    assert res["proxy_compare"]["available"] is False and "TypeError" in res["proxy_compare"]["error"]
+    tiers = res["proxy_compare"]["data"]["tiers"]
+    assert all(se is None for _, _, se in tiers["big LM"].values())
+    assert all(se is not None for _, _, se in tiers["small LM"].values())
     json.dumps(data)  # what do_GET sends
-    if NODE:  # the Proxy LM tab says why the comparison is missing instead of calling the files missing
+    if NODE:
         errors, html = _render(tmp_path, data)
-        assert errors == [] and "TypeError" in _text(html["compare-facts"])
+        assert errors == [] and "reference" in html["compare-table"]
 
 
 # --- static/app.js under node: the renderers on /api/benchmarks payloads ---------------------------------------
