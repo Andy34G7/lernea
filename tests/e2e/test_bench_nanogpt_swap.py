@@ -417,6 +417,41 @@ def test_pilot_trains_some_tokenizers_and_projects_the_full_run(tmp_path, monkey
     assert "PILOT" in md and "projection, one session" in md
 
 
+def test_collect_refuses_runs_that_were_never_downloaded(tmp_path):
+    """result.json lists every run finished on the VM: one missing locally must not vanish from the results."""
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "runs" / "a.json").write_text("{}")
+    cfg = {"tokenizers": [{"name": "a"}, {"name": "b"}]}
+    with pytest.raises(SystemExit, match="result.json lists runs not in .*runs: b; rerun with --resume"):
+        swap.collect(tmp_path, cfg, {"runs": ["a", "b"]}, "A100", {})
+
+
+def test_a_tokenizer_subset_run_keeps_every_prepared_tokenizer_in_the_job(tmp_path, monkeypatch):
+    """--tokenizers narrows what the VM runs, not the job: a later plain --resume still runs them all."""
+    job = tmp_path / "job"
+    job.mkdir()
+    specs = [{"name": "gpt2", "kind": "tiktoken", "encoding": "gpt2"},
+             {"name": "tm_englishcode_50256", "kind": "tokenmonster"}, {"name": "tm_englishcode_32000", "kind": "tokenmonster"}]
+    (job / "config.json").write_text(json.dumps({"tokenizers": specs, "prepared": {}}))
+    uploaded = []
+
+    class Fail:
+        def __init__(self, **kw):
+            pass
+
+        def run_job(self, run_dir, files, **kw):
+            uploaded.append((files[0].name, [s["name"] for s in json.loads(files[0].read_text())["tokenizers"]]))
+            raise colab.ColabError("session dropped")
+
+    monkeypatch.setattr(colab, "ColabOrchestrator", Fail)
+    with pytest.raises(SystemExit, match="session dropped"):
+        swap.main(["--job-dir", str(job), "--gpu", "A100", "--tokenizers", "gpt2"])
+    with pytest.raises(SystemExit, match="session dropped"):
+        swap.main(["--job-dir", str(job), "--gpu", "A100", "--resume"])
+    assert uploaded == [("config.json", ["gpt2"]), ("config.json", [s["name"] for s in specs])]
+    assert [s["name"] for s in json.loads((job / "config.json").read_text())["tokenizers"]] == [s["name"] for s in specs]
+
+
 def test_flops_scale_with_the_vocabulary():
     small, big = swap.flops_per_token(32128), swap.flops_per_token(50304)
     assert 0.85 < small / big < 0.95  # the 32k TokenMonster vocabulary saves ~10% of the step

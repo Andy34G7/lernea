@@ -294,11 +294,13 @@ def test_finished_job_survives_dropped_uploads_and_downloads(tmp_path, monkeypat
     monkeypatch.setenv("FAKE_COLAB_ROOT", str(tmp_path / "vm"))
     monkeypatch.setenv("FAKE_COLAB_UPLOAD_DROP", "1")
     monkeypatch.setenv("FAKE_COLAB_DOWNLOAD_DROP", "2")
-    res = colab.ColabOrchestrator(colab_bin=str(_fake_colab(tmp_path))).run_job(
-        _job(tmp_path, seeds=(0,)), poll_interval=0.01)
+    job = _job(tmp_path, seeds=(0,))
+    res = colab.ColabOrchestrator(colab_bin=str(_fake_colab(tmp_path))).run_job(job, poll_interval=0.01)
     assert res["backend"]["kind"] == "colab" and "tok" in res["models"]
     calls = _calls(tmp_path)
-    assert calls.count("download") == 3 and calls.count("upload") == 4 and calls[-1] == "stop"
+    # Both drops hit the one run file (2 tries), then it and result.json download: nothing is lost.
+    assert calls.count("download") == 4 and calls.count("upload") == 4 and calls[-1] == "stop"
+    assert (job / "runs" / "tok__s0.json").is_file()
     log = (tmp_path / "vm" / "content" / "job.log").read_text()
     assert log.count("tok seed=0") == 1, log  # the job ran once; only the transfer was retried
 
@@ -312,6 +314,40 @@ def test_persistent_download_failure_is_bounded(tmp_path, monkeypatch):
     calls = _calls(tmp_path)
     result_downloads = (tmp_path / "vm" / "calls.log").read_text().count('"/content/result.json"')  # not per-run files
     assert result_downloads == 3 and calls[-1] == "stop"
+
+
+class _LastRunDrops(colab.ColabOrchestrator):
+    """The job writes b.json moments before its final status, so the poll that first lists it also
+    reports ok; its download fails ``b_failures`` times."""
+
+    def __init__(self, b_failures: int) -> None:
+        super().__init__(mock=True)
+        self.polls, self.downloads, self.b_failures = 0, [], b_failures
+
+    def _poll(self, name, control):
+        self.polls += 1
+        return {"state": "running", "runs": ["a.json"]} if self.polls == 1 else {"state": "ok", "runs": ["a.json", "b.json"]}
+
+    def _colab(self, *args, timeout=None):
+        if args[0] == "download":
+            self.downloads.append(Path(args[3]).name)
+            if args[3].endswith("b.json") and self.downloads.count("b.json") <= self.b_failures:
+                raise colab.ColabError("`colab download` exited with 1: Connection was lost.")
+            Path(args[4]).write_text(json.dumps({"backend": {}}))
+        return ""
+
+
+def test_last_run_file_is_retried_before_the_session_stops(tmp_path):
+    """The last run file appears with the final status: a failed download is retried, not lost."""
+    orch = _LastRunDrops(b_failures=1)
+    job = _job(tmp_path / "a")
+    orch.run_job(job, poll_interval=0, max_poll_failures=3)
+    assert sorted(p.name for p in (job / "runs").iterdir()) == ["a.json", "b.json"]
+    assert orch.downloads == ["a.json", "b.json", "b.json", "result.json"]
+    orch = _LastRunDrops(b_failures=99)  # persistently lost: an error naming it, after a bounded retry
+    with pytest.raises(colab.ColabError, match="could not be downloaded: runs/b.json: .*Connection was lost"):
+        orch.run_job(_job(tmp_path / "b"), poll_interval=0, max_poll_failures=3)
+    assert orch.downloads.count("b.json") == 1 + 3
 
 
 def test_poll_failures_and_deadline_are_bounded(tmp_path, monkeypatch):

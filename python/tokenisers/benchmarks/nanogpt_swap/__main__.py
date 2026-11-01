@@ -256,10 +256,15 @@ def assemble(pools: List[Path], names: List[str], job: Path, start: Dict[str, An
             if digest in seen:
                 duplicates[s["name"]] = seen[digest]
             seen.setdefault(digest, s["name"])
-    prepared = {**first["prepared"], **{k: start[k] for k in ("command", "git_commit", "git_dirty", "native_extension")},
+    # Each pool's own preparation (command, commit, where it trained: e.g. `trained_on` a Colab VM)
+    # stays under `pools`; the job level keeps only what every pool shares (e.g. the val documents).
+    per_tokenizer = ("variants", "duplicates", "morphology", "pools")  # rebuilt above, per tokenizer
+    pool_prep = {str(p): {k: v for k, v in c["prepared"].items() if k not in per_tokenizer} for p, c in cfgs}
+    shared = {k: v for k, v in pool_prep[str(pools[0])].items() if all(pp.get(k) == v for pp in pool_prep.values())}
+    prepared = {"tokenmonster_why": TOKENMONSTER_WHY, **shared,
+                **{k: start[k] for k in ("command", "git_commit", "git_dirty", "native_extension")},
                 "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "variants": records,
-                "duplicates": duplicates, "morphology": morph,
-                "pools": {str(p): c["prepared"].get("command") for p, c in cfgs}}
+                "duplicates": duplicates, "morphology": morph, "pools": pool_prep}
     cfg = {k: first[k] for k in ("source", "val_docs_sha256", "tokenizer_text", "pip", "headroom")}
     cfg.update(tokenizers=specs, prepared=prepared)
     (job / "config.json").write_text(json.dumps(cfg, indent=1), encoding="utf-8")
@@ -308,6 +313,9 @@ def summarize(run: Dict[str, Any], target: Optional[float]) -> Dict[str, Any]:
 
 def collect(job: Path, cfg: Dict[str, Any], result: Dict[str, Any], gpu: str, start: Dict[str, Any]) -> Dict[str, Any]:
     runs = {p.stem: json.loads(p.read_text()) for p in sorted((job / "runs").glob("*.json"))}
+    missing = sorted(set(result.get("runs") or []) - set(runs))
+    if missing:  # finished on the VM, never downloaded: the results would silently leave them out
+        raise SystemExit(f"result.json lists runs not in {job / 'runs'}: {', '.join(missing)}; rerun with --resume")
     gpt2 = runs.get("gpt2")
     target = target_bpb(gpt2["val"]) if gpt2 else None
     order = [s["name"] for s in cfg["tokenizers"] if s["name"] in runs]
@@ -513,13 +521,17 @@ def main(argv: Optional[List[str]] = None) -> None:
             raise SystemExit("--resume with a different --steps would mix schedules")
         if held and cfg.get("trainer_args", {}).get(LR_OVERRIDE) != recipe_args(steps, eval_every, args.lr).get(LR_OVERRIDE):
             raise SystemExit("--resume with a different --lr would mix learning rates")
-    cfg.update(tokenizers=[s for s in cfg["tokenizers"] if s["name"] in names], train=train,
-               trainer_args=recipe_args(steps, eval_every, args.lr), mbs=args.mbs or DEFAULT_MBS[args.gpu],
+    cfg.update(train=train, trainer_args=recipe_args(steps, eval_every, args.lr), mbs=args.mbs or DEFAULT_MBS[args.gpu],
                mode="pilot" if args.pilot else "full", gpu=args.gpu,
                eval_docs=args.pilot_eval_docs if args.pilot else None)
+    # The job's config.json keeps every prepared tokenizer (a later --resume runs them all); the VM
+    # gets its own config.json with only this run's.
     (run_dir / "config.json").write_text(json.dumps(cfg, indent=1), encoding="utf-8")
-    files = [run_dir / "config.json", TRAINER, REPO / "python" / "tokenisers" / "benchmarks" / "throughput.py"]
-    if any(s["kind"] == "tokenisers" for s in cfg["tokenizers"]):
+    vm_cfg = dict(cfg, tokenizers=[s for s in cfg["tokenizers"] if s["name"] in names])
+    (run_dir / "vm").mkdir(exist_ok=True)
+    (run_dir / "vm" / "config.json").write_text(json.dumps(vm_cfg, indent=1), encoding="utf-8")
+    files = [run_dir / "vm" / "config.json", TRAINER, REPO / "python" / "tokenisers" / "benchmarks" / "throughput.py"]
+    if any(s["kind"] == "tokenisers" for s in vm_cfg["tokenizers"]):
         if start["git_dirty"] is not False:
             raise SystemExit("the VM builds the committed code (`git archive HEAD`): commit code changes first")
         subprocess.run(["git", "archive", "--format=tar.gz", "-o", str(run_dir / "src.tar.gz"), start["git_commit"]],
