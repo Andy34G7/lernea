@@ -14,6 +14,7 @@ import importlib.metadata
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import tempfile
@@ -59,8 +60,24 @@ VARIANTS: Tuple[str, ...] = (
 )
 
 # "<variant>_sp": the variant retrained with pretokenizer="space_prefix" (a word takes the one space
-# before it, GPT-2-style) and otherwise identically. SuperBPE has no such mode.
+# before it, GPT-2-style) and otherwise identically; "<variant>_g2": with pretokenizer="gpt2" (GPT-2's
+# exact regex pre-split). A number after the suffix ("_sp300") is the size of the training text in
+# MB, which the benchmark that trains it records; the parameters are the same. SuperBPE has no
+# pre-tokenizer modes.
+PRETOKENIZER_SUFFIXES: Dict[str, str] = {"sp": "space_prefix", "g2": "gpt2"}
 SPACE_PREFIX_VARIANTS: Dict[str, str] = {f"{v}_sp": v for v in VARIANTS if v != "super_bpe"}
+
+
+def parse_variant(name: str) -> Tuple[str, str, Optional[int]]:
+    """(base variant, pretokenizer, training MB or None) of a variant name: ``"mdl_bits"`` ->
+    ("mdl_bits", "whitespace", None), ``"mdl_bits_g2"`` -> (..., "gpt2", None), ``"mdl_bits_sp300"``
+    -> (..., "space_prefix", 300). Raises ValueError for an unknown name."""
+    m = re.fullmatch(r"(.+)_(sp|g2)([1-9][0-9]*)?", name)
+    if m and m[1] in VARIANTS and m[1] != "super_bpe":
+        return m[1], PRETOKENIZER_SUFFIXES[m[2]], int(m[3]) if m[3] else None
+    if name in VARIANTS:
+        return name, "whitespace", None
+    raise ValueError(f"unknown variant {name!r}")
 
 # Scorer name and every parameter of each BpeTokenizer.train variant. Nothing is left to a library
 # default, so the training record in each result file (meta.variants) is exactly what ran. The
@@ -240,11 +257,11 @@ def load_morphology(
 # ----------------------------------------------------------------------------
 
 def variant_config(name: str, vocab_size: int) -> Dict[str, Any]:
-    """Class and every training parameter of a suite variant (or of its ``_sp`` space-prefix
-    retrain, SPACE_PREFIX_VARIANTS) besides corpus and vocab_size (the morpheme lexicon is in
+    """Class and every training parameter of a suite variant (or of its ``_sp`` / ``_g2`` retrain,
+    see ``parse_variant``) besides corpus and vocab_size (the morpheme lexicon is in
     meta.morphology), recorded in every result file."""
-    base = SPACE_PREFIX_VARIANTS.get(name, name)
-    pretok = {"pretokenizer": "space_prefix" if name in SPACE_PREFIX_VARIANTS else "whitespace"}
+    base, mode, _ = parse_variant(name)
+    pretok = {"pretokenizer": mode}
     if base in _BPE_SCORERS:
         scorer, params = _BPE_SCORERS[base]
         return {"class": "BpeTokenizer", "scorer": scorer, **params, **pretok}
@@ -264,7 +281,7 @@ def train_variant(name: str, corpus: List[str], vocab_size: int, lexicon: Dict[s
 
     params = variant_config(name, vocab_size)
     cls = getattr(models, params.pop("class"))
-    if SPACE_PREFIX_VARIANTS.get(name, name) == "morpheme_bpe":
+    if parse_variant(name)[0] == "morpheme_bpe":
         params["morpheme_lexicon"] = lexicon
     return cls.train(corpus=corpus, vocab_size=vocab_size, **params)
 
@@ -441,6 +458,7 @@ def write_json(path: Path, payload: Dict[str, Any]) -> None:
 __all__ = [
     "DEFAULT_VOCAB_SIZE",
     "STANDARD_VOCAB_SIZES",
+    "PRETOKENIZER_SUFFIXES",
     "SPACE_PREFIX_VARIANTS",
     "VARIANTS",
     "add_common_args",
@@ -457,6 +475,7 @@ __all__ = [
     "run_metadata",
     "tokenizer_fingerprint",
     "train_suite",
+    "parse_variant",
     "train_variant",
     "variant_config",
     "write_json",

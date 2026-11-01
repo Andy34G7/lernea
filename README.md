@@ -78,7 +78,14 @@ maximal run of Unicode whitespace, so every space is a token of its own. `pretok
 is GPT-2-style: a word takes the one U+0020 space right before it (`"a  b"` -> `a`, ` `, ` b`),
 while newlines, tabs, other Unicode spaces and all but the last space of a run stay in
 whitespace-only segments; unlike GPT-2's `\s+(?!\S)| ?\S+` it does not split letters, digits and
-punctuation apart. Bytes that are not valid UTF-8 count as non-whitespace in both modes.
+punctuation apart. `pretokenizer="gpt2"` is GPT-2's exact pre-split: the matches of tiktoken's gpt2
+`pat_str` (`'(?:[sdmt]|ll|ve|re)| ?\p{L}++| ?\p{N}++| ?[^\s\p{L}\p{N}]++|\s++$|\s+(?!\S)|\s`, run with
+fancy-regex as tiktoken's Rust core does), so contractions, letter runs, digit runs and punctuation
+runs are separate segments, each with the space before it (`"it's 2024!"` -> `it`, `'s`, ` 2024`,
+`!`); its export is Hugging Face's own `ByteLevel(use_regex=true)`. On all 14,982 FineWeb val
+documents of the tokenizer swap the native split equals Hugging Face's and tiktoken's, and GPT-2's
+merges loaded natively give tiktoken's ids. Bytes that are not valid UTF-8 count as non-whitespace in
+every mode; in `gpt2` each invalid sequence is split exactly like one U+FFFD (a symbol).
 
 ---
 

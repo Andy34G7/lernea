@@ -278,7 +278,7 @@ def test_space_prefix_is_lossless_on_web_text_and_packs_more_bytes_per_token():
 # ----------------------------------------------------------------------------
 
 def test_unknown_pretokenizer_is_rejected():
-    for train in (lambda: tokenisers.BpeTokenizer.train(CORPUS, 300, pretokenizer="gpt2"),
+    for train in (lambda: tokenisers.BpeTokenizer.train(CORPUS, 300, pretokenizer="gpt-2"),
                   lambda: tokenisers.WordPieceTokenizer.train(CORPUS, 300, pretokenizer="Whitespace"),
                   lambda: tokenisers.UnigramTokenizer.train(CORPUS, 300, pretokenizer=""),
                   lambda: tokenisers.MorphemeBpeTokenizer.train(CORPUS, 300, pretokenizer="space-prefix")):

@@ -17,8 +17,10 @@ and a ``UserWarning`` reports its size.
 into segments that no token spans, for training and encoding alike: ``"whitespace"`` (default)
 isolates every Unicode whitespace run, so every space is its own token; ``"space_prefix"``
 (GPT-2-style) lets a word take the one U+0020 space before it (" the"), while other whitespace
-stays in whitespace-only segments. The exported ``tokenizer.json`` reproduces it, and
-``from_pretrained`` restores it.
+stays in whitespace-only segments; ``"gpt2"`` is GPT-2's exact regex pre-split (tiktoken's gpt2
+``pat_str``): contractions, letter runs, digit runs and punctuation runs apart, each with the
+space before it (" it", "'s", " 2024", "!"). The exported ``tokenizer.json`` reproduces it, and
+``from_pretrained`` restores it. ``tokenisers._core.pretokenize(data, mode)`` returns the segments.
 """
 
 from __future__ import annotations
@@ -62,8 +64,8 @@ class _CoreTokenizer:
 
     @property
     def pretokenizer(self) -> Optional[str]:
-        """``"whitespace"`` or ``"space_prefix"``; None when the model encodes whole text (SuperBPE
-        after stage 2) or is not trained."""
+        """``"whitespace"``, ``"space_prefix"`` or ``"gpt2"``; None when the model encodes whole text
+        (SuperBPE after stage 2) or is not trained."""
         return None if self._model is None else self._model.pretokenizer()
 
     def get_vocab(self) -> Dict[str, int]:
@@ -349,8 +351,9 @@ class MorphemeGuidedTokenizer(BpeTokenizer):
     concatenate to the word; supply it from training annotations or an unsupervised segmenter,
     never from evaluation gold. ``alpha`` (wordpiece), ``beta`` (length_penalized) and
     ``penalty`` (mdl entry cost in bits) default to the scorer's own defaults. With
-    ``pretokenizer="space_prefix"`` the segment " word" gets the boundaries of "word" (the space
-    joins the first morpheme).
+    ``pretokenizer="space_prefix"`` or ``"gpt2"`` the segment " word" gets the boundaries of "word"
+    (the space joins the first morpheme); in ``"gpt2"`` a word the regex splits ("don't") is never
+    a training segment and has no effect.
     """
 
     @classmethod

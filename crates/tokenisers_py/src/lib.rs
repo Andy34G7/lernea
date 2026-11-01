@@ -4,6 +4,7 @@ use std::path::Path;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 
 use tokenisers_core::curricula::morpheme::{MorphemeGuidedScorer, MorphemeLexicon};
 use tokenisers_core::curricula::super_bpe::{SuperBpeConfig, SuperBpeTrainer};
@@ -220,8 +221,8 @@ impl PyBpeModel {
         self.model.vocab.len()
     }
 
-    /// The segmentation encoding splits text into ("whitespace" or "space_prefix"), or None for a
-    /// model that encodes whole text (SuperBPE after stage 2).
+    /// The segmentation encoding splits text into ("whitespace", "space_prefix" or "gpt2"), or
+    /// None for a model that encodes whole text (SuperBPE after stage 2).
     pub fn pretokenizer(&self) -> Option<&'static str> {
         self.model.pretokenize.then(|| self.model.pretokenizer.name())
     }
@@ -415,7 +416,8 @@ impl PyUnigramModel {
         self.model.vocab.len()
     }
 
-    /// The segmentation encoding and sampling split text into ("whitespace" or "space_prefix").
+    /// The segmentation encoding and sampling split text into ("whitespace", "space_prefix" or
+    /// "gpt2").
     pub fn pretokenizer(&self) -> Option<&'static str> {
         Some(self.model.pretokenizer.name())
     }
@@ -690,6 +692,14 @@ pub fn printable_to_bytes(text: &str) -> PyResult<Vec<u8>> {
     byte_vocab().printable_to_bytes(text).map_err(value_err)
 }
 
+/// The segments `pretokenizer` ("whitespace", "space_prefix" or "gpt2") splits `data` into, as
+/// training and encoding see them; concatenated they give back `data`.
+#[pyfunction]
+pub fn pretokenize<'py>(py: Python<'py>, data: &[u8], pretokenizer: &str) -> PyResult<Vec<Bound<'py, PyBytes>>> {
+    let pretokenizer = parse_pretokenizer(pretokenizer)?;
+    Ok(pretokenizer.segment_bytes(data).into_iter().map(|seg| PyBytes::new(py, seg)).collect())
+}
+
 fn byte_vocab() -> &'static Vocabulary {
     static VOCAB: std::sync::OnceLock<Vocabulary> = std::sync::OnceLock::new();
     VOCAB.get_or_init(Vocabulary::new_byte_level)
@@ -710,7 +720,7 @@ fn check_param(name: &str, value: Option<f64>, allow_negative: bool) -> PyResult
 /// is an upper bound (training stops early when no eligible pair is left). Special tokens are cut
 /// out of the corpus before training, as encode cuts them out of the text. `None` parameters take
 /// the scorer's default; a parameter the scorer does not use raises `ValueError`. `pretokenizer`
-/// ("whitespace" or "space_prefix") is the segmentation of training and encoding.
+/// ("whitespace", "space_prefix" or "gpt2") is the segmentation of training and encoding.
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
 #[pyo3(signature = (corpus, vocab_size, scorer_type="frequency", min_frequency=None, alpha=None, beta=None, penalty=None, special_tokens=None, pretokenizer="whitespace"))]
@@ -824,8 +834,8 @@ pub fn train_bpe(
 
 /// Trains a Unigram LM; `vocab_size` is an upper bound (the seed set may be smaller). Each round
 /// runs `num_iterations` EM steps, then keeps `shrinking_factor` of the vocabulary (SentencePiece
-/// semantics), never pruning below `vocab_size`. `pretokenizer` ("whitespace" or "space_prefix")
-/// is the segmentation of training, encoding and sampling.
+/// semantics), never pruning below `vocab_size`. `pretokenizer` ("whitespace", "space_prefix" or
+/// "gpt2") is the segmentation of training, encoding and sampling.
 #[pyfunction]
 #[pyo3(signature = (corpus, vocab_size, num_iterations=10, shrinking_factor=0.75, pretokenizer="whitespace"))]
 pub fn train_unigram(
@@ -909,8 +919,10 @@ pub fn train_super_bpe(
 /// Morpheme-guided BPE. `morpheme_lexicon` maps training words (whole whitespace-free segments)
 /// to their surface morphemes; it must come from training data or an unsupervised segmenter, never
 /// from evaluation gold. Inner-scorer parameters left as `None` take the scorer's defaults. With
-/// `pretokenizer="space_prefix"` a word's segment may start with a space: " word" then gets the
-/// boundaries of "word" (the space joins the first morpheme).
+/// `pretokenizer="space_prefix"` or `"gpt2"` a word's segment may start with a space: " word" then
+/// gets the boundaries of "word" (the space joins the first morpheme) whenever " word" is one
+/// segment of that mode. A word the mode splits (in "gpt2": "don't", "e-mail", "abc123") is never a
+/// training segment, so its entry has no effect.
 #[pyfunction]
 #[pyo3(signature = (corpus, vocab_size, morpheme_lexicon, lambda_weight=1.0, scorer="frequency", min_frequency=1, alpha=None, beta=None, penalty=None, special_tokens=None, pretokenizer="whitespace"))]
 #[allow(clippy::too_many_arguments)]
@@ -967,11 +979,16 @@ pub fn train_morpheme_guided(
         let m_refs: Vec<&[u8]> = morphemes.iter().map(|m| m.as_bytes()).collect();
         if !lexicon.insert_segmentation(word.as_bytes(), &m_refs) {
             rejected.push(word.as_str());
-        } else if pretokenizer == Pretokenizer::SpacePrefix && !morphemes.is_empty() {
+        } else if !morphemes.is_empty() {
             let spaced = |s: &str| [b" ", s.as_bytes()].concat();
-            let first = spaced(&morphemes[0]);
-            let parts: Vec<&[u8]> = std::iter::once(&first[..]).chain(m_refs[1..].iter().copied()).collect();
-            lexicon.insert_segmentation(&spaced(word), &parts);
+            let spaced_word = spaced(word);
+            // " word" is one segment in space_prefix (always) and gpt2 (if "word" is), never in
+            // whitespace mode.
+            if pretokenizer.segment_bytes(&spaced_word).len() == 1 {
+                let first = spaced(&morphemes[0]);
+                let parts: Vec<&[u8]> = std::iter::once(&first[..]).chain(m_refs[1..].iter().copied()).collect();
+                lexicon.insert_segmentation(&spaced_word, &parts);
+            }
         }
     }
     if !rejected.is_empty() {
@@ -1054,5 +1071,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(train_morpheme_guided, m)?)?;
     m.add_function(wrap_pyfunction!(bytes_to_printable, m)?)?;
     m.add_function(wrap_pyfunction!(printable_to_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(pretokenize, m)?)?;
     Ok(())
 }

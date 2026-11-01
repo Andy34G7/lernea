@@ -401,3 +401,130 @@ fn whitespace_export_is_unchanged_by_the_new_mode() {
     assert_eq!(v["pre_tokenizer"]["pretokenizers"][0]["pattern"]["Regex"], expected);
     assert_eq!(json.pretokenizer().unwrap(), Some(Pretokenizer::Whitespace));
 }
+
+// ---------------------------------------------------------------------------------------------
+// GPT-2 mode: HF's ByteLevel(use_regex=true) must split exactly like `Pretokenizer::Gpt2`.
+// ---------------------------------------------------------------------------------------------
+
+/// Probes for GPT-2's sub-split: contractions, digits next to letters, punctuation runs, the
+/// `\s+(?!\S)` rule before words, and Unicode letters, numbers and marks.
+const GPT2_TESTS: &[&str] = &[
+    "it's don't they're we've I'm you'll he'd IT'S 's 'sa o'clock's rock'n'roll it’s",
+    "abc123def 2024-11-01 3.14159 $1,299.00 x²+½ ⅷ ٣٤ १२",
+    "hello, world!!! a -- b f(x): pass ... ?!",
+    "a \nb a \n b a\n\nb a\n\n b a\t\t  b a\r\n\r\nb x\n x \n ",
+    "中文 \u{3000}文本 a\u{a0} b e\u{301}t\u{e9} 한국어 Привет",
+    "a \u{200b}b \u{feff}c \u{180e}d \u{1c}e \u{ad}f",
+];
+
+/// Random text over GPT-2's classes, plus random code points from every plane (letters, numbers,
+/// marks and symbols of many scripts; unassigned ones too).
+fn random_gpt2_text(rng: &mut fastrand::Rng) -> String {
+    const PIECES: &[&str] = &[
+        " ", " ", " ", "  ", "\t", "\n", "\r\n", "\u{3000}", "\u{a0}", "\u{85}", "a", "bc", "Z", "中", "é",
+        "e\u{301}", "1", "42", "½", "٣", "'", "'s", "'t", "'re", "'ve", "'m", "'ll", "'d", "'S", "’", "!", "...",
+        "-", "$", "🚀", "\u{200b}", "_",
+    ];
+    (0..rng.usize(0..30))
+        .map(|_| {
+            if rng.u8(0..8) == 0 {
+                let c = loop {
+                    let cp = match rng.u8(0..3) {
+                        0 => rng.u32(0x80..0x3000),
+                        1 => rng.u32(0x3000..0x10000),
+                        _ => rng.u32(0x10000..0x30000),
+                    };
+                    if let Some(c) = char::from_u32(cp) {
+                        break c;
+                    }
+                };
+                c.to_string()
+            } else {
+                PIECES[rng.usize(0..PIECES.len())].to_string()
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn hf_byte_level_regex_reproduces_the_gpt2_split() {
+    let wc = word_counts_in(&corpus_docs(), Pretokenizer::Gpt2);
+    let model = BottomUpTrainer::new(&BpeScorer, 300).with_pretokenizer(Pretokenizer::Gpt2).train(&wc).unwrap();
+    let json = HfTokenizerJson::from_bpe_model(&model, None);
+    let v: serde_json::Value = serde_json::from_str(&json.to_json_string().unwrap()).unwrap();
+    assert_eq!(
+        v["pre_tokenizer"],
+        serde_json::json!({"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": false, "use_regex": true})
+    );
+    let tok = hf(&json);
+    let mut rng = fastrand::Rng::with_seed(6);
+    let mut differ = Vec::new();
+    let texts = TESTS.iter().chain(SPACE_TESTS).chain(GPT2_TESTS).map(|s| s.to_string());
+    for s in texts.chain((0..30_000).map(|_| random_gpt2_text(&mut rng))) {
+        if hf_splits(&tok, &s) != native_splits(Pretokenizer::Gpt2, &s) {
+            differ.push(s);
+        }
+    }
+    assert!(differ.is_empty(), "{} texts split differently, e.g. {:?}", differ.len(), &differ[..differ.len().min(5)]);
+}
+
+#[test]
+fn gpt2_bpe_family_and_unigram_exports_match_native_ids() {
+    let wc = word_counts_in(&corpus_docs(), Pretokenizer::Gpt2);
+    let train = |scorer: &dyn PairScorer| {
+        BottomUpTrainer::new(scorer, 420).with_pretokenizer(Pretokenizer::Gpt2).train(&wc).unwrap()
+    };
+    let models = [
+        ("bpe_frequency", train(&BpeScorer)),
+        ("wordpiece", train(&WordPieceScorer::default())),
+        ("wp_bpe_pig", train(&WpBpePigScorer::default())),
+        ("wp_bpe_npmi", train(&WpBpeNpmiScorer::default())),
+        ("wp_bpe_ppig", train(&WpBpePpigScorer::default())),
+        ("mdl", train(&MdlScorer::default())),
+        ("length_penalized", train(&LengthPenalizedScorer::default())),
+    ];
+    let mut rng = fastrand::Rng::with_seed(7);
+    let random: Vec<String> = (0..300).map(|_| random_gpt2_text(&mut rng)).collect();
+    let probes: Vec<&str> = SPACE_TESTS.iter().chain(GPT2_TESTS).copied().chain(random.iter().map(String::as_str)).collect();
+    for (name, model) in models {
+        assert!(model.pretokenize && model.pretokenizer == Pretokenizer::Gpt2, "{name}");
+        let json = HfTokenizerJson::from_bpe_model(&model, None);
+        assert_eq!(json.pretokenizer().unwrap(), Some(Pretokenizer::Gpt2));
+        let reparsed: HfTokenizerJson = serde_json::from_str(&json.to_json_string().unwrap()).unwrap();
+        assert_eq!(reparsed.pretokenizer().unwrap(), Some(Pretokenizer::Gpt2));
+        let tok = hf(&json);
+        assert_parity(name, &tok, |s| model.encode(s.as_bytes()));
+        for s in &probes {
+            assert_eq!(model.encode(s.as_bytes()), hf_ids(&tok, s), "[{name}] for {s:?}");
+        }
+    }
+    let mut model = UnigramTrainer::new(500, 0.2).train(&wc).unwrap();
+    model.pretokenizer = Pretokenizer::Gpt2;
+    let json = HfTokenizerJson::from_unigram_model(&model, None);
+    assert_eq!(json.pretokenizer().unwrap(), Some(Pretokenizer::Gpt2));
+    let tok = hf(&json);
+    assert_parity("unigram gpt2", &tok, |s| model.encode(s.as_bytes()));
+    for s in &probes {
+        assert_eq!(model.encode(s.as_bytes()), hf_ids(&tok, s), "[unigram] for {s:?}");
+    }
+}
+
+#[test]
+fn byte_level_with_an_added_prefix_space_is_still_rejected() {
+    let model = &bpe_models()[0].1;
+    let mut json = HfTokenizerJson::from_bpe_model(model, None);
+    for (add_prefix_space, use_regex) in [(true, true), (true, false)] {
+        json.pre_tokenizer = tokenisers_core::export::huggingface::PreTokenizerConfig::ByteLevel {
+            add_prefix_space,
+            trim_offsets: true,
+            use_regex,
+        };
+        assert!(json.pretokenizer().is_err(), "add_prefix_space={add_prefix_space} use_regex={use_regex}");
+    }
+    json.pre_tokenizer = tokenisers_core::export::huggingface::PreTokenizerConfig::ByteLevel {
+        add_prefix_space: false,
+        trim_offsets: true, // GPT-2's own tokenizer.json: offsets only
+        use_regex: true,
+    };
+    assert_eq!(json.pretokenizer().unwrap(), Some(Pretokenizer::Gpt2));
+}

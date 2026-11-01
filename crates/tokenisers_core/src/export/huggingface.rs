@@ -92,38 +92,44 @@ pub fn space_prefix_regex() -> String {
     format!("\\x{{20}}?[^{ws}]+|[{ws}]+?(?=\\x{{20}}[^{ws}])|[{ws}]+")
 }
 
-/// The `Split` regex reproducing `pretokenizer`'s segmentation.
-pub fn split_regex(pretokenizer: Pretokenizer) -> String {
+/// The `Split` regex reproducing `pretokenizer`'s segmentation; None for `Gpt2`, which HF's
+/// `ByteLevel(use_regex=true)` applies itself.
+pub fn split_regex(pretokenizer: Pretokenizer) -> Option<String> {
     match pretokenizer {
-        Pretokenizer::Whitespace => whitespace_run_regex(),
-        Pretokenizer::SpacePrefix => space_prefix_regex(),
+        Pretokenizer::Whitespace => Some(whitespace_run_regex()),
+        Pretokenizer::SpacePrefix => Some(space_prefix_regex()),
+        Pretokenizer::Gpt2 => None,
     }
 }
 
-/// Raw bytes -> GPT-2 byte-level chars on the whole input (no GPT-2 regex: native encoding has
-/// no regex pre-tokenization).
-fn byte_level() -> PreTokenizerConfig {
+/// Raw bytes -> GPT-2 byte-level chars, with GPT-2's regex split first iff `use_regex` (HF's
+/// `ByteLevel` pre-tokenizer; `add_prefix_space` stays off, so no space is ever added).
+fn byte_level(use_regex: bool) -> PreTokenizerConfig {
     PreTokenizerConfig::ByteLevel {
         add_prefix_space: false,
         trim_offsets: false,
-        use_regex: false,
+        use_regex,
     }
 }
 
 /// HF equivalent of native pre-tokenization: split into `pretokenizer` segments, then byte-level
-/// map. Without a pretokenizer (SuperBPE) the whole text is one word.
+/// map. Without a pretokenizer (SuperBPE) the whole text is one word. `Gpt2` is HF's own
+/// `ByteLevel(use_regex=true)`: GPT-2's pattern, which `Pretokenizer::Gpt2` runs natively.
 fn pre_tokenizer(pretokenizer: Option<Pretokenizer>) -> PreTokenizerConfig {
     let Some(pretokenizer) = pretokenizer else {
-        return byte_level();
+        return byte_level(false);
+    };
+    let Some(regex) = split_regex(pretokenizer) else {
+        return byte_level(true);
     };
     PreTokenizerConfig::Sequence {
         pretokenizers: vec![
             PreTokenizerConfig::Split {
-                pattern: SplitPattern::Regex(split_regex(pretokenizer)),
+                pattern: SplitPattern::Regex(regex),
                 behavior: "Isolated".into(),
                 invert: false,
             },
-            byte_level(),
+            byte_level(false),
         ],
     }
 }
@@ -306,9 +312,10 @@ impl HfTokenizerJson {
 
     /// The segmentation of a model loaded from this file: None for the bare whole-text byte-level
     /// pre-tokenizer (what SuperBPE exports), `Some(p)` for the `split_regex(p)` split + byte level
-    /// that the other exports write. Native encoding implements nothing else, so
-    /// any other pre-tokenizer (GPT-2 regex, `add_prefix_space`, other split patterns) or any
-    /// normalizer is an error rather than a silently different encoding.
+    /// that the other exports write, `Some(Gpt2)` for `ByteLevel` with GPT-2's regex (and no added
+    /// prefix space; `trim_offsets` only changes offsets). Native encoding implements nothing else,
+    /// so any other pre-tokenizer (`add_prefix_space`, other split patterns) or any normalizer is an
+    /// error rather than a silently different encoding.
     pub fn pretokenizer(&self) -> Result<Option<Pretokenizer>> {
         let bare = |p: &PreTokenizerConfig| {
             matches!(
@@ -317,12 +324,15 @@ impl HfTokenizerJson {
             )
         };
         let split = |re: &str| {
-            [Pretokenizer::Whitespace, Pretokenizer::SpacePrefix]
+            Pretokenizer::ALL
                 .into_iter()
-                .find(|&p| split_regex(p) == re)
+                .find(|&p| split_regex(p).is_some_and(|r| r == re))
         };
         let flag = match &self.pre_tokenizer {
             p if bare(p) => Some(None),
+            PreTokenizerConfig::ByteLevel { add_prefix_space: false, use_regex: true, .. } => {
+                Some(Some(Pretokenizer::Gpt2))
+            }
             PreTokenizerConfig::Sequence { pretokenizers } => match pretokenizers.as_slice() {
                 [PreTokenizerConfig::Split {
                     pattern: SplitPattern::Regex(re),
