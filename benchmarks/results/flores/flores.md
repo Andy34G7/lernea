@@ -1,7 +1,7 @@
 - FLORES+ `openlanguagedata/flores_plus` at `1147e2dc59f3` (CC BY-SA 4.0), devtest split only: 1,012 parallel sentences per language, each encoded on its own with no separator; never used for training
 - in-mix: the 10 FineWeb-2 languages of the data pipeline's training mix (FineWeb-2 config -> FLORES+ file): deu_Latn, fra_Latn, spa_Latn, rus_Cyrl, cmn_Hani -> cmn_Hans, jpn_Jpan, arb_Arab, hin_Deva, hun_Latn, fin_Latn; out-of-mix (in no tokenizer's training mix): kor_Hang, tha_Thai, tam_Taml, amh_Ethi, ell_Grek, heb_Hebr, ben_Beng
 - intrinsic tier: 13 variants x V = 16,384 / 32,768 / 65,536, retrained as the committed intrinsic results (real dataset `hf-fb5b8df7af00b10f`, 52.5 MB train split); 39 of 39 reproduce the committed test-split bytes/token exactly
-- swap tier: the GPT-2-swap tokenizers (English FineWeb text, about 50k tokens) from the prepared jobs `nanogpt-swap-job`, `nanogpt-swap-job-sp`, `nanogpt-swap-pool-g2`, `nanogpt-swap-pool-sp300`
+- swap tier: the GPT-2-swap tokenizers from the prepared jobs `nanogpt-swap-job`, `nanogpt-swap-job-sp`, `nanogpt-swap-pool-g2`, `nanogpt-swap-pool-sp300`: `gpt2` (tiktoken's `gpt2` encoding: GPT-2's own BPE, trained by OpenAI on WebText); `tm_englishcode_50256` (TokenMonster's prebuilt `englishcode-50256-consistent-nocapcode-v1` vocabulary, 50,256 tokens); `tm_englishcode_32000` (TokenMonster's prebuilt `englishcode-32000-consistent-nocapcode-v1` vocabulary, 32,000 tokens); 33 of ours, trained on English FineWeb text at 50,256 tokens
 - premium = tokens(language) / tokens(English) on the same sentences; σ ln = standard deviation of ln(premium) over the group's languages; <= 1.5 = share of them with premium <= 1.5; byte fallback = share of tokens that are one byte >= 0x80, a piece of a multi-byte character
 - commit `d9b38ad6e9`; generated 2026-11-01T12:21:34Z; per-language tokens, bytes/token, characters/token and one-byte shares of every tokenizer are in `flores_by_language.csv`
 
@@ -51,7 +51,7 @@ Intrinsic tier (30% multilingual mix), sorted by mean in-mix premium:
 | `super_bpe@32768` | 32,768 | 28.0 | 1.72 | 2.11 rus_Cyrl | 0.12 | 20% | 9.72 | 14.78 tam_Taml | 0.36 | 0% | 92.0% |
 | `super_bpe@16384` | 16,384 | 31.5 | 1.75 | 2.19 rus_Cyrl | 0.13 | 10% | 8.80 | 13.13 tam_Taml | 0.35 | 0% | 93.9% |
 
-GPT-2-swap tier (English FineWeb), sorted by mean in-mix premium:
+GPT-2-swap tier (English-centric), sorted by mean in-mix premium:
 
 | Tokenizer | \|V\| | EN tokens/sentence | In-mix mean | In-mix max | In-mix σ ln | In-mix <= 1.5 | Out-of-mix mean | Out-of-mix max | Out-of-mix σ ln | Out-of-mix <= 1.5 | Out-of-mix byte fallback |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -117,10 +117,10 @@ Premium by language: the lowest and highest mean in-mix premium of each tier and
 
 Findings:
 
-- Mean in-mix premium: intrinsic tier (30% multilingual mix) 1.04-1.75 (median 1.29); GPT-2-swap tier (English FineWeb) 2.08-6.16 (median 3.39). 39 of 39 intrinsic-tier tokenizers are below the lowest swap-tier tokenizer.
-- Mean out-of-mix premium: intrinsic tier (30% multilingual mix) 2.00-9.72 (median 5.08); GPT-2-swap tier (English FineWeb) 4.24-12.26 (median 7.89). 12 of 39 intrinsic-tier tokenizers are below the lowest swap-tier tokenizer.
+- Mean in-mix premium: intrinsic tier (30% multilingual mix) 1.04-1.75 (median 1.29); GPT-2-swap tier (English-centric) 2.08-6.16 (median 3.39). 39 of 39 intrinsic-tier tokenizers are below the lowest swap-tier tokenizer.
+- Mean out-of-mix premium: intrinsic tier (30% multilingual mix) 2.00-9.72 (median 5.08); GPT-2-swap tier (English-centric) 4.24-12.26 (median 7.89). 12 of 39 intrinsic-tier tokenizers are below the lowest swap-tier tokenizer.
 - Absolute cost, mean tokens per sentence over the group's languages (English plays no part), median over each tier: in-mix intrinsic tier 66.5 vs swap tier 93.2; out-of-mix intrinsic tier 260.9 vs swap tier 207.5.
-- Latin vs non-Latin in-mix languages (premium averaged over the tier's tokenizers): intrinsic tier (30% multilingual mix) 1.31 on deu_Latn, fra_Latn, spa_Latn, hun_Latn, fin_Latn vs 1.29 on rus_Cyrl, cmn_Hans, jpn_Jpan, arb_Arab, hin_Deva; GPT-2-swap tier (English FineWeb) 2.17 on deu_Latn, fra_Latn, spa_Latn, hun_Latn, fin_Latn vs 4.54 on rus_Cyrl, cmn_Hans, jpn_Jpan, arb_Arab, hin_Deva.
+- Latin vs non-Latin in-mix languages (premium averaged over the tier's tokenizers): intrinsic tier (30% multilingual mix) 1.31 on deu_Latn, fra_Latn, spa_Latn, hun_Latn, fin_Latn vs 1.29 on rus_Cyrl, cmn_Hans, jpn_Jpan, arb_Arab, hin_Deva; GPT-2-swap tier (English-centric) 2.17 on deu_Latn, fra_Latn, spa_Latn, hun_Latn, fin_Latn vs 4.54 on rus_Cyrl, cmn_Hans, jpn_Jpan, arb_Arab, hin_Deva.
 - Intrinsic tier (30% multilingual mix), 39 tokenizers: highest premium 16.45 (`super_bpe@65536` on tam_Taml); worst in-mix language hin_Deva for 32, rus_Cyrl for 3, hun_Latn for 2, spa_Latn for 2; worst out-of-mix language tam_Taml for 39; byte-fallback tokens are 72.9-93.9% of out-of-mix tokens. Its lowest in-mix premium, `wp_bpe_scp@16384` (1.04), comes with 86.3 tokens per English sentence against the tier's median 50.6: the premium is relative to each tokenizer's own English cost.
-- GPT-2-swap tier (English FineWeb), 36 tokenizers: highest premium 18.21 (`tm_englishcode_50256` on tam_Taml); worst in-mix language hin_Deva for 36; worst out-of-mix language tam_Taml for 22, ben_Beng for 14; byte-fallback tokens are 56.6-92.9% of out-of-mix tokens. Its lowest in-mix premium, `wp_bpe_npmi` (2.08), comes with 46.1 tokens per English sentence against the tier's median 26.2: the premium is relative to each tokenizer's own English cost.
+- GPT-2-swap tier (English-centric), 36 tokenizers: highest premium 18.21 (`tm_englishcode_50256` on tam_Taml); worst in-mix language hin_Deva for 36; worst out-of-mix language tam_Taml for 22, ben_Beng for 14; byte-fallback tokens are 56.6-92.9% of out-of-mix tokens. Its lowest in-mix premium, `wp_bpe_npmi` (2.08), comes with 46.1 tokens per English sentence against the tier's median 26.2: the premium is relative to each tokenizer's own English cost.
 - 9 tokenizers encode English at under 1.5 bytes per token, close to raw bytes (`wordpiece_pmi@16384`, `wp_bpe_base@16384`, `wp_bpe_ft@16384`, `wordpiece_pmi@32768`, `wp_bpe_base@32768`, `wp_bpe_ft@32768`, `wordpiece_pmi@65536`, `wp_bpe_base@65536`, `wp_bpe_ft@65536`): their premium is on average 0.06 from the UTF-8 byte ratio (column "UTF-8 bytes"), so it reflects the script's byte length, not fair compression.

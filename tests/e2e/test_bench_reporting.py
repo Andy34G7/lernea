@@ -110,6 +110,16 @@ def test_leaderboards_state_data_and_backend():
     col["meta"]["backend"] = {"kind": "local", "device": "cpu", "cpu": "Some CPU"}
     assert "local CPU `Some CPU`" in render_colab(col)
     assert render_tokka({"meta": _meta(duplicates={}), "models": {}}).count("|") > 0
+    # The seeds vary only the LM's initialization (one LM text, one order): the sd says so.
+    assert "the seed sets only the LM's initialization: every seed trains on the same LM text in the same order" in md
+
+    # A --resume of a job prepared (tokenizers, LM text, ids) at another, dirty commit says so.
+    assert "resuming a job" not in md
+    col["meta"]["job_prepared"] = {"git_commit": "3186c1ba815c3136", "git_dirty": True}
+    assert ("commit `0123456789`, resuming a job (tokenizers, LM text and its ids) prepared at commit `3186c1ba81` "
+            "from a dirty tree (uncommitted changes: not reproducible from any commit)") in render_colab(col)
+    col["meta"]["job_prepared"] = {"git_commit": "0123456789abcdef", "git_dirty": False}  # the same commit
+    assert "resuming a job" not in render_colab(col)
 
 
 def test_colab_compare_ranks_both_tiers_against_bpe_frequency():
@@ -126,6 +136,7 @@ def test_colab_compare_ranks_both_tiers_against_bpe_frequency():
             "| `a` | 1 | -0.100 ± 0.025 | 2 | +0.100 ± 0.010 |") in md
     assert "- small LM: 1 tokenizers beat `bpe_frequency`, by 0.100–0.100 BPB, i.e. 4.0–4.0 standard errors" in md
     assert "- big LM:" not in md and "only_small" not in md
+    assert "seeds vary only the LM's initialization (same LM text, same order)" in md
 
 
 def test_memory_preflight_refuses_runs_that_would_not_fit(monkeypatch):

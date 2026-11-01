@@ -226,9 +226,10 @@ documents: FineWeb-Edu English 50%, FineWeb-2 in 10 languages 30%, StarCoder cod
 20%; no fallback source was needed) with held-out val (3.1 MB) and test (3.1 MB) splits. Tokka and
 intrinsic results exist for V = 16,384 (sections 1 and 2) and V = 32,768 / 65,536 (section 4);
 the proxy LM (section 3) ran at V = 16,384 only, on a Colab T4 GPU with the default 10 MB byte
-budget and 3 seeds, and again at commit `6d260c2` with the big proxy LM (100 MB budget, 3 seeds) on
-a Colab L4. Tokenizer training and every other step ran locally on an Intel Core Ultra 7
-155H (22 threads, no GPU, 15 GB RAM shared with a desktop session). Runs whose arguments include
+budget and 3 seeds, and again with the big proxy LM (100 MB budget, 3 seeds) on a Colab L4: LMs
+trained at commit `6d260c2` on a job prepared from an uncommitted tree at `3186c1b` (section 3).
+Tokenizer training and every other step ran locally on an Intel Core Ultra 7 155H (22 threads, no
+GPU, 15 GB RAM shared with a desktop session). Runs whose arguments include
 `--skip-memory-check` started after the desktop's memory use had grown: the preflight estimate
 (4.2 GiB) exceeded the 3.0 GiB it then allowed, so they ran inside a hard 4 GiB cgroup limit
 (`systemd-run -p MemoryMax=4G`) instead, above the measured 2.9 GiB peak. Section 5 re-times the
@@ -328,7 +329,7 @@ Morph F1 by language:
 - arguments: `--skip-memory-check --gpu T4 --timeout 10800`
 - backend: Colab GPU `Tesla T4`
 - proxy LM: pre-LayerNorm causal Transformer (torch TransformerEncoderLayer: ReLU FFN, biases), no positional encoding of any kind (NoPE: order comes only from the causal mask), tied input/output embeddings; d_model=128, n_layers=2, n_heads=4, d_ffn=512, max_seq_len=128
-- fixed budget 10,000,000 UTF-8 bytes of LM training text per tokenizer, drawn from the same train split the tokenizers were trained on (each document used once); seeds [0, 1, 2] (mean ± sample sd)
+- fixed budget 10,000,000 UTF-8 bytes of LM training text per tokenizer, drawn from the same train split the tokenizers were trained on (each document used once); seeds [0, 1, 2] (mean ± sample sd; the seed sets only the LM's initialization: every seed trains on the same LM text in the same order, so the sd leaves out data-sampling variance)
 
 | Tokenizer | \|V\| | Train bytes/token | Tokens trained | english BPB (↓) | multilingual BPB (↓) | code BPB (↓) | Macro BPB (↓) |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -350,11 +351,11 @@ Morph F1 by language:
 
 #### Big proxy LM (Colab L4)
 <!-- BEGIN GENERATED: colab_big -->
-- requested V = 16384; real corpus: tokenizers trained on the train split (52.5 MB); evaluated on the held-out val split (3.1 MB); commit `6d260c23b6`; generated 2026-10-31T20:24:38Z
+- requested V = 16384; real corpus: tokenizers trained on the train split (52.5 MB); evaluated on the held-out val split (3.1 MB); commit `6d260c23b6`, resuming a job (tokenizers, LM text and its ids) prepared at commit `3186c1ba81` from a dirty tree (uncommitted changes: not reproducible from any commit); generated 2026-10-31T20:24:38Z
 - arguments: `--preset big --job-dir /home/andey/.cache/tokenisers/big-lm-job --resume --concurrency 1`
 - backend: Colab GPU `NVIDIA L4`
 - proxy LM: pre-LayerNorm causal Transformer (torch TransformerEncoderLayer: ReLU FFN, biases), no positional encoding of any kind (NoPE: order comes only from the causal mask), tied input/output embeddings; d_model=512, n_layers=8, n_heads=8, d_ffn=2048, max_seq_len=512
-- fixed budget 100,000,000 UTF-8 bytes of LM training text per tokenizer, drawn from the train split the tokenizers were trained on plus an LM text pool with no val or test document (each document used once; 62.1 MB of the 110.0 MB of LM text came from the pool, `meta.lm_text`); seeds [0, 1, 2] (mean ± sample sd)
+- fixed budget 100,000,000 UTF-8 bytes of LM training text per tokenizer, drawn from the train split the tokenizers were trained on plus an LM text pool with no val or test document (each document used once; 62.1 MB of the 110.0 MB of LM text came from the pool, `meta.lm_text`); seeds [0, 1, 2] (mean ± sample sd; the seed sets only the LM's initialization: every seed trains on the same LM text in the same order, so the sd leaves out data-sampling variance)
 
 | Tokenizer | \|V\| | Train bytes/token | Tokens trained | english BPB (↓) | multilingual BPB (↓) | code BPB (↓) | Macro BPB (↓) |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -372,7 +373,11 @@ Morph F1 by language:
 <!-- END GENERATED: colab_big -->
 
 Setup of this run: `--preset big --resume --concurrency 1` from commit `6d260c2` on one Colab L4 (22 GB);
-the 33 runs (11 tokenizers x 3 seeds) trained one after another. Model: 8 layers, d_model 512, 8 heads,
+the 33 runs (11 tokenizers x 3 seeds) trained one after another. The job it resumed (the tokenizers, the
+choice of LM text from the pool, and the encoded ids: all of the LMs' training data) was prepared with
+`--prepare-only` at commit `3186c1b` from a tree with uncommitted changes (`meta.job_prepared`,
+`git_dirty: true`); the LM text pool code was committed only afterwards (`c0d0c7f`, `35c661e`), so the
+code that drew and encoded the LM text is not tied to any commit. Model: 8 layers, d_model 512, 8 heads,
 FFN 2048, sequence length 512; 100 MB byte budget per run; seeds 0, 1, 2. Measured wall time: 5 h 03 min
 from launch (20:51 IST) to the result on the laptop (01:54:38 IST). Of that, uploading the job took
 7 min 20 s and training plus evaluation on the VM 17,699.8 s (4 h 55 min, `meta.lm_seconds`), a mean of
@@ -385,7 +390,7 @@ to `--concurrency 1`.
 ##### Small vs big proxy LM
 <!-- BEGIN GENERATED: colab_compare -->
 - the 11 tokenizers both proxy-LM tiers trained; small LM: d_model=128, n_layers=2, 10,000,000-byte budget, seeds [0, 1, 2], `Tesla T4`; big LM: d_model=512, n_layers=8, 100,000,000-byte budget, seeds [0, 1, 2], `NVIDIA L4`
-- rank: by mean macro val BPB (1 = best); Δ: macro val BPB minus `bpe_frequency`'s in the same tier (negative = better) ± its standard error √(sd²/n + sd_ref²/n) over the n seeds (sample sd)
+- rank: by mean macro val BPB (1 = best); Δ: macro val BPB minus `bpe_frequency`'s in the same tier (negative = better) ± its standard error √(sd²/n + sd_ref²/n) over the n seeds (sample sd). The seeds vary only the LM's initialization (same LM text, same order), so the standard errors measure initialization noise on this one text sample, not data-sampling variance
 - small LM: 4 tokenizers beat `bpe_frequency`, by 0.006–0.038 BPB, i.e. 0.6–2.3 standard errors
 - big LM: 4 tokenizers beat `bpe_frequency`, by 0.012–0.027 BPB, i.e. 6.4–23.8 standard errors
 
@@ -404,6 +409,9 @@ to `--concurrency 1`.
 | `wp_bpe_scp` | 11 | +0.632 ± 0.021 | 11 | +0.444 ± 0.009 |
 <!-- END GENERATED: colab_compare -->
 
+The seeds vary only the LMs' initialization: every seed trains on the same LM text in the same order,
+so these standard errors measure initialization noise on this one text sample, not the variance from
+drawing other training text, and the separations below hold for this sample only.
 With the small LM, the four tokenizers ahead of `bpe_frequency` are within about two standard errors
 of it, so the order of the top five is not resolved by 3 seeds. With the big LM, `wp_bpe_ppig`,
 `wp_bpe_pig`, `wp_bpe_npmi` and `super_bpe` beat `bpe_frequency` by several standard errors; among the
@@ -962,9 +970,11 @@ Greek, Hebrew, Bengali). Two tiers of tokenizers:
   intrinsic results of sections 2 and 4 (same 52.5 MB train split with 30% FineWeb-2 text,
   parameters and SIGMORPHON lexicon; training is deterministic). The run checks each retrained
   tokenizer's test-split bytes/token against the committed leaderboard.
-- **GPT-2 swap**: the tokenizers of section 6 (GPT-2, TokenMonster 50k and 32k, our 9 whitespace
-  variants) and its follow-ups (8 `_sp`, 8 `_g2`, 8 `_sp300`), all trained on English FineWeb text,
-  loaded read-only from their prepared job directories exactly as the swap job loads them.
+- **GPT-2 swap**: the tokenizers of section 6 and its follow-ups, loaded read-only from their prepared
+  job directories exactly as the swap job loads them: GPT-2's own (trained by OpenAI on WebText), the
+  two prebuilt TokenMonster English+code vocabularies (50,256 and 32,000 tokens; not trained on
+  FineWeb), and our 9 whitespace variants with their 8 `_sp`, 8 `_g2` and 8 `_sp300` retrains, trained
+  on English FineWeb text at 50,256 tokens.
 
 ```bash
 # FLORES+ is gated (approved automatically): accept its terms on Hugging Face with the account whose
@@ -984,7 +994,7 @@ that tier. The committed run trained inside a 5 GiB `systemd-run -p MemoryMax=` 
 - FLORES+ `openlanguagedata/flores_plus` at `1147e2dc59f3` (CC BY-SA 4.0), devtest split only: 1,012 parallel sentences per language, each encoded on its own with no separator; never used for training
 - in-mix: the 10 FineWeb-2 languages of the data pipeline's training mix (FineWeb-2 config -> FLORES+ file): deu_Latn, fra_Latn, spa_Latn, rus_Cyrl, cmn_Hani -> cmn_Hans, jpn_Jpan, arb_Arab, hin_Deva, hun_Latn, fin_Latn; out-of-mix (in no tokenizer's training mix): kor_Hang, tha_Thai, tam_Taml, amh_Ethi, ell_Grek, heb_Hebr, ben_Beng
 - intrinsic tier: 13 variants x V = 16,384 / 32,768 / 65,536, retrained as the committed intrinsic results (real dataset `hf-fb5b8df7af00b10f`, 52.5 MB train split); 39 of 39 reproduce the committed test-split bytes/token exactly
-- swap tier: the GPT-2-swap tokenizers (English FineWeb text, about 50k tokens) from the prepared jobs `nanogpt-swap-job`, `nanogpt-swap-job-sp`, `nanogpt-swap-pool-g2`, `nanogpt-swap-pool-sp300`
+- swap tier: the GPT-2-swap tokenizers from the prepared jobs `nanogpt-swap-job`, `nanogpt-swap-job-sp`, `nanogpt-swap-pool-g2`, `nanogpt-swap-pool-sp300`: `gpt2` (tiktoken's `gpt2` encoding: GPT-2's own BPE, trained by OpenAI on WebText); `tm_englishcode_50256` (TokenMonster's prebuilt `englishcode-50256-consistent-nocapcode-v1` vocabulary, 50,256 tokens); `tm_englishcode_32000` (TokenMonster's prebuilt `englishcode-32000-consistent-nocapcode-v1` vocabulary, 32,000 tokens); 33 of ours, trained on English FineWeb text at 50,256 tokens
 - premium = tokens(language) / tokens(English) on the same sentences; σ ln = standard deviation of ln(premium) over the group's languages; <= 1.5 = share of them with premium <= 1.5; byte fallback = share of tokens that are one byte >= 0x80, a piece of a multi-byte character
 - commit `d9b38ad6e9`; generated 2026-11-01T12:21:34Z; per-language tokens, bytes/token, characters/token and one-byte shares of every tokenizer are in `flores_by_language.csv`
 
@@ -1034,7 +1044,7 @@ Intrinsic tier (30% multilingual mix), sorted by mean in-mix premium:
 | `super_bpe@32768` | 32,768 | 28.0 | 1.72 | 2.11 rus_Cyrl | 0.12 | 20% | 9.72 | 14.78 tam_Taml | 0.36 | 0% | 92.0% |
 | `super_bpe@16384` | 16,384 | 31.5 | 1.75 | 2.19 rus_Cyrl | 0.13 | 10% | 8.80 | 13.13 tam_Taml | 0.35 | 0% | 93.9% |
 
-GPT-2-swap tier (English FineWeb), sorted by mean in-mix premium:
+GPT-2-swap tier (English-centric), sorted by mean in-mix premium:
 
 | Tokenizer | \|V\| | EN tokens/sentence | In-mix mean | In-mix max | In-mix σ ln | In-mix <= 1.5 | Out-of-mix mean | Out-of-mix max | Out-of-mix σ ln | Out-of-mix <= 1.5 | Out-of-mix byte fallback |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -1100,12 +1110,12 @@ Premium by language: the lowest and highest mean in-mix premium of each tier and
 
 Findings:
 
-- Mean in-mix premium: intrinsic tier (30% multilingual mix) 1.04-1.75 (median 1.29); GPT-2-swap tier (English FineWeb) 2.08-6.16 (median 3.39). 39 of 39 intrinsic-tier tokenizers are below the lowest swap-tier tokenizer.
-- Mean out-of-mix premium: intrinsic tier (30% multilingual mix) 2.00-9.72 (median 5.08); GPT-2-swap tier (English FineWeb) 4.24-12.26 (median 7.89). 12 of 39 intrinsic-tier tokenizers are below the lowest swap-tier tokenizer.
+- Mean in-mix premium: intrinsic tier (30% multilingual mix) 1.04-1.75 (median 1.29); GPT-2-swap tier (English-centric) 2.08-6.16 (median 3.39). 39 of 39 intrinsic-tier tokenizers are below the lowest swap-tier tokenizer.
+- Mean out-of-mix premium: intrinsic tier (30% multilingual mix) 2.00-9.72 (median 5.08); GPT-2-swap tier (English-centric) 4.24-12.26 (median 7.89). 12 of 39 intrinsic-tier tokenizers are below the lowest swap-tier tokenizer.
 - Absolute cost, mean tokens per sentence over the group's languages (English plays no part), median over each tier: in-mix intrinsic tier 66.5 vs swap tier 93.2; out-of-mix intrinsic tier 260.9 vs swap tier 207.5.
-- Latin vs non-Latin in-mix languages (premium averaged over the tier's tokenizers): intrinsic tier (30% multilingual mix) 1.31 on deu_Latn, fra_Latn, spa_Latn, hun_Latn, fin_Latn vs 1.29 on rus_Cyrl, cmn_Hans, jpn_Jpan, arb_Arab, hin_Deva; GPT-2-swap tier (English FineWeb) 2.17 on deu_Latn, fra_Latn, spa_Latn, hun_Latn, fin_Latn vs 4.54 on rus_Cyrl, cmn_Hans, jpn_Jpan, arb_Arab, hin_Deva.
+- Latin vs non-Latin in-mix languages (premium averaged over the tier's tokenizers): intrinsic tier (30% multilingual mix) 1.31 on deu_Latn, fra_Latn, spa_Latn, hun_Latn, fin_Latn vs 1.29 on rus_Cyrl, cmn_Hans, jpn_Jpan, arb_Arab, hin_Deva; GPT-2-swap tier (English-centric) 2.17 on deu_Latn, fra_Latn, spa_Latn, hun_Latn, fin_Latn vs 4.54 on rus_Cyrl, cmn_Hans, jpn_Jpan, arb_Arab, hin_Deva.
 - Intrinsic tier (30% multilingual mix), 39 tokenizers: highest premium 16.45 (`super_bpe@65536` on tam_Taml); worst in-mix language hin_Deva for 32, rus_Cyrl for 3, hun_Latn for 2, spa_Latn for 2; worst out-of-mix language tam_Taml for 39; byte-fallback tokens are 72.9-93.9% of out-of-mix tokens. Its lowest in-mix premium, `wp_bpe_scp@16384` (1.04), comes with 86.3 tokens per English sentence against the tier's median 50.6: the premium is relative to each tokenizer's own English cost.
-- GPT-2-swap tier (English FineWeb), 36 tokenizers: highest premium 18.21 (`tm_englishcode_50256` on tam_Taml); worst in-mix language hin_Deva for 36; worst out-of-mix language tam_Taml for 22, ben_Beng for 14; byte-fallback tokens are 56.6-92.9% of out-of-mix tokens. Its lowest in-mix premium, `wp_bpe_npmi` (2.08), comes with 46.1 tokens per English sentence against the tier's median 26.2: the premium is relative to each tokenizer's own English cost.
+- GPT-2-swap tier (English-centric), 36 tokenizers: highest premium 18.21 (`tm_englishcode_50256` on tam_Taml); worst in-mix language hin_Deva for 36; worst out-of-mix language tam_Taml for 22, ben_Beng for 14; byte-fallback tokens are 56.6-92.9% of out-of-mix tokens. Its lowest in-mix premium, `wp_bpe_npmi` (2.08), comes with 46.1 tokens per English sentence against the tier's median 26.2: the premium is relative to each tokenizer's own English cost.
 - 9 tokenizers encode English at under 1.5 bytes per token, close to raw bytes (`wordpiece_pmi@16384`, `wp_bpe_base@16384`, `wp_bpe_ft@16384`, `wordpiece_pmi@32768`, `wp_bpe_base@32768`, `wp_bpe_ft@32768`, `wordpiece_pmi@65536`, `wp_bpe_base@65536`, `wp_bpe_ft@65536`): their premium is on average 0.06 from the UTF-8 byte ratio (column "UTF-8 bytes"), so it reflects the script's byte length, not fair compression.
 <!-- END GENERATED: flores -->
 
@@ -1132,7 +1142,9 @@ Findings:
   so their order is not significant; the gaps to `unigram_lm` and below are larger. The big proxy LM
   (8 layers, d_model = 512, 100 MB per tokenizer, 11 of the variants) separates four tokenizers from
   `bpe_frequency` and reorders the ones below it (section 3, small vs big proxy LM); it is still a
-  proxy: ~33M parameters trained on 27-62M tokens.
+  proxy: ~33M parameters trained on 27-62M tokens. In both tiers the seeds vary only the LM's
+  initialization (one fixed sample of LM text, in a fixed order), so the standard errors leave out
+  data-sampling variance and the separations hold for that sample only.
 - **Morphology.** Morph F1 uses SIGMORPHON 2022 gold for 5 languages (eng, fra, hun, rus, spa).
   `morpheme_bpe` is trained with a lexicon from the SIGMORPHON train split (gold test words
   removed), i.e. with supervision the other variants do not get.

@@ -2,7 +2,7 @@
 - arguments: `--skip-memory-check --gpu T4 --timeout 10800`
 - backend: Colab GPU `Tesla T4`
 - proxy LM: pre-LayerNorm causal Transformer (torch TransformerEncoderLayer: ReLU FFN, biases), no positional encoding of any kind (NoPE: order comes only from the causal mask), tied input/output embeddings; d_model=128, n_layers=2, n_heads=4, d_ffn=512, max_seq_len=128
-- fixed budget 10,000,000 UTF-8 bytes of LM training text per tokenizer, drawn from the same train split the tokenizers were trained on (each document used once); seeds [0, 1, 2] (mean ± sample sd)
+- fixed budget 10,000,000 UTF-8 bytes of LM training text per tokenizer, drawn from the same train split the tokenizers were trained on (each document used once); seeds [0, 1, 2] (mean ± sample sd; the seed sets only the LM's initialization: every seed trains on the same LM text in the same order, so the sd leaves out data-sampling variance)
 
 | Tokenizer | \|V\| | Train bytes/token | Tokens trained | english BPB (↓) | multilingual BPB (↓) | code BPB (↓) | Macro BPB (↓) |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
