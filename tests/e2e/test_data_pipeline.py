@@ -121,6 +121,44 @@ def test_a_builder_keeps_the_dataset_a_concurrent_builder_finished_first(tmp_pat
     assert sorted(p.name for p in tmp_path.iterdir()) == [ds.root.name]
 
 
+def test_a_builder_keeps_a_dataset_that_lands_in_the_window_before_its_rename(tmp_path, monkeypatch):
+    """The microsecond window: builder A's complete dataset lands after B's check found no root and
+    before B's rename (B's `root.exists()` / `os.replace`). B used to move A's dataset aside and
+    delete it; the rename now comes first, so B finds A's non-empty root and keeps it."""
+    b = DataPipeline(cache_dir=tmp_path, force_offline=True)
+    build, state = b._build, {"armed": False, "landed": False}
+    real_exists, real_replace = pl.Path.exists, os.replace
+
+    def land_a():  # A runs to completion once, at B's first touch of the root after its check
+        state["landed"] = True
+        a = DataPipeline(cache_dir=tmp_path, force_offline=True).prepare(train_bytes=20_000)
+        state["a"], state["inode"] = a, os.stat(a.root / "manifest.json").st_ino
+
+    def exists(self):
+        if state["armed"] and not state["landed"] and self.parent == tmp_path and not self.name.startswith("."):
+            land_a()
+        return real_exists(self)
+
+    def replace(src, dst):
+        if state["armed"] and not state["landed"] and os.path.basename(src).startswith(".tmp-"):
+            land_a()
+        return real_replace(src, dst)
+
+    def arm_after_build(config, splitter):
+        out = build(config, splitter)
+        state["armed"] = True
+        return out
+
+    b._build = arm_after_build
+    monkeypatch.setattr(pl.Path, "exists", exists)
+    monkeypatch.setattr(pl.os, "replace", replace)
+    ds = b.prepare(train_bytes=20_000)
+    monkeypatch.undo()
+    assert state["landed"] and ds.root == state["a"].root
+    assert os.stat(ds.root / "manifest.json").st_ino == state["inode"]  # A's dataset, not a replacement
+    assert sorted(p.name for p in tmp_path.iterdir()) == [ds.root.name]
+
+
 def test_failed_write_leaves_no_half_written_dataset(tmp_path, monkeypatch):
     pipeline = DataPipeline(cache_dir=tmp_path, force_offline=True)
     real_sha = pl._sha256_file

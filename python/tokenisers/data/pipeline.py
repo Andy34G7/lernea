@@ -644,6 +644,12 @@ class DataPipeline:
                     "sha256": _sha256_file(path),
                 }
             (tmp / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+            try:
+                os.replace(tmp, root)  # atomic when root does not exist: no check-then-act window
+            except OSError:
+                pass  # root exists (a non-empty directory): a concurrent builder's, or a stale one
+            else:
+                return PreparedDataset(root, manifest)
             done = self._load(root)  # a concurrent builder of this key finished first: keep its dataset
             if done is not None and done.manifest["complete"]:
                 shutil.rmtree(tmp, ignore_errors=True)
