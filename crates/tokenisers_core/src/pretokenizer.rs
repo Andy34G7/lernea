@@ -129,12 +129,35 @@ fn check_splits_only(config: &serde_json::Value, byte_levels: &mut usize) -> std
     ))
 }
 
+/// Why `given` (a config as written) has a field that HF's own serialisation `own` of it lacks, if
+/// it has one: serde ignores unknown fields, so a misspelt one (British "behaviour") would silently
+/// keep its default while the config, typo included, is what gets recorded and exported.
+fn unknown_field(given: &serde_json::Value, own: &serde_json::Value) -> Option<String> {
+    use serde_json::Value::{Array, Object};
+    match (given, own) {
+        (Object(given), Object(own)) => given.iter().find_map(|(key, value)| match own.get(key) {
+            Some(own_value) => unknown_field(value, own_value),
+            None => Some(format!(
+                "{} has no field {key:?} (tokenizers would ignore it); its fields are {}",
+                own.get("type").and_then(|t| t.as_str()).unwrap_or("it"),
+                own.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
+            )),
+        }),
+        (Array(given), Array(own)) => given.iter().zip(own).find_map(|(g, o)| unknown_field(g, o)),
+        _ => None,
+    }
+}
+
 impl HfPreTokenizer {
     fn new(config: serde_json::Value) -> std::result::Result<Self, String> {
         let pre_tokenizer: PreTokenizerWrapper = serde_json::from_value(config.clone())
             .map_err(|e| check_splits_only(&config, &mut 0).err().unwrap_or_else(|| e.to_string()))?;
+        let own = serde_json::to_value(&pre_tokenizer).map_err(|e| e.to_string())?;
         let mut byte_levels = 0;
-        check_splits_only(&serde_json::to_value(&pre_tokenizer).map_err(|e| e.to_string())?, &mut byte_levels)?;
+        check_splits_only(&own, &mut byte_levels)?;
+        if let Some(why) = unknown_field(&config, &own) {
+            return Err(why);
+        }
         if byte_levels > 1 {
             return Err(format!("{byte_levels} ByteLevels would map the bytes {byte_levels} times; use one"));
         }

@@ -24,7 +24,7 @@ space before it (" it", "'s", " 2024", "!"); ``{"hf": config}`` is a Hugging Fac
 config (a dict or JSON string, e.g. ``{"type": "Digits", "individual_digits": True}``) run by
 ``tokenizers`` itself, limited to splitters that keep every character (``Split``, ``Punctuation``,
 ``Digits``, ``FixedLength``, ``ByteLevel`` without ``add_prefix_space``, ``Sequence``); anything
-else raises ``ValueError``. The exported ``tokenizer.json`` reproduces it, and ``from_pretrained``
+else, or a field the component does not have (a misspelt ``"behaviour"``), raises ``ValueError``. The exported ``tokenizer.json`` reproduces it, and ``from_pretrained``
 restores it. ``train`` also raises ``ValueError`` for a config that ``tokenizer.json`` would load
 back as another pretokenizer with the same split, and names that one: a lone ``ByteLevel`` with
 ``use_regex=True`` is ``"gpt2"``, ``Sequence[X, ByteLevel(use_regex=False)]`` is ``{"hf": X}``,
