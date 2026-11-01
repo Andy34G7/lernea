@@ -21,8 +21,9 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from tokenisers.benchmarks.report import (colab_compare_stats, render_colab, render_colab_compare, render_intrinsic,
-                                          render_nanogpt_swap, render_throughput, render_tokka)
+from tokenisers.benchmarks.report import (colab_compare_stats, render_colab, render_colab_compare, render_flores,
+                                          render_intrinsic, render_nanogpt_swap, render_nanogpt_swap_ablation,
+                                          render_throughput, render_tokka)
 
 logger = logging.getLogger("tokenisers.dashboard")
 
@@ -294,9 +295,16 @@ RESULT_SETS: Dict[str, Tuple[str, Optional[Callable[[Dict[str, Any]], str]]]] = 
     "proxy_big": ("colab_big/extrinsic_bpb_results.json", render_colab),
     "swap": ("nanogpt_swap/nanogpt_swap.json", render_nanogpt_swap),
     "swap_lr1p8e-3": ("nanogpt_swap_lr1p8e-3/gpt2_run.json", None),
-    # GPT-2-style space-prefix rerun of our tokenizers: shown as soon as this file is committed.
+    # GPT-2-style space-prefix rerun of our tokenizers.
     "swap_space_prefix": ("nanogpt_swap_sp/nanogpt_swap.json", render_nanogpt_swap),
+    # _g2 / _sp300 retrains: shown as soon as this file is committed (provenance from
+    # report.render_nanogpt_swap_ablation, which needs the other swap runs too: see load_benchmark_data).
+    "swap_ablation": ("nanogpt_swap_ablation/nanogpt_swap.json", None),
+    "flores": ("flores/flores.json", render_flores),
 }
+
+# Ablation arms: the column name and the tokenizer-name suffix of a variant's run in it.
+ABLATION_ARMS = {"whitespace": "", "space_prefix": "_sp", "gpt2_split": "_g2", "space_prefix_300mb": "_sp300"}
 
 
 def _report(render: Callable[..., str], *docs: Dict[str, Any]) -> Dict[str, List[str]]:
@@ -368,6 +376,23 @@ def space_prefix_pairs(old: Dict[str, Any], sp: Dict[str, Any]) -> Dict[str, Any
     return {"rows": rows, "gpt2": {**pick("gpt2", g, run), "run": run} if g else None}
 
 
+def ablation_arms(base: Dict[str, Any], sp: Optional[Dict[str, Any]], abl: Dict[str, Any]) -> Dict[str, Any]:
+    """Per variant of the ablation run (it has ``<variant>_g2`` or ``<variant>_sp300``), its final val BPB and
+    val bytes per token in each of ABLATION_ARMS: whitespace from ``base`` (the original swap), space_prefix
+    from ``sp`` (the 50 MB rerun, None until committed) else the ablation run, the rest from ``abl``; None where
+    that run is missing. GPT-2 from ``base`` is the reference."""
+    bm, am = base.get("models", {}), abl.get("models", {})
+    pool = {**am, **(sp or {}).get("models", {}), **bm}
+
+    def pick(m: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        return {"final_bpb": m.get("final_bpb"), "val_bytes_per_token": m.get("val_bytes_per_token")} if m else None
+
+    variants = dict.fromkeys(m[1] for n in am if (m := re.fullmatch(r"(.+)_(?:g2|sp300)", n)))
+    return {"arms": list(ABLATION_ARMS), "gpt2": pick(bm.get("gpt2")),
+            "rows": [{"variant": v, **{arm: pick(pool.get(v + suf)) for arm, suf in ABLATION_ARMS.items()}}
+                     for v in variants]}
+
+
 def load_benchmark_data() -> Dict[str, Any]:
     """Every result set under benchmarks/results (with an availability flag), plus the unified V = 16,384
     per-tokenizer view (tokka, intrinsic, small and big proxy LM) the overview charts use."""
@@ -389,6 +414,10 @@ def load_benchmark_data() -> Dict[str, Any]:
     sp = results["swap_space_prefix"]
     if sp["available"] and results["swap"]["available"]:
         sp["pairs"] = space_prefix_pairs(results["swap"]["data"], sp["data"])
+    abl = results["swap_ablation"]
+    if abl["available"] and results["swap"]["available"]:
+        docs = (results["swap"]["data"], sp["data"] if sp["available"] else None, abl["data"])
+        abl.update(ablation=ablation_arms(*docs), **_report(render_nanogpt_swap_ablation, *docs))
 
     def doc(key: str) -> Dict[str, Any]:
         d = results[key]["data"]

@@ -14,6 +14,7 @@ const state = {
   tier: 'proxy_small',
   tpMetric: 'encode_mb_per_sec',
   swapMode: 'val',
+  floresTier: 'intrinsic',
   tables: {},
   selectedRadarModels: ['bpe_frequency', 'wp_bpe_ft', 'wp_bpe_pig', 'unigram_lm'],
   radarSlots: {},
@@ -29,7 +30,7 @@ const state = {
   theme: readStoredTheme(),
 };
 
-const TABS = ['summary', 'overview', 'tokka', 'intrinsic', 'throughput', 'proxy', 'swap', 'concepts', 'playground'];
+const TABS = ['summary', 'overview', 'tokka', 'intrinsic', 'throughput', 'proxy', 'swap', 'flores', 'concepts', 'playground'];
 const VOCABS = [16384, 32768, 65536];
 // Tokenisers in the GPT-2 swap that are not ours (no entry in the API's metadata)
 const EXTERNAL = {
@@ -164,8 +165,9 @@ const algoMeta = (k) => state.data?.metadata?.[k];
 const dispName = (k) => algoMeta(k)?.display_name ?? EXTERNAL[k] ?? k;
 const famOf = (k) => algoMeta(k)?.family ?? 'Custom';
 
-function nameCell(k) {
-  return `<span class="fam" style="color: var(--text); align-items: baseline"><span class="dot" style="--c: ${familyVar(famOf(k))}"></span><span><span class="long-name"><span class="model-name">${esc(dispName(k))}</span><br></span><span class="model-key">${esc(k)}</span></span></span>`;
+// k names the algorithm (display name, family); key is the result's own name (e.g. bpe_frequency@16384)
+function nameCell(k, key = k) {
+  return `<span class="fam" style="color: var(--text); align-items: baseline"><span class="dot" style="--c: ${familyVar(famOf(k))}"></span><span><span class="long-name"><span class="model-name">${esc(dispName(k))}</span><br></span><span class="model-key">${esc(key)}</span></span></span>`;
 }
 
 function setHtml(id, html) {
@@ -405,6 +407,7 @@ function renderAllViews() {
   renderLeaderboard();
   renderIntrinsicTab();
   renderSwap();
+  renderFlores();
   renderConceptFacts();
   renderCharts();
 
@@ -437,7 +440,7 @@ function renderCharts() {
 function renderMeta() {
   const sets = Object.values(state.data.results || {});
   const sub = document.getElementById('brand-sub');
-  if (sub) sub.textContent = `${sets.filter((e) => e.available).length} of ${sets.length} result sets · compression, intrinsic, throughput, proxy LM, GPT-2 swap`;
+  if (sub) sub.textContent = `${sets.filter((e) => e.available).length} of ${sets.length} result sets · compression, intrinsic, throughput, proxy LM, GPT-2 swap, FLORES+`;
   const foot = document.getElementById('footer-updated');
   if (foot && state.data.timestamp) foot.textContent = `Data loaded ${new Date(state.data.timestamp).toLocaleString()}`;
 }
@@ -494,6 +497,8 @@ const RESULT_LABELS = {
   swap: ['GPT-2 tokeniser swap', '≈ 50k', 'swap'],
   'swap_lr1p8e-3': ['GPT-2 swap, peak lr 1.8e-3 (GPT-2 only)', 50257, 'swap'],
   swap_space_prefix: ['GPT-2 swap, space-prefix rerun', '≈ 50k', 'swap'],
+  swap_ablation: ['GPT-2 swap, pre-split and training-text ablation', '≈ 50k', 'swap'],
+  flores: ['FLORES+ tokenisation premium', 'all three + ≈ 50k', 'flores'],
 };
 
 // Best-first [key, value] pairs
@@ -1245,6 +1250,7 @@ function renderSwap() {
   showBody('swap-body', e.available);
   setHtml('swap-prov', provHtml(e));
   renderSpacePrefix();
+  renderAblation();
   renderLr();
   if (!e.available) {
     setHtml('swap-sub', '');
@@ -1288,7 +1294,7 @@ function renderSwap() {
   const space = document.getElementById('swap-caveat-space');
   if (space && g && ws.length) {
     const less = ws.map((r) => 100 * (1 - r.train_bytes_per_token / g.train_bytes_per_token));
-    space.textContent = `Our ${ws.length} whitespace-isolating tokenisers give ${range(ws.map((r) => r.val_bytes_per_token))} val bytes per token against GPT-2's ${g.val_bytes_per_token.toFixed(2)}: every space is its own token, so each step holds ${range(less, 0)}% less text. Their gap to GPT-2 mixes less text with different merges until the space-prefix rerun separates the two.`;
+    space.textContent = `Our ${ws.length} whitespace-isolating tokenisers give ${range(ws.map((r) => r.val_bytes_per_token))} val bytes per token against GPT-2's ${g.val_bytes_per_token.toFixed(2)}: every space is its own token, so each step holds ${range(less, 0)}% less text. Their gap to GPT-2 mixes less text with different merges${R('swap_space_prefix').available ? '; the space-prefix rerun below separates the two' : ' until the space-prefix rerun separates the two'}.`;
   }
 }
 
@@ -1413,6 +1419,66 @@ function renderSpacePrefix() {
   );
 }
 
+// Ablation arms (server.ABLATION_ARMS): [column label, short label]
+const ABLATION_LABELS = {
+  whitespace: ['whitespace, 50 MB', 'ws'],
+  space_prefix: ['space_prefix, 50 MB', 'SP'],
+  gpt2_split: ['GPT-2 regex split (_g2), 50 MB', 'G2'],
+  space_prefix_300mb: ['space_prefix, 300 MB (_sp300)', 'SP300'],
+};
+
+function renderAblation() {
+  const e = R('swap_ablation');
+  const badge = document.getElementById('abl-status');
+  if (badge) {
+    badge.textContent = e.available ? 'results' : 'not yet run';
+    badge.className = `badge ${e.available ? 'ok' : 'missing'}`;
+  }
+  if (!e.available) {
+    setHtml('abl-body', `${notRun(e)}<p class="note">With the file, this section shows each variant's final val BPB and val bytes per token in every arm (whitespace, space_prefix, GPT-2 regex split, space_prefix on 300 MB), with GPT-2 as the reference.</p>`);
+    return;
+  }
+  const a = e.ablation;
+  if (!a || !a.rows.length) {
+    setHtml('abl-body', `<div class="empty">The ablation file is present, but ${a ? 'it has no <code>_g2</code> or <code>_sp300</code> tokeniser' : `there is no <code>${esc(R('swap').path)}</code> to compare against`}.</div>${provHtml(e)}`);
+    return;
+  }
+  const g = a.gpt2;
+  const rows = a.rows.map((r) => ({ key: r.variant, ...r }));
+  const bpb = (r, arm) => r[arm]?.final_bpb;
+  const label = (arm) => ABLATION_LABELS[arm]?.[0] ?? arm;
+  const short = (arm) => ABLATION_LABELS[arm]?.[1] ?? arm;
+  const facts = [];
+  if (g) facts.push(`<b>GPT-2 reference</b> (original run): final BPB ${fmt(g.final_bpb, 4)}, ${fmt(g.val_bytes_per_token)} val bytes per token.`);
+  a.arms.slice(1).forEach((arm) => {
+    const d = rows.map((r) => (isNum(bpb(r, arm)) && isNum(bpb(r, 'whitespace')) ? bpb(r, arm) - bpb(r, 'whitespace') : null)).filter(isNum);
+    if (d.length) facts.push(`<b>${esc(label(arm))}</b>: lower final BPB than whitespace for <b>${d.filter((x) => x < 0).length} of ${d.length}</b> variants; median change ${signed(median(d), 4)} BPB.`);
+  });
+  const wins = Object.fromEntries(a.arms.map((arm) => [arm, 0]));
+  rows.forEach((r) => {
+    const done = a.arms.filter((arm) => isNum(bpb(r, arm)));
+    if (done.length) wins[done.reduce((x, y) => (bpb(r, y) < bpb(r, x) ? y : x))] += 1;
+  });
+  facts.push(`Lowest final BPB per variant: ${a.arms.map((arm) => `${esc(label(arm))} <b>${wins[arm]}</b>`).join(', ')}.`);
+  setHtml(
+    'abl-body',
+    `<ul class="facts">${facts.map((f) => `<li>${f}</li>`).join('')}</ul>
+     <div class="table-wrap" style="margin-top: 14px"><table class="data" id="abl-table"></table></div>
+     <div class="table-foot"><span>${a.arms.map((arm) => `${esc(short(arm))} = ${esc(label(arm))}`).join(' · ')} · – = no run · ↑ higher is better · ↓ lower is better</span></div>
+     ${provHtml(e)}`,
+  );
+  table(
+    'abl-table',
+    [
+      NAME_COL,
+      ...a.arms.map((arm) => ({ label: `BPB, ${short(arm)}`, dir: -1, get: (r) => bpb(r, arm), fmt: (v) => fmt(v, 4) })),
+      ...a.arms.map((arm) => ({ label: `Val B/tok, ${short(arm)}`, dir: 1, get: (r) => r[arm]?.val_bytes_per_token, fmt: (v) => fmt(v) })),
+    ],
+    rows,
+    1,
+  );
+}
+
 function renderLr() {
   const e = R('swap_lr1p8e-3');
   const base = R('swap');
@@ -1445,6 +1511,71 @@ function renderLr() {
      <div class="table-wrap" style="margin-top: 14px"><table class="data"><thead><tr><th>Step</th><th class="r">Val BPB, lr ${esc(args.learning_rate ?? '?')} ↓</th><th class="r">Val BPB, lr ${isNum(peak) ? peak.toExponential(1) : '?'} ↓</th><th class="r">Δ ↓</th></tr></thead><tbody>${body}</tbody></table></div>
      <details class="prov"><summary>Provenance: ${esc(`${tr.gpu ?? '?'} · torch ${tr.torch ?? '?'} · ${steps.length} steps · one run (GPT-2 only; the sweep was stopped)`)}</summary><ul><li>file <code>${esc(e.path)}</code>; the lr 6e-4 column is GPT-2 in <code>${esc(base.path)}</code></li><li>${int(e.data.train?.tokens_per_step)} tokens per step; val ${int(e.data.val?.docs)} documents, ${e.data.val?.bytes ? mb(e.data.val.bytes) : '?'}</li></ul></details>`,
   );
+}
+
+// 10. FLORES+: tokenisation premium per language, in-mix vs out-of-mix
+const FLORES_TIERS = { intrinsic: 'intrinsic tier (30% multilingual training mix)', swap: 'GPT-2-swap tier (English FineWeb training text)' };
+
+function renderFlores() {
+  const e = R('flores');
+  showBody('flores-body', e.available);
+  setHtml('flores-prov', provHtml(e));
+  if (!e.available) return setHtml('flores-sub', '');
+  const meta = e.data.meta || {};
+  const L = meta.languages || {};
+  const inMix = Object.values(L.in_mix || {});
+  const outMix = L.out_of_mix || [];
+  const thr = meta.parity_threshold ?? 1.5;
+  const rows = Object.entries(e.data.models || {})
+    .filter(([, m]) => m.tier === state.floresTier)
+    .map(([key, m]) => ({ key, ...m, inMix: m.aggregates?.in_mix || {}, outMix: m.aggregates?.out_of_mix || {}, en: m.languages?.[L.english]?.tokens_per_sentence }))
+    .sort((a, b) => (a.inMix.mean_premium ?? Infinity) - (b.inMix.mean_premium ?? Infinity));
+  setHtml('flores-sub', esc(`${rows.length} tokenisers of the ${FLORES_TIERS[state.floresTier] ?? state.floresTier}. ${int(meta.flores?.sentences)} parallel sentences per language (${meta.flores?.split ?? '?'} split), each encoded on its own; premium = tokens in the language / tokens in English.`));
+
+  // Heatmap: premium per language, in-mix then out-of-mix, each group followed by its mean; shaded by rank per column
+  const cols = [
+    ...inMix.map((l) => ({ label: l, get: (r) => r.languages?.[l]?.premium })),
+    { label: 'In-mix mean', avg: true, get: (r) => r.inMix.mean_premium },
+    ...outMix.map((l) => ({ label: l, get: (r) => r.languages?.[l]?.premium })),
+    { label: 'Out-of-mix mean', avg: true, get: (r) => r.outMix.mean_premium },
+  ];
+  const shade = (c, v) => {
+    const vals = rows.map(c.get).filter(isNum).sort((x, y) => x - y);
+    if (!isNum(v) || vals.length < 2) return '';
+    const s = 1 - (vals.indexOf(v) + vals.lastIndexOf(v)) / 2 / (vals.length - 1);
+    return `background-color: color-mix(in srgb, var(--accent) ${Math.round(4 + s * 51)}%, var(--surface));`;
+  };
+  const group = `<tr><th></th><th></th><th class="c" colspan="${inMix.length + 1}">In-mix (training languages)</th><th class="c" colspan="${outMix.length + 1}">Out-of-mix (in no training text)</th></tr>`;
+  const head = `<tr><th>Tokeniser</th><th class="c" title="Tokens per English sentence: the premium's denominator">EN tok/sent</th>${cols.map((c) => `<th class="c">${esc(c.label)}</th>`).join('')}</tr>`;
+  const body = rows
+    .map((r) => `<tr><td class="model-name">${esc(r.key)}</td><td class="cell">${fmt(r.en, 1)}</td>${cols.map((c) => `<td class="cell${c.avg ? ' avg' : ''}" style="${shade(c, c.get(r))}">${fmt(c.get(r), 2)}</td>`).join('')}</tr>`)
+    .join('');
+  setHtml('flores-heat', `<thead>${group}${head}</thead><tbody>${body}</tbody>`);
+
+  table(
+    'flores-table',
+    [
+      { label: 'Tokeniser', text: true, get: (r) => r.key, fmt: (k, r) => nameCell(r.base ?? k.replace(/_(sp|g2)\d*$/, ''), k) },
+      { label: '|V|', dir: 0, get: (r) => r.vocab_size, fmt: int },
+      { label: 'EN tok/sent', dir: 0, get: (r) => r.en, fmt: (v) => fmt(v, 1), tip: 'Tokens per English sentence: the premium is relative to it' },
+      { label: 'In-mix mean', dir: -1, get: (r) => r.inMix.mean_premium, fmt: (v) => `<b>${fmt(v, 2)}</b>` },
+      { label: 'In-mix max', dir: -1, get: (r) => r.inMix.max_premium, fmt: (v, r) => `${fmt(v, 2)} <span class="muted">${esc(r.inMix.worst_language ?? '')}</span>` },
+      { label: `In-mix ≤ ${thr}`, dir: 1, get: (r) => r.inMix.share_premium_le_1_5, fmt: pct },
+      { label: 'Out-of-mix mean', dir: -1, get: (r) => r.outMix.mean_premium, fmt: (v) => `<b>${fmt(v, 2)}</b>` },
+      { label: 'Out-of-mix max', dir: -1, get: (r) => r.outMix.max_premium, fmt: (v, r) => `${fmt(v, 2)} <span class="muted">${esc(r.outMix.worst_language ?? '')}</span>` },
+      { label: `Out-of-mix ≤ ${thr}`, dir: 1, get: (r) => r.outMix.share_premium_le_1_5, fmt: pct },
+      { label: 'Byte fallback', dir: -1, get: (r) => r.outMix.byte_fallback_rate, fmt: pct, tip: 'Share of out-of-mix tokens that are one byte of a multi-byte character' },
+    ],
+    rows,
+    3,
+  );
+  setHtml('flores-notes', (e.notes || []).map((l) => `<li>${md(l)}</li>`).join('') || '<li>No findings (the file lacks a field the README renderer needs).</li>');
+
+  // The caveat with this tier's numbers: the lowest premium next to its English cost
+  const best = rows.find((r) => isNum(r.inMix.mean_premium) && isNum(r.en));
+  const med = median(rows.map((r) => r.en).filter(isNum));
+  const cav = document.getElementById('flores-caveat-english');
+  if (cav && best && isNum(med)) cav.innerHTML = `The premium is relative to each tokeniser's own English cost. In the ${esc(FLORES_TIERS[state.floresTier] ?? state.floresTier)}, the lowest in-mix premium, <code>${esc(best.key)}</code> (${fmt(best.inMix.mean_premium, 2)}), comes with ${fmt(best.en, 1)} tokens per English sentence against the tier's median ${fmt(med, 1)}: a tokeniser that spends many tokens on English gets a low premium without being cheap on the other language. Read it next to EN tokens per sentence.`;
 }
 
 // 9. Concepts: one measured line under the PMI explanation
@@ -1718,6 +1849,10 @@ function setupEventListeners() {
   segmented('.swap-mode-btn', (d) => {
     state.swapMode = d.mode;
     renderSwapChart();
+  });
+  segmented('.flores-tier-btn', (d) => {
+    state.floresTier = d.tier;
+    renderFlores();
   });
 
   // Intrinsic Search

@@ -383,7 +383,7 @@ def test_static_page_formulas_are_the_api_formulas() -> None:
 # Every result set the dashboard shows, keyed as in server.RESULT_SETS (+ the derived small-vs-big comparison).
 RESULT_KEYS = {f"{kind}_{v}" for kind in ("tokka", "intrinsic") for v in (16384, 32768, 65536)} | {
     "throughput_local", "throughput_colab_cpu", "proxy_small", "proxy_big", "proxy_compare", "swap",
-    "swap_lr1p8e-3", "swap_space_prefix"}
+    "swap_lr1p8e-3", "swap_space_prefix", "swap_ablation", "flores"}
 
 
 def test_api_benchmarks_returns_every_result_set(dashboard_server: str) -> None:
@@ -394,11 +394,15 @@ def test_api_benchmarks_returns_every_result_set(dashboard_server: str) -> None:
     for key, e in results.items():
         assert isinstance(e["available"], bool) and e["path"].startswith("benchmarks/results/"), key
         assert (e["data"] is not None) == e["available"], key
-    # Everything except the pending space-prefix rerun is committed, with README-rendered provenance
-    for key in RESULT_KEYS - {"swap_space_prefix", "swap_lr1p8e-3"}:
+    # Everything except the pending ablation is committed, with README-rendered provenance
+    for key in RESULT_KEYS - {"swap_ablation", "swap_lr1p8e-3"}:
         assert results[key]["available"] and results[key]["provenance"], key
     assert results["swap_lr1p8e-3"]["available"]
     assert results["swap"]["notes"], "the swap findings come from report.render_nanogpt_swap"
+    assert results["flores"]["notes"], "the FLORES+ findings come from report.render_flores"
+    # The committed space-prefix rerun: each of its 8 tokenizers paired with its whitespace run
+    assert {r["sp"]["name"] for r in results["swap_space_prefix"]["pairs"]["rows"]} == set(
+        results["swap_space_prefix"]["data"]["models"])
     # Small vs big: report.colab_compare_stats, the reference at rank-relative delta 0
     cmp = results["proxy_compare"]["data"]
     assert cmp["tiers"]["big LM"]["bpe_frequency"][1] == 0.0 and "bpe_frequency" in cmp["names"]
@@ -483,3 +487,71 @@ def test_missing_or_broken_result_files_degrade_gracefully(tmp_path, monkeypatch
     assert small["available"] is True and small["provenance"] == []
     assert data["results"]["proxy_compare"]["available"] is False
     assert data["models"]["bpe_frequency"]["macro_val_bpb"] == 3.0
+
+
+def test_flores_section_shows_premium_by_language_and_group(dashboard_server: str) -> None:
+    """The FLORES+ tab reads flores.json: per tokenizer a premium for every in-mix and out-of-mix language
+    (English is 1.0 by definition), group aggregates, and render_flores' findings with the English-cost caveat."""
+    status, _, body = _raw(dashboard_server, "GET", "/api/benchmarks")
+    flores = json.loads(body)["results"]["flores"]
+    langs = flores["data"]["meta"]["languages"]
+    in_mix, out_mix = list(langs["in_mix"].values()), langs["out_of_mix"]
+    assert in_mix and out_mix and not set(in_mix) & set(out_mix)
+    models = flores["data"]["models"]
+    assert {m["tier"] for m in models.values()} == {"intrinsic", "swap"}
+    for name, m in models.items():
+        assert m["languages"][langs["english"]]["premium"] == 1.0, name
+        assert set(in_mix + out_mix) <= set(m["languages"]), name
+        assert set(m["aggregates"]) == {"in_mix", "out_of_mix"}, name
+    assert any("relative to each tokenizer's own English cost" in n for n in flores["notes"])
+    html = (server_mod.STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    for anchor in ('id="tab-flores"', 'id="flores-heat"', 'id="flores-table"', 'id="flores-caveat-english"'):
+        assert anchor in html, anchor
+
+
+def test_ablation_section_shows_not_yet_run_then_every_arm(tmp_path, monkeypatch) -> None:
+    """No nanogpt_swap_ablation/ results: 'not yet run'. With one, per variant: whitespace (original swap),
+    space_prefix (the 50 MB rerun), _g2 and _sp300 (the ablation run), and GPT-2 from the original run."""
+    import copy
+
+    real = json.loads((server_mod.REPO_ROOT / "benchmarks/results/nanogpt_swap/nanogpt_swap.json").read_text())
+    real_sp = json.loads((server_mod.REPO_ROOT / "benchmarks/results/nanogpt_swap_sp/nanogpt_swap.json").read_text())
+    _swap_fixture(tmp_path, "nanogpt_swap", real)
+    monkeypatch.setattr(server_mod, "REPO_ROOT", tmp_path)
+    abl_entry = server_mod.load_benchmark_data()["results"]["swap_ablation"]
+    assert abl_entry["available"] is False
+    assert abl_entry["path"] == "benchmarks/results/nanogpt_swap_ablation/nanogpt_swap.json"
+    assert "ablation" not in abl_entry
+
+    # The ablation run: _g2 for two variants, _sp300 for one (shaped like the space-prefix run)
+    abl = copy.deepcopy(real_sp)
+    sp_models = abl.pop("models")
+    abl["meta"]["recipe"] = copy.deepcopy(real["meta"]["recipe"])
+    abl["models"] = {}
+    for name, bpb in (("bpe_frequency_g2", 1.71), ("mdl_bits_g2", 1.72), ("mdl_bits_sp300", 1.70)):
+        m = copy.deepcopy(sp_models[name.rsplit("_", 1)[0] + "_sp"])
+        m["spec"]["name"] = name
+        abl["models"][name] = {**m, "final_bpb": bpb, "val_bytes_per_token": 4.4}
+    _swap_fixture(tmp_path, "nanogpt_swap_ablation", abl)
+
+    # Without the space-prefix run: its column is empty, and the README renderer says so
+    entry = server_mod.load_benchmark_data()["results"]["swap_ablation"]
+    assert entry["available"] is True
+    rows = {r["variant"]: r for r in entry["ablation"]["rows"]}
+    assert set(rows) == {"bpe_frequency", "mdl_bits"}
+    assert rows["mdl_bits"]["space_prefix"] is None
+    assert any("space-prefix run is not committed yet" in line for line in entry["provenance"])
+
+    _swap_fixture(tmp_path, "nanogpt_swap_sp", real_sp)
+    entry = server_mod.load_benchmark_data()["results"]["swap_ablation"]
+    a = entry["ablation"]
+    assert a["arms"] == ["whitespace", "space_prefix", "gpt2_split", "space_prefix_300mb"]
+    rows = {r["variant"]: r for r in a["rows"]}
+    mdl = rows["mdl_bits"]
+    assert mdl["whitespace"]["final_bpb"] == real["models"]["mdl_bits"]["final_bpb"]
+    assert mdl["space_prefix"]["final_bpb"] == real_sp["models"]["mdl_bits_sp"]["final_bpb"]
+    assert mdl["gpt2_split"]["final_bpb"] == 1.72 and mdl["space_prefix_300mb"]["final_bpb"] == 1.70
+    assert rows["bpe_frequency"]["space_prefix_300mb"] is None  # no run in that arm
+    assert a["gpt2"]["final_bpb"] == real["models"]["gpt2"]["final_bpb"]
+    # Provenance from report.render_nanogpt_swap_ablation: same recipe and val documents as the whitespace run
+    assert any("same recipe and val documents" in line for line in entry["provenance"]), entry["provenance"]

@@ -465,6 +465,7 @@
         <button role="tab" class="tab" id="tab-nav-throughput" aria-controls="tab-throughput" aria-selected="false" tabindex="-1">Throughput</button>
         <button role="tab" class="tab" id="tab-nav-proxy" aria-controls="tab-proxy" aria-selected="false" tabindex="-1">Proxy LM</button>
         <button role="tab" class="tab" id="tab-nav-swap" aria-controls="tab-swap" aria-selected="false" tabindex="-1">GPT-2 swap</button>
+        <button role="tab" class="tab" id="tab-nav-flores" aria-controls="tab-flores" aria-selected="false" tabindex="-1">FLORES+</button>
         <button role="tab" class="tab" id="tab-nav-concepts" aria-controls="tab-concepts" aria-selected="false" tabindex="-1">Concepts</button>
         <button role="tab" class="tab" id="tab-nav-playground" aria-controls="tab-playground" aria-selected="false" tabindex="-1">Playground</button>
       </nav>
@@ -489,6 +490,7 @@
             <dt>Throughput</dt><dd>Encode and decode speed, measured three times on different machines.</dd>
             <dt>Proxy LM</dt><dd>A small Transformer trained from scratch on the same number of bytes for every tokeniser; scored in bits per byte (BPB) on held-out text. Two sizes, 3 seeds each. V = 16,384.</dd>
             <dt>GPT-2 swap</dt><dd>GPT-2 small (124M) trained with llm.c's recipe for 600 steps, once per tokeniser, including GPT-2's own tokeniser and TokenMonster. V ≈ 50k.</dd>
+            <dt>FLORES+</dt><dd>How many more tokens the same sentences cost in 17 other languages than in English (the tokenisation premium), for the tokenisers of the intrinsic and the GPT-2-swap levels. No model is trained.</dd>
           </dl>
         </aside>
       </section>
@@ -857,6 +859,16 @@
         <div id="sp-body"></div>
       </section>
 
+      <section class="card" aria-labelledby="abl-title">
+        <div class="card-head">
+          <div>
+            <h2 id="abl-title">Ablation: pre-split and training text <span class="badge missing" id="abl-status">not yet run</span></h2>
+            <p>Per variant, the same swap with the tokeniser trained four ways: whitespace-isolating (the original run), <code>space_prefix</code> (the rerun above), GPT-2's exact regex pre-split (<code>_g2</code>), and <code>space_prefix</code> on 300 MB of text instead of 50 MB (<code>_sp300</code>). GPT-2 is the reference. It separates how text is cut before merging from how much text the merges are learned on.</p>
+          </div>
+        </div>
+        <div id="abl-body"></div>
+      </section>
+
       <section class="card">
         <div class="card-head">
           <div>
@@ -866,6 +878,50 @@
         </div>
         <div id="lr-body"></div>
         <p class="prose-label">Context (prose from the run's README): modded-nanogpt raised the lr together with architecture changes (rotary embeddings etc.); on plain llm.c GPT-2 at this 600-step budget 3× is too high.</p>
+      </section>
+    </div>
+
+    <!-- TAB: FLORES+ -->
+    <div id="tab-flores" role="tabpanel" aria-labelledby="tab-nav-flores" class="stack hidden" tabindex="0">
+      <aside class="explain" aria-label="How to read this section">
+        <dl>
+          <dt>Measures</dt><dd>The tokenisation premium: the tokens a tokeniser spends on a language's FLORES+ sentences divided by the tokens it spends on the same sentences in English. FLORES+ is professionally translated parallel text, so the content is identical. No model is trained.</dd>
+          <dt>Read</dt><dd><b>Premium ↓</b>: 1.0 is parity with English; 2.0 means the same content costs twice the tokens (half the context, twice the price). <b>In-mix</b> languages are in the intrinsic tokenisers' training mix; <b>out-of-mix</b> languages are in no tokeniser's training text.</dd>
+          <dt>Caveats</dt><dd><ul>
+            <li id="flores-caveat-english">The premium is relative to each tokeniser's own English cost: a tokeniser that spends many tokens on English gets a low premium without being cheap on the other language. Read it next to EN tokens per sentence.</li>
+            <li>The GPT-2-swap tokenisers learned their merges on English text only; their premium is no fault of the merge score.</li>
+            <li>Bytes or characters per token are not comparable across scripts (UTF-8 spends 1 to 3 bytes per character); the premium is.</li>
+          </ul></dd>
+        </dl>
+      </aside>
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>Premium by language</h2>
+            <p id="flores-sub"></p>
+          </div>
+          <div class="segmented" role="group" aria-label="Tokeniser tier">
+            <button class="flores-tier-btn" data-tier="intrinsic" aria-pressed="true">Intrinsic tier</button>
+            <button class="flores-tier-btn" data-tier="swap" aria-pressed="false">GPT-2-swap tier</button>
+          </div>
+        </div>
+        <div id="flores-body">
+          <div class="table-wrap">
+            <table class="heat" id="flores-heat"></table>
+          </div>
+          <div style="margin-top: 14px"><span class="legend-scale"><span>worse</span><span class="ramp"></span><span>better</span> · shaded per column · sorted by in-mix mean</span></div>
+          <div class="divider">
+            <h2 class="sub-head">In-mix vs out-of-mix</h2>
+            <div class="table-wrap"><table class="data" id="flores-table"></table></div>
+            <div class="table-foot"><span>mean and max premium over each group's languages · ≤ 1.5: share of them at premium ≤ 1.5 · byte fallback: share of out-of-mix tokens that are one byte of a multi-byte character · ↑ higher is better · ↓ lower is better</span></div>
+          </div>
+          <div class="divider">
+            <h3 class="sub-head">Findings</h3>
+            <p class="note" style="margin: 0 0 8px">Generated from the result JSON by <code>report.render_flores</code>, as in the README.</p>
+            <ul class="facts" id="flores-notes"></ul>
+          </div>
+        </div>
+        <div id="flores-prov"></div>
       </section>
     </div>
 
