@@ -378,3 +378,108 @@ def test_static_page_formulas_are_the_api_formulas() -> None:
     assert len(shown) >= 6
     known = {m["formula"] for m in server_mod.ALGORITHM_METADATA.values()}
     assert [f for f in shown if f not in known] == []
+
+
+# Every result set the dashboard shows, keyed as in server.RESULT_SETS (+ the derived small-vs-big comparison).
+RESULT_KEYS = {f"{kind}_{v}" for kind in ("tokka", "intrinsic") for v in (16384, 32768, 65536)} | {
+    "throughput_local", "throughput_colab_cpu", "proxy_small", "proxy_big", "proxy_compare", "swap",
+    "swap_lr1p8e-3", "swap_space_prefix"}
+
+
+def test_api_benchmarks_returns_every_result_set(dashboard_server: str) -> None:
+    status, _, body = _raw(dashboard_server, "GET", "/api/benchmarks")
+    assert status == 200
+    results = json.loads(body)["results"]
+    assert set(results) == RESULT_KEYS
+    for key, e in results.items():
+        assert isinstance(e["available"], bool) and e["path"].startswith("benchmarks/results/"), key
+        assert (e["data"] is not None) == e["available"], key
+    # Everything except the pending space-prefix rerun is committed, with README-rendered provenance
+    for key in RESULT_KEYS - {"swap_space_prefix", "swap_lr1p8e-3"}:
+        assert results[key]["available"] and results[key]["provenance"], key
+    assert results["swap_lr1p8e-3"]["available"]
+    assert results["swap"]["notes"], "the swap findings come from report.render_nanogpt_swap"
+    # Small vs big: report.colab_compare_stats, the reference at rank-relative delta 0
+    cmp = results["proxy_compare"]["data"]
+    assert cmp["tiers"]["big LM"]["bpe_frequency"][1] == 0.0 and "bpe_frequency" in cmp["names"]
+    # Per-step train BPB of the swap: train loss (nats per token) / ln 2 / train bytes per token
+    train = results["swap"]["train_bpb"]
+    gpt2 = results["swap"]["data"]["models"]["gpt2"]
+    assert len(train["steps"]) == gpt2["curve"][-1][0] and set(train["bpb"]) == set(results["swap"]["data"]["models"])
+    assert all(len(v) == len(train["steps"]) for v in train["bpb"].values())
+
+
+def test_kpi_strip_is_on_the_summary_page_not_the_shared_layout() -> None:
+    """The category leaders used to sit above the tabs on every tab; they are now the Summary tab."""
+    html = (server_mod.STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    assert html.count('aria-label="Category leaders"') == 1
+    main = html.index("<main")
+    summary, overview = html.index('id="tab-summary"'), html.index('id="tab-overview"')
+    assert summary < html.index('aria-label="Category leaders"') < overview
+    assert 'class="kpis"' not in html[main:summary] and "kpi-" not in html[main:summary]
+    # ARIA tabs: every tab controls an existing tab panel
+    import re
+
+    tabs = re.findall(r'role="tab"[^>]*id="tab-nav-(\w+)" aria-controls="tab-(\w+)"', html)
+    assert ("summary", "summary") in tabs and len(tabs) >= 9
+    for name, panel in tabs:
+        assert name == panel and f'id="tab-{panel}" role="tabpanel" aria-labelledby="tab-nav-{name}"' in html
+
+
+def _swap_fixture(root, rel: str, doc) -> None:
+    path = root / "benchmarks" / "results" / rel / "nanogpt_swap.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+
+def test_space_prefix_section_activates_when_its_results_land(tmp_path, monkeypatch) -> None:
+    """No nanogpt_swap_sp/ results: 'not yet run'. With a file shaped like nanogpt_swap.json, each of our
+    tokenizers pairs with its original run (a trailing _sp dropped) and GPT-2 is the reference."""
+    import copy
+
+    real = json.loads((server_mod.REPO_ROOT / "benchmarks/results/nanogpt_swap/nanogpt_swap.json").read_text())
+    old = {**real, "models": {k: real["models"][k] for k in ("gpt2", "bpe_frequency", "wp_bpe_pig", "tm_englishcode_50256")}}
+    _swap_fixture(tmp_path, "nanogpt_swap", old)
+    monkeypatch.setattr(server_mod, "REPO_ROOT", tmp_path)
+    sp_entry = server_mod.load_benchmark_data()["results"]["swap_space_prefix"]
+    assert sp_entry["available"] is False and sp_entry["path"] == "benchmarks/results/nanogpt_swap_sp/nanogpt_swap.json"
+    assert "pairs" not in sp_entry
+
+    sp = copy.deepcopy(old)
+    sp["models"]["wp_bpe_pig_sp"] = sp["models"].pop("wp_bpe_pig")
+    for name, bpb, bpt in (("bpe_frequency", 1.80, 4.3), ("wp_bpe_pig_sp", 1.75, 4.4), ("gpt2", 1.69, 4.436)):
+        sp["models"][name].update(final_bpb=bpb, val_bytes_per_token=bpt)
+    sp["gpt2_equivalent"]["steps"] = {"gpt2": 600, "bpe_frequency": 400, "wp_bpe_pig_sp": 450}
+    _swap_fixture(tmp_path, "nanogpt_swap_sp", sp)
+    sp_entry = server_mod.load_benchmark_data()["results"]["swap_space_prefix"]
+    assert sp_entry["available"] is True and sp_entry["provenance"]  # report.render_nanogpt_swap ran on it
+    pairs = sp_entry["pairs"]
+    rows = {r["variant"]: r for r in pairs["rows"]}
+    assert set(rows) == {"bpe_frequency", "wp_bpe_pig"}  # GPT-2 and TokenMonster are not ours
+    pig = rows["wp_bpe_pig"]
+    assert pig["sp"]["name"] == "wp_bpe_pig_sp" and pig["sp"]["gpt2_equivalent_steps"] == 450
+    assert pig["old"]["final_bpb"] == real["models"]["wp_bpe_pig"]["final_bpb"]
+    assert pig["old"]["gpt2_equivalent_steps"] == real["gpt2_equivalent"]["steps"]["wp_bpe_pig"]
+    assert pig["delta_bpb"] == pytest.approx(1.75 - real["models"]["wp_bpe_pig"]["final_bpb"])
+    assert pairs["gpt2"]["run"] == "sp" and pairs["gpt2"]["final_bpb"] == 1.69
+
+
+def test_missing_or_broken_result_files_degrade_gracefully(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(server_mod, "REPO_ROOT", tmp_path)
+    data = server_mod.load_benchmark_data()
+    assert set(data["results"]) == RESULT_KEYS
+    assert not any(e["available"] or e["data"] for e in data["results"].values())
+    assert set(server_mod.ALGORITHM_METADATA) <= set(data["models"]) and data["tokka_languages"] == []
+
+    # Unreadable JSON: not available, with the reason; a file missing fields the README renderer needs:
+    # available with its numbers, no provenance lines (instead of a 500).
+    bad = tmp_path / "benchmarks/results/colab_big/extrinsic_bpb_results.json"
+    bad.parent.mkdir(parents=True)
+    bad.write_text("{not json", encoding="utf-8")
+    _write_results(tmp_path, {"meta": {}, "models": {}}, proxy_lm={"meta": {}, "models": {"bpe_frequency": {"macro_val_bpb": 3.0}}})
+    data = server_mod.load_benchmark_data()
+    big, small = data["results"]["proxy_big"], data["results"]["proxy_small"]
+    assert big["available"] is False and "unreadable" in big["error"]
+    assert small["available"] is True and small["provenance"] == []
+    assert data["results"]["proxy_compare"]["available"] is False
+    assert data["models"]["bpe_frequency"]["macro_val_bpb"] == 3.0

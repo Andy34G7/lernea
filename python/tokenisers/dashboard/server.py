@@ -5,18 +5,24 @@ Inspired by Artificial Analysis (artificialanalysis.ai).
 
 from __future__ import annotations
 
+import csv
 import datetime
 import json
 import logging
+import math
 import mimetypes
 import os
+import re
 from collections import OrderedDict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from tokenisers.benchmarks.report import (colab_compare_stats, render_colab, render_colab_compare, render_intrinsic,
+                                          render_nanogpt_swap, render_throughput, render_tokka)
 
 logger = logging.getLogger("tokenisers.dashboard")
 
@@ -32,6 +38,7 @@ CACHE_ENTRIES = 4              # trained tokenizer sets kept (LRU)
 MAX_BODY_BYTES = 64 * 1024
 MAX_TEXT_CHARS = 16_384
 CORPUS_TRAIN_BYTES = 100_000   # playground training corpus (train split of the data pipeline)
+VOCAB_DIRS = {16384: "", 32768: "v32768/", 65536: "v65536/"}  # suite vocabulary size -> results subdirectory
 DEFAULT_TEXT = "The internationalization of unhappily disproportionate misunderstandings requires robust subword tokenization."
 
 # Metadata for all algorithm architectures and theoretical objectives. Formulas state what the
@@ -276,68 +283,136 @@ class TokenizerCache:
         return toks
 
 
+# Every committed result set: key -> (path under benchmarks/results, the README renderer whose header lines
+# are the set's provenance and whose bullets after the table are its notes; None: no renderer).
+RESULT_SETS: Dict[str, Tuple[str, Optional[Callable[[Dict[str, Any]], str]]]] = {
+    **{f"tokka_{v}": (f"{d}tokka/tokka_matrix.json", render_tokka) for v, d in VOCAB_DIRS.items()},
+    **{f"intrinsic_{v}": (f"{d}intrinsic/intrinsic_leaderboard.json", render_intrinsic) for v, d in VOCAB_DIRS.items()},
+    "throughput_local": ("throughput/local/throughput.json", render_throughput),
+    "throughput_colab_cpu": ("throughput/colab_cpu/throughput.json", render_throughput),
+    "proxy_small": ("colab/extrinsic_bpb_results.json", render_colab),
+    "proxy_big": ("colab_big/extrinsic_bpb_results.json", render_colab),
+    "swap": ("nanogpt_swap/nanogpt_swap.json", render_nanogpt_swap),
+    "swap_lr1p8e-3": ("nanogpt_swap_lr1p8e-3/gpt2_run.json", None),
+    # GPT-2-style space-prefix rerun of our tokenizers: shown as soon as this file is committed.
+    "swap_space_prefix": ("nanogpt_swap_sp/nanogpt_swap.json", render_nanogpt_swap),
+}
+
+
+def _report(render: Callable[..., str], *docs: Dict[str, Any]) -> Dict[str, List[str]]:
+    """The README rendering of a result split into its provenance (bullets before the first table) and its
+    notes (bullets after it); empty when the file lacks a field the renderer needs."""
+    try:
+        md = render(*docs).splitlines()
+    except Exception as e:  # an older or partial file: its numbers still show, its summary does not
+        logger.warning(f"{render.__name__} failed: {e!r}")
+        return {"provenance": [], "notes": []}
+    first = next((i for i, line in enumerate(md) if line.startswith("|")), len(md))
+    return {"provenance": [line[2:] for line in md[:first] if line.startswith("- ")],
+            "notes": [line[2:] for line in md[first:] if line.startswith("- ")]}
+
+
+def _load_result(rel: str, render: Optional[Callable[..., str]]) -> Dict[str, Any]:
+    path = REPO_ROOT / "benchmarks" / "results" / rel
+    entry: Dict[str, Any] = {"path": f"benchmarks/results/{rel}", "available": False, "data": None,
+                             "provenance": [], "notes": []}
+    if not path.is_file():
+        return entry
+    try:
+        entry["data"] = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        logger.warning(f"Failed reading {path}: {e}")
+        entry["error"] = f"unreadable: {e}"
+        return entry
+    entry["available"] = True
+    if render:
+        entry.update(_report(render, entry["data"]))
+    return entry
+
+
+def _train_bpb(csv_path: Path, models: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Per-step train BPB of each tokenizer swap run from nanogpt_swap_steps.csv (train loss in nats per
+    token / ln 2 / that tokenizer's train bytes per token)."""
+    if not csv_path.is_file():
+        return None
+    with csv_path.open(encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    names = [n for n in (rows[0] if rows else {}) if n not in ("step", "lr") and models.get(n, {}).get("train_bytes_per_token")]
+    return {"steps": [int(r["step"]) for r in rows],
+            "bpb": {n: [round(float(r[n]) / math.log(2) / models[n]["train_bytes_per_token"], 4) for r in rows]
+                    for n in names}}
+
+
+def space_prefix_pairs(old: Dict[str, Any], sp: Dict[str, Any]) -> Dict[str, Any]:
+    """Each of our tokenizers in the space-prefix swap run next to its run in the original swap (matched by
+    name, a trailing ``_sp`` / ``_space_prefix`` dropped), plus GPT-2 as the reference (from the space-prefix
+    run when it has one, else from the original run)."""
+    om, sm = old.get("models", {}), sp.get("models", {})
+    eq = {"old": (old.get("gpt2_equivalent") or {}).get("steps", {}),
+          "sp": (sp.get("gpt2_equivalent") or {}).get("steps", {})}
+
+    def pick(name: str, m: Dict[str, Any], run: str) -> Dict[str, Any]:
+        return {"name": name, "final_bpb": m.get("final_bpb"), "val_bytes_per_token": m.get("val_bytes_per_token"),
+                "train_bytes_per_token": m.get("train_bytes_per_token"), "gpt2_equivalent_steps": eq[run].get(name)}
+
+    rows = []
+    for name, m in sm.items():
+        base = re.sub(r"_(sp|space_prefix)$", "", name)
+        if m.get("spec", {}).get("kind", "tokenisers") != "tokenisers" or base not in om or "final_bpb" not in m:
+            continue
+        o, n = pick(base, om[base], "old"), pick(name, m, "sp")
+        rows.append({"variant": base, "old": o, "sp": n,
+                     "delta_bpb": n["final_bpb"] - o["final_bpb"] if o["final_bpb"] is not None else None})
+    run = "sp" if "gpt2" in sm else "old"
+    g = (sm if run == "sp" else om).get("gpt2")
+    return {"rows": rows, "gpt2": {**pick("gpt2", g, run), "run": run} if g else None}
+
+
 def load_benchmark_data() -> Dict[str, Any]:
-    """Loads and unifies tokka, intrinsic, and extrinsic benchmark results."""
-    # 1. Tokka Bench
-    tokka_candidates = [
-        REPO_ROOT / "benchmarks/results/tokka/tokka_matrix.json",
-        REPO_ROOT / "benchmarks/results/tokka/tokka_leaderboard.json",
-        REPO_ROOT / "benchmarks/results/tokka/leaderboard.json",
-    ]
-    tokka_data: Dict[str, Any] = {}
-    for p in tokka_candidates:
-        if p.exists():
-            try:
-                tokka_data = json.loads(p.read_text(encoding="utf-8"))
-                break
-            except Exception as e:
-                logger.warning(f"Failed reading {p}: {e}")
+    """Every result set under benchmarks/results (with an availability flag), plus the unified V = 16,384
+    per-tokenizer view (tokka, intrinsic, small and big proxy LM) the overview charts use."""
+    results = {key: _load_result(rel, render) for key, (rel, render) in RESULT_SETS.items()}
+    for key in ("swap", "swap_space_prefix"):
+        if results[key]["available"]:
+            csv_path = REPO_ROOT / "benchmarks" / "results" / Path(RESULT_SETS[key][0]).parent / "nanogpt_swap_steps.csv"
+            results[key]["train_bpb"] = _train_bpb(csv_path, results[key]["data"].get("models", {}))
+    small, big = results["proxy_small"], results["proxy_big"]
+    results["proxy_compare"] = {"path": f"{small['path']} + {big['path']}", "available": False, "data": None,
+                                "provenance": [], "notes": []}
+    if small["available"] and big["available"]:
+        try:
+            names, stats = colab_compare_stats(small["data"], big["data"])
+            results["proxy_compare"].update(available=True, data={"ref": "bpe_frequency", "names": names, "tiers": stats},
+                                            **_report(render_colab_compare, small["data"], big["data"]))
+        except (KeyError, ZeroDivisionError) as e:
+            logger.warning(f"small vs big proxy LM comparison failed: {e!r}")
+    sp = results["swap_space_prefix"]
+    if sp["available"] and results["swap"]["available"]:
+        sp["pairs"] = space_prefix_pairs(results["swap"]["data"], sp["data"])
 
-    # 2. Intrinsic Leaderboard
-    intrinsic_candidates = [
-        REPO_ROOT / "benchmarks/results/intrinsic/intrinsic_leaderboard.json",
-        REPO_ROOT / "benchmarks/results/intrinsic/metrics.json",
-        REPO_ROOT / "benchmarks/results/intrinsic/leaderboard.json",
-    ]
-    intrinsic_data: Dict[str, Any] = {}
-    for p in intrinsic_candidates:
-        if p.exists():
-            try:
-                intrinsic_data = json.loads(p.read_text(encoding="utf-8"))
-                break
-            except Exception as e:
-                logger.warning(f"Failed reading {p}: {e}")
+    def doc(key: str) -> Dict[str, Any]:
+        d = results[key]["data"]
+        return d if isinstance(d, dict) else {}
 
-    # 3. Colab Extrinsic Proxy-LM BPB
-    colab_candidates = [
-        REPO_ROOT / "benchmarks/results/colab/extrinsic_bpb_results.json",
-        REPO_ROOT / "benchmarks/results/colab/bpb_results.json",
-        REPO_ROOT / "benchmarks/results/colab/extrinsic_bpb_leaderboard.json",
-    ]
-    colab_data: Dict[str, Any] = {}
-    for p in colab_candidates:
-        if p.exists():
-            try:
-                colab_data = json.loads(p.read_text(encoding="utf-8"))
-                break
-            except Exception as e:
-                logger.warning(f"Failed reading {p}: {e}")
-
-    colab_models = colab_data.get("models", {}) if isinstance(colab_data, dict) else {}
+    tokka_data, intrinsic_data, colab_data = doc("tokka_16384"), doc("intrinsic_16384"), doc("proxy_small")
+    colab_models = colab_data.get("models", {})
+    big_models = doc("proxy_big").get("models", {})
     # Benchmark JSON is {"meta": ..., "models": {...}}; older files were the bare model map (no meta).
     # meta is each run's provenance (data, budgets, backend, commit, synthetic flag): pass it through.
     provenance = {
         "tokka": tokka_data.get("meta"),
         "intrinsic": intrinsic_data.get("meta"),
-        "proxy_lm": colab_data.get("meta") if isinstance(colab_data, dict) else None,
+        "proxy_lm": colab_data.get("meta"),
     }
     tokka_data = tokka_data.get("models", tokka_data)
     intrinsic_data = intrinsic_data.get("models", intrinsic_data)
     # Heatmap columns come from the data, not a fixed list: per-language cells are dicts; the
-    # aggregates are not languages and scalars (vocab_size, unique_tokens) are not cells.
+    # aggregates are not languages and scalars (vocab_size, unique_tokens) are not cells. The union
+    # over every vocabulary size's matrix (the same held-out text, so the same languages).
     tokka_languages = list(dict.fromkeys(
         lang
-        for row in tokka_data.values() if isinstance(row, dict)
+        for key in RESULT_SETS if key.startswith("tokka_")
+        for row in doc(key).get("models", doc(key)).values() if isinstance(row, dict)
         for lang, cell in row.items() if isinstance(cell, dict) and lang not in ("macro_avg", "micro_avg")
     ))
 
@@ -364,6 +439,7 @@ def load_benchmark_data() -> Dict[str, Any]:
         intr = intrinsic_data.get(key, {})
         tok = tokka_data.get(key, {})
         col = colab_models.get(key, {})
+        big_bpb = big_models.get(key, {}).get("macro_val_bpb")
 
         macro_bpb = col.get("macro_val_bpb")
         val_domains = col.get("val_domains", {})
@@ -384,17 +460,15 @@ def load_benchmark_data() -> Dict[str, Any]:
             "pros": meta.get("pros", []),
             "cons": meta.get("cons", []),
             "macro_val_bpb": macro_bpb,
+            "big_macro_val_bpb": big_bpb,
             "bytes_per_token": bytes_per_token,
             "renyi_e_2_0": intr.get("renyi_e_2_0"),
             "morph_f1": intr.get("morph_f1"),
             "identifier_f1": intr.get("identifier_f1"),
             "decode_mb_per_sec": intr.get("decode_mb_per_sec"),
             "encode_mb_per_sec": intr.get("encode_mb_per_sec"),
+            "renyi_e_2_5": intr.get("renyi_e_2_5"),
             "val_domains": val_domains,
-            "steps": col.get("steps"),
-            "curve": col.get("curve", []),
-            "intrinsic": intr,
-            "tokka": tok,
         }
 
     # Summary KPI Calculation
@@ -449,6 +523,7 @@ def load_benchmark_data() -> Dict[str, Any]:
         "tokka_matrix": tokka_data,
         "tokka_languages": tokka_languages,
         "meta": provenance,
+        "results": results,
         "metadata": ALGORITHM_METADATA,
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
