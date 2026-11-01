@@ -391,7 +391,8 @@ def test_readme_comparison_renders_once_the_space_prefix_run_exists(repo_root, t
 
 def test_swap_cli_runs_every_tokenizer_of_a_space_prefix_job(tmp_path, monkeypatch):
     """A job prepared with only the _sp tokenizers is run without --tokenizers: its config decides
-    (the original default list has no _sp names and would run nothing)."""
+    (the original default list has no _sp names and would run nothing). A --tokenizers subset only
+    narrows what the VM gets: the job keeps every spec, so a later plain run still runs all 8."""
     from tokenisers.benchmarks.nanogpt_swap import __main__ as swap
 
     # Stop right after the run config is written: the VM build refuses a dirty tree.
@@ -400,9 +401,11 @@ def test_swap_cli_runs_every_tokenizer_of_a_space_prefix_job(tmp_path, monkeypat
     (job / "runs").mkdir(parents=True)
     (job / "runs" / "bpe_frequency_sp.json").write_text("{}")
     specs = [{"name": n, "kind": "tokenisers"} for n in swap.SP_VARIANTS]
-    for extra, expected in (([], list(swap.SP_VARIANTS)), (["--tokenizers", "mdl_bits_sp"], ["mdl_bits_sp"])):
-        (job / "config.json").write_text(json.dumps({"tokenizers": specs, "trainer_args": swap.recipe_args(600, 100)}))
+    (job / "config.json").write_text(json.dumps({"tokenizers": specs, "trainer_args": swap.recipe_args(600, 100)}))
+    # The subset run first; config.json is not restored between the two (refused) runs.
+    for extra, expected in ((["--tokenizers", "mdl_bits_sp"], ["mdl_bits_sp"]), ([], list(swap.SP_VARIANTS))):
         with pytest.raises(SystemExit, match="commit code changes first"):
             swap.main(["--job-dir", str(job), "--gpu", "A100", "--eval-every", "100", "--resume", *extra])
-        cfg = json.loads((job / "config.json").read_text())
-        assert [t["name"] for t in cfg["tokenizers"]] == cfg["train"] == expected
+        vm = json.loads((job / "vm" / "config.json").read_text())
+        assert [t["name"] for t in vm["tokenizers"]] == vm["train"] == expected
+        assert json.loads((job / "config.json").read_text())["tokenizers"] == specs
