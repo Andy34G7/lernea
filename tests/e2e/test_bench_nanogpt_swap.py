@@ -467,3 +467,27 @@ def test_cli_refuses_a_t4_and_unflagged_resume(tmp_path, capsys):
     (job / "config.json").write_text(json.dumps({"tokenizers": [{"name": "gpt2", "kind": "tiktoken"}]}))
     with pytest.raises(SystemExit, match="pass --resume"):
         swap.main(["--job-dir", str(job), "--gpu", "L4"])
+
+
+def test_resume_refuses_another_schedule_or_learning_rate(tmp_path, monkeypatch):
+    """Finished runs are kept only for a run of their recipe: --resume with other --steps or --lr
+    would put two schedules or learning rates in one result."""
+    job = tmp_path / "j"
+    (job / "runs").mkdir(parents=True)
+    (job / "runs" / "gpt2.json").write_text("{}")
+    (job / "config.json").write_text(json.dumps({"tokenizers": [{"name": "gpt2", "kind": "tiktoken"}],
+                                                 "trainer_args": swap.recipe_args(600, 50, 1.8e-3)}))
+
+    class Dropped:  # reached only by a run that goes ahead
+        def __init__(self, **kw):
+            pass
+
+        def run_job(self, *a, **kw):
+            raise colab.ColabError("session dropped")
+
+    monkeypatch.setattr(colab, "ColabOrchestrator", Dropped)
+    for extra, why in (([], "would mix learning rates"), (["--lr", "6e-4"], "would mix learning rates"),
+                       (["--lr", "1.8e-3", "--steps", "300"], "would mix schedules"),
+                       (["--lr", "1.8e-3"], "session dropped")):
+        with pytest.raises(SystemExit, match=why):
+            swap.main(["--job-dir", str(job), "--gpu", "A100", "--resume", *extra])
