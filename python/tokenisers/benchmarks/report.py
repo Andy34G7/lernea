@@ -493,6 +493,15 @@ def _flores_findings(doc: Dict[str, Any], tiers: Dict[str, Dict[str, Any]]) -> L
             line += (f". {below} of {len(rng['intrinsic'])} intrinsic-tier tokenizers are below the lowest "
                      "swap-tier tokenizer")
         lines.append(line + ".")
+    def cost(ms: Dict[str, Any], members: List[str]) -> float:
+        return statistics.median(statistics.fmean(m["languages"][lang]["tokens_per_sentence"] for lang in members)
+                                 for m in ms.values())
+
+    groups = {"in-mix": in_mix, "out-of-mix": meta["languages"]["out_of_mix"]}
+    lines.append("- Absolute cost, mean tokens per sentence over the group's languages (English plays no part), "
+                 "median over each tier: " + "; ".join(
+                     f"{label} " + " vs ".join(f"{t} tier {cost(ms, members):.1f}" for t, ms in tiers.items())
+                     for label, members in groups.items()) + ".")
     if latin and other:
         def mean_over(ms: Dict[str, Any], langs: List[str]) -> float:
             return statistics.fmean(m["languages"][lang]["premium"] for m in ms.values() for lang in langs)
