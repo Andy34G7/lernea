@@ -165,6 +165,21 @@ def test_cli_on_fixture(require_tokenisers, tmp_path):
     assert md == render_flores(doc) + "\n" and "How to read" in md and "cmn_Hani -> cmn_Hans" in md
 
 
+def test_swap_tier_says_what_each_tokenizer_was_trained_on(repo_root):
+    """The committed swap tier: GPT-2's and TokenMonster's vocabularies were not trained on FineWeb,
+    and the 32k TokenMonster one is not about 50k tokens."""
+    from tokenisers.benchmarks.report import render_flores
+
+    doc = json.loads((repo_root / "benchmarks/results/flores/flores.json").read_text(encoding="utf-8"))
+    md = render_flores(doc)
+    line = next(x for x in md.splitlines() if x.startswith("- swap tier:"))
+    assert "`gpt2` (tiktoken's `gpt2` encoding: GPT-2's own BPE, trained by OpenAI on WebText)" in line
+    assert ("`tm_englishcode_32000` (TokenMonster's prebuilt `englishcode-32000-consistent-nocapcode-v1` "
+            "vocabulary, 32,000 tokens)") in line
+    assert line.endswith("; 33 of ours, trained on English FineWeb text at 50,256 tokens")
+    assert "about 50k" not in md and "English FineWeb)" not in md
+
+
 @pytest.mark.skipif(os.environ.get("TOKENISERS_NETWORK_TESTS") != "1",
                     reason="set TOKENISERS_NETWORK_TESTS=1 to run tests that download real data")
 def test_real_flores_devtest_download(tmp_path):

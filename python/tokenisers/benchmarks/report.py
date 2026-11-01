@@ -25,6 +25,14 @@ def _summary(meta: Dict[str, Any]) -> str:
     stale = (meta.get("native_extension") or {}).get("stale_sources")
     if stale:
         commit += f" (STALE native extension: built before {len(stale)} Rust source file(s) changed)"
+    commit = f"commit `{commit}`"
+    prep = meta.get("job_prepared") or {}  # --resume: the job (tokenizers, data, ids) was prepared by another run
+    if prep and ((prep.get("git_commit"), bool(prep.get("git_dirty")))
+                 != (meta.get("git_commit"), bool(meta.get("git_dirty")))):
+        commit += (f", resuming a job (tokenizers, LM text and its ids) prepared at commit "
+                   f"`{(prep.get('git_commit') or 'unknown')[:10]}`"
+                   + (" from a dirty tree (uncommitted changes: not reproducible from any commit)"
+                      if prep.get("git_dirty") else ""))
     if meta.get("tokenizer_path"):  # tokka --tokenizer-path: nothing was trained by this run
         parts = [f"{data}: external tokenizer `{Path(meta['tokenizer_path']).name}`, not trained by this run "
                  "(its training data is unknown and was not checked against the evaluation split)"]
@@ -34,7 +42,7 @@ def _summary(meta: Dict[str, Any]) -> str:
     parts += [
         f"evaluated on the {'' if meta.get('tokenizer_path') else 'held-out '}{meta.get('eval_split', '?')} "
         f"split ({_mb(meta.get('eval_bytes'))})",
-        f"commit `{commit}`",
+        commit,
         f"generated {meta.get('created_utc', '?')}",
     ]
     args = " ".join(meta.get("command", [])[3:])
@@ -169,7 +177,9 @@ def render_colab(doc: Dict[str, Any]) -> str:
         f"{', '.join(f'{k}={v}' for k, v in meta.get('lm', {}).items())}",
         f"- fixed budget {meta.get('byte_budget', 0):,} UTF-8 bytes of LM training text per tokenizer, drawn "
         f"from {source} ({used}); seeds "
-        f"{seeds} " + ("(mean ± sample sd)" if len(seeds) > 1 else "(single seed: no sd)"),
+        f"{seeds} " + ("(mean ± sample sd; the seed sets only the LM's initialization: every seed trains on the "
+                       "same LM text in the same order, so the sd leaves out data-sampling variance)"
+                       if len(seeds) > 1 else "(single seed: no sd)"),
         "",
     ]
     return "\n".join(head + _table(doc, cols, lambda m: m["macro_val_bpb"]))
@@ -209,7 +219,9 @@ def render_colab_compare(small: Dict[str, Any], big: Optional[Dict[str, Any]], r
     head = [f"- the {len(names)} tokenizers both proxy-LM tiers trained; small LM: {setup(small)}; "
             f"big LM: {setup(big)}",
             f"- rank: by mean macro val BPB (1 = best); Δ: macro val BPB minus `{ref}`'s in the same tier "
-            "(negative = better) ± its standard error √(sd²/n + sd_ref²/n) over the n seeds (sample sd)"]
+            "(negative = better) ± its standard error √(sd²/n + sd_ref²/n) over the n seeds (sample sd). The seeds "
+            "vary only the LM's initialization (same LM text, same order), so the standard errors measure "
+            "initialization noise on this one text sample, not data-sampling variance"]
     for tier, st in stats.items():
         better = [st[n] for n in names if st[n][1] < 0]
         if better:
@@ -525,7 +537,28 @@ def render_nanogpt_swap_ablation(base: Dict[str, Any], sp: Optional[Dict[str, An
     return "\n".join(lines)
 
 
-_TIERS = {"intrinsic": "intrinsic tier (30% multilingual mix)", "swap": "GPT-2-swap tier (English FineWeb)"}
+_TIERS = {"intrinsic": "intrinsic tier (30% multilingual mix)", "swap": "GPT-2-swap tier (English-centric)"}
+
+
+def _swap_sources(ms: Dict[str, Any]) -> str:
+    """What the swap-tier tokenizers are, from each one's source spec: GPT-2's and TokenMonster's
+    were not trained by this repo (nor on FineWeb); ours were trained on English FineWeb text."""
+    by_kind: Dict[str, List[str]] = {}
+    for n, m in ms.items():
+        by_kind.setdefault(m["source"]["kind"], []).append(n)
+    out = []
+    for n in by_kind.pop("tiktoken", []):
+        enc = ms[n]["source"].get("encoding")
+        out.append(f"`{n}` (tiktoken's `{enc}` encoding" + (": GPT-2's own BPE, trained by OpenAI on WebText"
+                                                             if enc == "gpt2" else "") + ")")
+    out += [f"`{n}` (TokenMonster's prebuilt `{ms[n]['source'].get('vocab')}` vocabulary, "
+            f"{ms[n]['vocab_size']:,} tokens)" for n in by_kind.pop("tokenmonster", [])]
+    ours = by_kind.pop("tokenisers", [])
+    if ours:
+        sizes = " / ".join(f"{v:,}" for v in sorted({ms[n]["vocab_size"] for n in ours}))
+        out.append(f"{len(ours)} of ours, trained on English FineWeb text at {sizes} tokens")
+    out += [", ".join(f"`{n}`" for n in names) + f" ({kind})" for kind, names in by_kind.items()]
+    return "; ".join(out)
 
 
 def _cap(s: str) -> str:
@@ -620,8 +653,8 @@ def render_flores(doc: Dict[str, Any]) -> str:
             + (f"{sum(c is True for c in checks)} of {len(checks)} reproduce the committed test-split bytes/token "
                "exactly" if any(c is not None for c in checks) else "no committed leaderboard to check against"))
     if meta.get("swap_jobs"):
-        head.append("- swap tier: the GPT-2-swap tokenizers (English FineWeb text, about 50k tokens) from the "
-                    "prepared jobs " + ", ".join(f"`{j}`" for j in meta["swap_jobs"]))
+        head.append("- swap tier: the GPT-2-swap tokenizers from the prepared jobs "
+                    + ", ".join(f"`{j}`" for j in meta["swap_jobs"]) + ": " + _swap_sources(tiers.get("swap", {})))
     head += [
         f"- premium = tokens(language) / tokens(English) on the same sentences; σ ln = standard deviation of "
         f"ln(premium) over the group's languages; <= {meta['parity_threshold']} = share of them with premium "

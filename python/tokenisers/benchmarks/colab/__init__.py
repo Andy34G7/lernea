@@ -171,17 +171,23 @@ class ColabOrchestrator:
                 return json.loads(line[len(STATUS_MARKER):])
         raise ColabError(f"`colab exec` of the job control script printed no status:\n{out.strip()[-3000:]}")
 
-    def _sync_runs(self, name: str, status: Dict[str, Any], local: Path) -> None:
-        """Downloads finished per-run result files not yet held locally (one try each; the next poll
-        retries), so a dropped session loses only the runs in flight."""
+    def _sync_runs(self, name: str, status: Dict[str, Any], local: Path, attempts: int = 1,
+                   delay: float = 0.0) -> Dict[str, str]:
+        """Downloads finished per-run result files not yet held locally, so a dropped session loses
+        only the runs in flight; returns {file: last error} of those still missing. During the polls
+        one try each (the next poll retries); after the last poll ``attempts`` tries, ``delay`` s
+        apart, as nothing retries them once the session stops."""
+        failed: Dict[str, str] = {}
         for f in status.get("runs", []):
             if not (local / f).exists():
                 local.mkdir(exist_ok=True)
                 try:
-                    self._colab("download", "-s", name, f"{REMOTE_DIR}/runs/{f}", str(local / f), timeout=600)
+                    self._colab_retry("download", "-s", name, f"{REMOTE_DIR}/runs/{f}", str(local / f),
+                                      attempts=attempts, delay=delay, timeout=600)
                     print(f"downloaded runs/{f}", flush=True)
-                except ColabError:
-                    pass
+                except ColabError as e:
+                    failed[f] = str(e)
+        return failed
 
     def _wait(self, name: str, control: Path, timeout: float, poll_interval: float,
               max_poll_failures: int, runs_dir: Optional[Path] = None) -> Dict[str, Any]:
@@ -224,7 +230,9 @@ class ColabOrchestrator:
         calls (no exec stays open for the whole job), then downloads result.json and returns it with
         ``backend.kind = "colab"``. Finished run files already in ``job_dir/runs`` (from an earlier,
         dropped session) are uploaded into the VM's runs/ (created first), so they are not retrained;
-        finished runs are downloaded there on every poll. Polls, uploads and the download are each
+        finished runs are downloaded there on every poll, and any still missing after the last poll
+        with retries (a finished job with a run file that cannot be downloaded raises ColabError).
+        Polls, uploads and the download are each
         retried until ``max_poll_failures`` consecutive calls failed. A remote exception, a job that dies or runs
         past ``timeout``, or a CLI step that keeps failing raises ColabError (with the remote
         traceback / log tail); the session is always stopped. There is no silent local fallback.
@@ -258,6 +266,10 @@ class ColabOrchestrator:
             for f in done_runs:
                 self._colab_retry("upload", "-s", name, str(f), f"{REMOTE_DIR}/runs/{f.name}", timeout=600, **retry)
             status = self._wait(name, control, timeout, poll_interval, max_poll_failures, job_dir / "runs")
+            # The job writes its last run file moments before its final status, so the last poll may
+            # have given that file a single failed try: every missing one is retried now, also after a
+            # failed job (what finished is kept for a resume).
+            lost = self._sync_runs(name, status, job_dir / "runs", **retry)
             if status["state"] != "ok":
                 detail = status.get("traceback") or f"no status.json; log tail:\n{status.get('log_tail', '')}"
                 raise ColabError(f"the remote job failed ({status['state']}):\n{detail}")
@@ -265,6 +277,9 @@ class ColabOrchestrator:
             # lost to a dropped connection is retried like a poll.
             self._colab_retry("download", "-s", name, f"{REMOTE_DIR}/result.json", str(local_result),
                               timeout=600, **retry)
+            if lost:
+                raise ColabError("the job finished but these run files could not be downloaded: "
+                                 + "; ".join(f"runs/{f}: {e}" for f, e in lost.items()))
         if not local_result.is_file():
             raise ColabError("the Colab job produced no result.json")
         result = json.loads(local_result.read_text(encoding="utf-8"))

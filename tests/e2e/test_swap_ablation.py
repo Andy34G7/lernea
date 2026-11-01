@@ -174,6 +174,15 @@ def test_assembled_job_runs_like_a_prepared_one(tmp_path, monkeypatch, toks, sha
     assert set(a["prepared"]["variants"]) == set(by)
     with tarfile.open(job / "tokenizers.tar.gz") as tar:
         assert {m.name for m in tar.getmembers() if m.name.count("/") == 1} == {f"tokenizers/{n}" for n in by}
+    # Each pool's preparation stays its own, in either order: the Colab pool's VM and timings do not
+    # describe the locally prepared tokenizers, nor the local pool's command the Colab-trained ones.
+    rev = tmp_path / "job_rev"
+    rev.mkdir()
+    swap.assemble([pool, local], ["bpe_frequency_g2", "unigram_lm_sp1"], rev, START)
+    for p in (json.loads((rev / "config.json").read_text())["prepared"], a["prepared"]):
+        assert not {"trained_on", "timings"} & set(p) and p["command"] == START["command"]
+        assert p["pools"][str(pool)]["trained_on"]["kind"] == "colab" and "trained_on" not in p["pools"][str(local)]
+        assert p["pools"][str(local)]["command"] == ["prepare"] and p["val_docs"] == p["pools"][str(local)]["val_docs"]
     other = tmp_path / "other"
     shutil.copytree(local, other)
     c = json.loads((other / "config.json").read_text())

@@ -11,8 +11,9 @@ Tokenizers:
   intrinsic  the 13 suite variants at V = 16,384 / 32,768 / 65,536, retrained exactly as the
              committed intrinsic results (same dataset, parameters and SIGMORPHON lexicon); each
              one's test-split bytes/token is checked against the committed leaderboard.
-  swap       the GPT-2-swap tokenizers (English FineWeb, ~50k), loaded from prepared job
-             directories (config.json) exactly as the swap job loads them.
+  swap       the GPT-2-swap tokenizers (GPT-2's own, TokenMonster's prebuilt vocabularies and ours
+             trained on English FineWeb), loaded from prepared job directories (config.json)
+             exactly as the swap job loads them.
 
     python -m tokenisers.benchmarks.flores --skip-memory-check
 """
