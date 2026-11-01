@@ -8,8 +8,12 @@ CLI: tokenizer-swap benchmark on llm.c's GPT-2 (124M) recipe, run on one Colab G
 
 ``--tokenizers`` picks what is prepared (default: GPT-2, the two TokenMonster vocabularies and our
 9); a run trains every tokenizer of the job's config.json unless ``--tokenizers`` narrows it. The
-``_sp`` names (SP_VARIANTS) are our variants retrained with ``pretokenizer="space_prefix"``:
-prepare them in a job dir of their own, e.g. ``--prepare-only --tokenizers bpe_frequency_sp ...``.
+``_sp`` names (SP_VARIANTS) are our variants retrained with ``pretokenizer="space_prefix"``, the
+``_g2`` names (G2_VARIANTS) with ``pretokenizer="gpt2"``: prepare them in a job dir of their own,
+e.g. ``--prepare-only --tokenizers bpe_frequency_sp ...``. ``--from-pool DIR ...`` prepares a job
+from tokenizers already prepared in other job dirs (no training): e.g. a few ``_g2`` ones and the
+``_sp300`` ones that ``python -m tokenisers.benchmarks.nanogpt_swap.train_tokenizers`` trains on
+300 MB on a Colab VM.
 
 Preparation (local, CPU): the first ``VAL_TOKENS`` GPT-2 tokens of the speedrun's val shard and the
 head of train shard 1 are read by HTTP range requests and decoded; our 9 tokenizers are trained on
@@ -50,6 +54,8 @@ VAL_SHARD = "fineweb_val_000000.bin"
 TRAIN_SHARDS = [f"fineweb_train_{i:06d}.bin" for i in range(1, 104)]
 VAL_TOKENS = 20 * 524288  # the speedrun's val window (llm.c's record uses the same first ~10M tokens)
 SPEEDRUN_TARGET_NATS = 3.28  # modded-nanogpt's target: llm.c's GPT-2 (124M) val loss on GPT-2 tokens
+SOURCE = {"repo": SOURCE_REPO, "val_shard": VAL_SHARD, "val_tokens": VAL_TOKENS, "train_shards": TRAIN_SHARDS,
+          "tokenizer": {"kind": "tiktoken", "encoding": "gpt2"}}  # the text every tokenizer is scored on
 
 OUR_VARIANTS = ("bpe_frequency", "wp_bpe_pig", "wp_bpe_ppig", "wp_bpe_npmi", "super_bpe", "unigram_lm",
                 "length_penalized", "morpheme_bpe", "mdl_bits")
@@ -71,8 +77,10 @@ TOKENMONSTER_WHY = ("every prebuilt englishcode vocabulary NFD-normalizes its in
                     "documents); capcode also folds U+0130 to I (2 documents). Used: the nocapcode vocabulary of the "
                     "same size and mode, normalization flag cleared (same tokens and ids), lossless on all val documents")
 TOKENIZERS = ("gpt2", *TOKENMONSTER, *OUR_VARIANTS)
-# Our variants that pre-split text, retrained with pretokenizer="space_prefix" (common.variant_config).
+# Our variants that pre-split text, retrained with pretokenizer="space_prefix" / "gpt2"
+# (common.variant_config).
 SP_VARIANTS = tuple(f"{v}_sp" for v in OUR_VARIANTS if v != "super_bpe")
+G2_VARIANTS = tuple(f"{v}_g2" for v in OUR_VARIANTS if v != "super_bpe")
 PIP = ["tiktoken==0.14.0", "tokenmonster==1.1.12"]
 GPUS = ("L4", "A100", "H100")  # bf16; a T4 has none
 DEFAULT_MBS = {"L4": 16, "A100": 32, "H100": 32}  # sequences per micro-batch; halved on the VM on OOM
@@ -133,10 +141,15 @@ def prepare(args: argparse.Namespace, job: Path, start: Dict[str, Any]) -> None:
     except ImportError as e:
         raise SystemExit("preparation decodes the GPT-2 shards with tiktoken: uv sync --extra dev") from e
     from tokenisers.benchmarks.common import (DEFAULT_MORPH_LANGS, check_memory, find_duplicates,
-                                              load_morphology, train_suite)
+                                              load_morphology, parse_variant, train_suite)
 
     wanted = args.tokenizers or TOKENIZERS
-    variants = [v for v in (*OUR_VARIANTS, *SP_VARIANTS) if v in wanted]
+    scaled = [n for n in wanted if n not in TOKENIZERS and parse_variant(n)[2] is not None]
+    if scaled:
+        raise SystemExit(f"{', '.join(scaled)}: trained on more text than this machine holds; train them with "
+                         "`python -m tokenisers.benchmarks.nanogpt_swap.train_tokenizers` and prepare the job "
+                         "with --from-pool")
+    variants = [v for v in (*OUR_VARIANTS, *SP_VARIANTS, *G2_VARIANTS) if v in wanted]
     if variants and not args.skip_memory_check:
         check_memory(variants, args.tokenizer_train_bytes)
     enc = tiktoken.get_encoding("gpt2")
@@ -149,13 +162,7 @@ def prepare(args: argparse.Namespace, job: Path, start: Dict[str, Any]) -> None:
     gpt2 = swap_job.TiktokenTok({"encoding": "gpt2"}, job)
     source = swap_job.SourceDocs(lambda n: cache / n, gpt2.decode, enc.eot_token, VAL_SHARD, VAL_TOKENS,
                                  [TRAIN_SHARDS[0]])
-    source.extend()
-    docs, nbytes = [], 0
-    for d, b in zip(source.train, source.train_bytes):
-        if nbytes + b > args.tokenizer_train_bytes:
-            break
-        docs.append(d)
-        nbytes += b
+    docs, nbytes = source.first_docs(args.tokenizer_train_bytes)
     if nbytes < 0.9 * args.tokenizer_train_bytes:
         raise SystemExit(f"the shard head holds only {nbytes:,} bytes of documents")
     source.assert_disjoint()
@@ -174,7 +181,7 @@ def prepare(args: argparse.Namespace, job: Path, start: Dict[str, Any]) -> None:
     duplicates: Dict[str, str] = {}
     if variants:
         lexicon: Dict[str, List[str]] = {}
-        if {"morpheme_bpe", "morpheme_bpe_sp"} & set(variants):  # SIGMORPHON train split, as in the other benchmarks
+        if any(parse_variant(v)[0] == "morpheme_bpe" for v in variants):  # SIGMORPHON train split, as elsewhere
             margs = argparse.Namespace(cache_dir=args.cache_dir, offline=False)
             lexicon, _, morph = load_morphology(margs, docs, DEFAULT_MORPH_LANGS)
         print(f"training {len(variants)} tokenizers at V={OUR_VOCAB} on {nbytes / 1e6:.1f} MB")
@@ -192,8 +199,7 @@ def prepare(args: argparse.Namespace, job: Path, start: Dict[str, Any]) -> None:
         with tarfile.open(job / "tokenizers.tar.gz", "w:gz") as tar:
             tar.add(job / "tokenizers", arcname="tokenizers")
     cfg = {
-        "source": {"repo": SOURCE_REPO, "val_shard": VAL_SHARD, "val_tokens": VAL_TOKENS, "train_shards": TRAIN_SHARDS,
-                   "tokenizer": {"kind": "tiktoken", "encoding": "gpt2"}},
+        "source": SOURCE,
         "val_docs_sha256": swap_job.docs_sha256(source.val),
         "tokenizer_text": {"docs": len(docs), "bytes": nbytes, "docs_sha256": swap_job.docs_sha256(docs),
                            "shard": TRAIN_SHARDS[0]},
@@ -204,6 +210,58 @@ def prepare(args: argparse.Namespace, job: Path, start: Dict[str, Any]) -> None:
                      "train_docs_dropped_as_val": source.dropped_as_val, "variants": records,
                      "duplicates": duplicates, "morphology": morph, "tokenmonster_why": TOKENMONSTER_WHY},
     }
+    (job / "config.json").write_text(json.dumps(cfg, indent=1), encoding="utf-8")
+
+
+def assemble(pools: List[Path], names: List[str], job: Path, start: Dict[str, Any]) -> None:
+    """Prepares ``job`` from tokenizers already prepared in the ``pools`` (job dirs written by
+    ``prepare`` or by train_tokenizers.py), without training or reading any data: their files are
+    copied, their specs and training records kept, and each spec records the text it was trained on
+    (``tokenizer_text``, checked again on the VM). The pools must share the source and val
+    documents; the job's own ``tokenizer_text`` is the first pool's."""
+    cfgs = [(p, json.loads((p / "config.json").read_text(encoding="utf-8"))) for p in pools]
+    first = cfgs[0][1]
+    for p, c in cfgs[1:]:
+        if c["source"] != first["source"] or c["val_docs_sha256"] != first["val_docs_sha256"]:
+            raise SystemExit(f"{p}: another source or other val documents than {pools[0]}")
+    specs: List[Dict[str, Any]] = []
+    records: Dict[str, Any] = {}
+    morph = None
+    for name in names:
+        found = [(p, c, s) for p, c in cfgs for s in c["tokenizers"] if s["name"] == name]
+        if not found:
+            raise SystemExit(f"{name}: in none of {', '.join(map(str, pools))}")
+        pool, c, spec = found[0]
+        spec = dict(spec)
+        if spec["kind"] == "tokenisers":
+            if not (pool / spec["path"]).is_dir():
+                with tarfile.open(pool / "tokenizers.tar.gz") as tar:
+                    tar.extractall(pool, filter="data")
+            shutil.copytree(pool / spec["path"], job / spec["path"], dirs_exist_ok=True)
+            spec.setdefault("tokenizer_text", c["tokenizer_text"])
+        specs.append(spec)
+        if name in (c["prepared"].get("variants") or {}):
+            records[name] = dict(c["prepared"]["variants"][name])
+        if name.startswith("morpheme_bpe") and c["prepared"].get("morphology"):
+            morph = morph or c["prepared"]["morphology"]  # the lexicon depends on the training text:
+            records.setdefault(name, {})["morphology"] = c["prepared"]["morphology"]  # each keeps its own
+    if any(s["kind"] == "tokenisers" for s in specs):
+        with tarfile.open(job / "tokenizers.tar.gz", "w:gz") as tar:
+            tar.add(job / "tokenizers", arcname="tokenizers")
+    seen: Dict[str, str] = {}
+    duplicates: Dict[str, str] = {}
+    for s in specs:
+        if s["kind"] == "tokenisers":
+            digest = hashlib.sha256((job / s["path"] / "tokenizer.json").read_bytes()).hexdigest()
+            if digest in seen:
+                duplicates[s["name"]] = seen[digest]
+            seen.setdefault(digest, s["name"])
+    prepared = {**first["prepared"], **{k: start[k] for k in ("command", "git_commit", "git_dirty", "native_extension")},
+                "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "variants": records,
+                "duplicates": duplicates, "morphology": morph,
+                "pools": {str(p): c["prepared"].get("command") for p, c in cfgs}}
+    cfg = {k: first[k] for k in ("source", "val_docs_sha256", "tokenizer_text", "pip", "headroom")}
+    cfg.update(tokenizers=specs, prepared=prepared)
     (job / "config.json").write_text(json.dumps(cfg, indent=1), encoding="utf-8")
 
 
@@ -373,6 +431,19 @@ def write_outputs(doc: Dict[str, Any], out: Path, stem: str) -> None:
 # CLI
 # ----------------------------------------------------------------------------
 
+def tokenizer_name(name: str) -> str:
+    """A --tokenizers name: GPT-2, TokenMonster, one of our variants or its ``_sp`` / ``_g2`` retrain,
+    optionally on more text (``_sp300``: 300 MB, see common.parse_variant)."""
+    from tokenisers.benchmarks.common import parse_variant
+
+    try:
+        if name in TOKENIZERS or parse_variant(name)[0] in OUR_VARIANTS:
+            return name
+    except ValueError:
+        pass
+    raise argparse.ArgumentTypeError(f"unknown tokenizer {name!r}")
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     from tokenisers.benchmarks.common import start_provenance
 
@@ -384,9 +455,11 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument("--eval-every", type=int, default=50, help="Val BPB every N steps, and after the last")
     parser.add_argument("--lr", type=float, default=None,
                         help="Peak learning rate for every tokenizer (default: llm.c's 6e-4, unchanged)")
-    parser.add_argument("--tokenizers", nargs="+", default=None, choices=(*TOKENIZERS, *SP_VARIANTS), metavar="NAME",
-                        help="Prepare these (default: the original 12, without the _sp retrains); run these of "
-                             "the job's config (default: all of them)")
+    parser.add_argument("--tokenizers", nargs="+", default=None, type=tokenizer_name, metavar="NAME",
+                        help="Prepare these (default: the original 12, without the _sp / _g2 retrains); run these "
+                             "of the job's config (default: all of them)")
+    parser.add_argument("--from-pool", nargs="+", type=Path, default=None, metavar="DIR",
+                        help="Prepare the job from the --tokenizers prepared in these job dirs (no training)")
     parser.add_argument("--mbs", type=int, default=None,
                         help="Sequences per micro-batch (default by GPU; halved on the VM when out of memory). "
                              "The step stays 524,288 tokens through gradient accumulation")
@@ -415,7 +488,12 @@ def main(argv: Optional[List[str]] = None) -> None:
     job = args.job_dir
     job.mkdir(parents=True, exist_ok=True)
     if not (job / "config.json").is_file():
-        prepare(args, job, start)
+        if args.from_pool:
+            if not args.tokenizers:
+                parser.error("--from-pool needs --tokenizers")
+            assemble(args.from_pool, args.tokenizers, job, start)
+        else:
+            prepare(args, job, start)
     if args.prepare_only:
         return
     cfg = json.loads((job / "config.json").read_text(encoding="utf-8"))

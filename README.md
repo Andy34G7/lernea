@@ -762,6 +762,31 @@ uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap-sp --gpu
 _The space-prefix retrain has not been run yet: no `benchmarks/results/nanogpt_swap_sp/nanogpt_swap.json` is committed, so there is nothing to compare._
 <!-- END GENERATED: nanogpt_swap_sp -->
 
+**Pre-split and data-scaling ablation.** Two follow-ups to the space-prefix retrain in one job of six
+tokenizers, with the same recipe (600 steps, lr 6e-4, val every 100), train stream and val
+documents: three variants retrained with `pretokenizer="gpt2"` (`<variant>_g2`: GPT-2's exact regex
+pre-split, the same 50 MB of text), and three space-prefix variants trained on 300 MB instead of 50
+(`<variant>_sp300`: the first train documents up to 300 MB, an extension of the same ordered stream
+whose first documents are the 50 MB, checked by sha256 like their disjointness from val). Training
+takes about 60-75 bytes of RAM per byte of text, about 20 GB at 300 MB, so `train_tokenizers` trains
+those on a Colab VM (default L4, 53 GB RAM) and downloads each tokenizer as it finishes. All 8 `_g2`
+tokenizers are prepared locally in a pool, and any three of them make the job with any three
+`_sp300`:
+
+```bash
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir POOL_G2 --prepare-only --tokenizers bpe_frequency_g2 \
+  wp_bpe_pig_g2 wp_bpe_ppig_g2 wp_bpe_npmi_g2 unigram_lm_g2 length_penalized_g2 morpheme_bpe_g2 mdl_bits_g2
+uv run python -m tokenisers.benchmarks.nanogpt_swap.train_tokenizers --job-dir POOL_SP300 --variants A B C  # Colab L4
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir JOB --prepare-only --from-pool POOL_G2 POOL_SP300 \
+  --tokenizers X_g2 Y_g2 Z_g2 A_sp300 B_sp300 C_sp300
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir JOB --gpu A100 --steps 600 --eval-every 100 \
+  --output-dir benchmarks/results/nanogpt_swap_ablation
+```
+
+<!-- BEGIN GENERATED: nanogpt_swap_ablation -->
+_Not yet run: no `benchmarks/results/nanogpt_swap_ablation/nanogpt_swap.json` is committed, so there is nothing to compare._
+<!-- END GENERATED: nanogpt_swap_ablation -->
+
 ### Known limitations
 
 - **One scale, one split.** Everything uses one 52.5 MB train split built with split seed 0; the

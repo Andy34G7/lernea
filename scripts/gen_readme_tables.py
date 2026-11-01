@@ -17,7 +17,8 @@ from pathlib import Path
 import sys
 from typing import List, Optional
 
-from tokenisers.benchmarks.report import (SPACE_PREFIX_SWAP, render_colab, render_intrinsic, render_nanogpt_swap,
+from tokenisers.benchmarks.report import (ABLATION_SWAP, SPACE_PREFIX_SWAP, render_colab, render_intrinsic,
+                                          render_nanogpt_swap, render_nanogpt_swap_ablation,
                                           render_nanogpt_swap_space_prefix, render_throughput, render_tokka)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +45,10 @@ SECTIONS["nanogpt_swap_sp"] = (("benchmarks/results/nanogpt_swap/nanogpt_swap.js
                                render_nanogpt_swap_space_prefix,
                                "tokenisers.benchmarks.nanogpt_swap --job-dir DIR --gpu A100 "
                                "--output-dir benchmarks/results/nanogpt_swap_sp")
+SECTIONS["nanogpt_swap_ablation"] = (("benchmarks/results/nanogpt_swap/nanogpt_swap.json", SPACE_PREFIX_SWAP,
+                                      ABLATION_SWAP), render_nanogpt_swap_ablation,
+                                     "tokenisers.benchmarks.nanogpt_swap --job-dir DIR --gpu A100 "
+                                     "--output-dir benchmarks/results/nanogpt_swap_ablation")
 
 
 def render_readme(text: str, root: Path = ROOT) -> str:
