@@ -2,8 +2,8 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
 use rayon::prelude::*;
 
-use crate::curricula::super_bpe::SuperBpeTrainer;
 use crate::error::{Result, TokeniserError};
+use crate::pretokenizer::Pretokenizer;
 use crate::vocab::{TokenId, Vocabulary, BASE_VOCAB_SIZE};
 
 /// Deterministic parallel accumulation over corpus words. Chunk boundaries depend only on the
@@ -398,6 +398,10 @@ pub struct UnigramModel {
     pub vocab: Vocabulary,
     pub log_probs: Vec<f64>,
     pub trie: CompactTrie,
+    /// The segmentation encoding (and sampling) runs on: the one the training word counts were
+    /// made with (`Whitespace` from `new`; `UnigramTrainer::train` sees only word counts, so its
+    /// caller sets it).
+    pub pretokenizer: Pretokenizer,
 }
 
 /// `x` rounded to 12 decimal places: a value every JSON reader parses back to exactly `x`.
@@ -433,13 +437,15 @@ impl UnigramModel {
             vocab,
             log_probs,
             trie,
+            pretokenizer: Pretokenizer::Whitespace,
         }
     }
 
     /// Viterbi 1-best segmentation of a byte slice into token IDs, run separately on every
-    /// `SuperBpeTrainer::segment_bytes` segment (the units the model was trained on).
+    /// `pretokenizer` segment (the units the model was trained on).
     pub fn encode(&self, bytes: &[u8]) -> Vec<TokenId> {
-        SuperBpeTrainer::segment_bytes(bytes)
+        self.pretokenizer
+            .segment_bytes(bytes)
             .into_iter()
             .flat_map(|seg| match ViterbiDecoder::decode(seg, &self.trie, None) {
                 Some((_, tokens)) => tokens,

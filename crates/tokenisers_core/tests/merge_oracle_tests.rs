@@ -9,6 +9,7 @@ use tokenisers_core::curricula::morpheme::{MorphemeGuidedScorer, MorphemeLexicon
 use tokenisers_core::curricula::super_bpe::{SuperBpeConfig, SuperBpeTrainer};
 use tokenisers_core::engine::bottom_up::{BottomUpModel, BottomUpTrainer};
 use tokenisers_core::index::Pair;
+use tokenisers_core::pretokenizer::Pretokenizer;
 use tokenisers_core::scoring::{
     BpeScorer, LengthPenalizedScorer, MdlScorer, PairContext, PairScorer, ScoreDeps, ScoredPair, WordPieceScorer,
     WpBpeBaseScorer, WpBpeFtScorer, WpBpeNpmiScorer, WpBpePigScorer, WpBpePpigScorer, WpBpeScpScorer,
@@ -117,6 +118,55 @@ fn engine_matches_bruteforce_argmax_for_every_scorer() {
         }
         assert!(merged as u64 >= 3 * TRIALS, "{name}: only {merged} merges in {TRIALS} trials");
     }
+}
+
+#[test]
+fn space_prefix_training_matches_bruteforce_and_encodes_text_like_training() {
+    // Word counts in space_prefix segments (" ab", "\t", ...): merges must equal brute force, and
+    // encoding whole lines must give each segment's training segmentation, which needs the
+    // encoder to pre-split exactly like training (a whitespace-run split would cut " ab").
+    let mut spaced_merges = 0;
+    for (name, scorer, min_freq) in scorers() {
+        for seed in 0..60u64 {
+            let mut rng = fastrand::Rng::with_seed(seed);
+            let alphabet: &[u8] = [&b"ab  "[..], b"abc  \t", b"ab \n"][(seed % 3) as usize];
+            let lines: Vec<Vec<u8>> = (0..15)
+                .map(|_| (0..rng.usize(1..20)).map(|_| alphabet[rng.usize(0..alphabet.len())]).collect())
+                .collect();
+            let mut counts: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
+            for line in &lines {
+                for seg in Pretokenizer::SpacePrefix.segment_bytes(line) {
+                    *counts.entry(seg.to_vec()).or_default() += 1;
+                }
+            }
+            let corpus: Vec<(Vec<u8>, u64)> = counts.into_iter().collect();
+            let target = 256 + 25;
+            let model = BottomUpTrainer::new(scorer.as_ref(), target)
+                .with_min_frequency(min_freq)
+                .with_pretokenizer(Pretokenizer::SpacePrefix)
+                .train(&corpus)
+                .unwrap();
+            let (ref_merges, ref_words) = reference_train(scorer.as_ref(), &corpus, target, min_freq);
+            assert_eq!(model.merges, ref_merges, "{name}: merge sequence differs from brute force (seed {seed})");
+            assert!(model.pretokenize && model.pretokenizer == Pretokenizer::SpacePrefix, "{name} (seed {seed})");
+
+            let trained: HashMap<&[u8], &Vec<TokenId>> =
+                corpus.iter().map(|(w, _)| w.as_slice()).zip(&ref_words).collect();
+            for line in &lines {
+                let expected: Vec<TokenId> = Pretokenizer::SpacePrefix
+                    .segment_bytes(line)
+                    .into_iter()
+                    .flat_map(|seg| trained[seg].iter().copied())
+                    .collect();
+                assert_eq!(model.encode(line), expected, "{name}: encode != training (seed {seed}, {line:?})");
+            }
+            spaced_merges += model.merges.iter().filter(|&&(_, _, w)| {
+                let b = model.vocab.get_bytes(w).unwrap();
+                b[0] == b' ' && b.iter().any(|c| !c.is_ascii_whitespace())
+            }).count();
+        }
+    }
+    assert!(spaced_merges > 500, "space + word merges must be exercised: {spaced_merges}");
 }
 
 #[test]

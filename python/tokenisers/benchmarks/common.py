@@ -58,6 +58,10 @@ VARIANTS: Tuple[str, ...] = (
     "unigram_lm",
 )
 
+# "<variant>_sp": the variant retrained with pretokenizer="space_prefix" (a word takes the one space
+# before it, GPT-2-style) and otherwise identically. SuperBPE has no such mode.
+SPACE_PREFIX_VARIANTS: Dict[str, str] = {f"{v}_sp": v for v in VARIANTS if v != "super_bpe"}
+
 # Scorer name and every parameter of each BpeTokenizer.train variant. Nothing is left to a library
 # default, so the training record in each result file (meta.variants) is exactly what ran. The
 # values are the scorers' defaults (README formula table). min_frequency: pairs seen fewer times
@@ -236,18 +240,21 @@ def load_morphology(
 # ----------------------------------------------------------------------------
 
 def variant_config(name: str, vocab_size: int) -> Dict[str, Any]:
-    """Class and every training parameter of a suite variant besides corpus and vocab_size (the
-    morpheme lexicon is in meta.morphology), recorded in every result file."""
-    if name in _BPE_SCORERS:
-        scorer, params = _BPE_SCORERS[name]
-        return {"class": "BpeTokenizer", "scorer": scorer, **params}
-    if name == "super_bpe":
+    """Class and every training parameter of a suite variant (or of its ``_sp`` space-prefix
+    retrain, SPACE_PREFIX_VARIANTS) besides corpus and vocab_size (the morpheme lexicon is in
+    meta.morphology), recorded in every result file."""
+    base = SPACE_PREFIX_VARIANTS.get(name, name)
+    pretok = {"pretokenizer": "space_prefix" if name in SPACE_PREFIX_VARIANTS else "whitespace"}
+    if base in _BPE_SCORERS:
+        scorer, params = _BPE_SCORERS[base]
+        return {"class": "BpeTokenizer", "scorer": scorer, **params, **pretok}
+    if base == "super_bpe":
         return {"class": "SuperBpeTokenizer", "v_switch": 256 + (max(vocab_size, 256) - 256) * 9 // 10}
-    if name == "morpheme_bpe":
+    if base == "morpheme_bpe":
         return {"class": "MorphemeBpeTokenizer", "scorer": "frequency", "min_frequency": 1,
-                "lambda_weight": MORPHEME_LAMBDA}
-    if name == "unigram_lm":
-        return {"class": "UnigramTokenizer", "num_iterations": 10, "shrinking_factor": 0.75}
+                "lambda_weight": MORPHEME_LAMBDA, **pretok}
+    if base == "unigram_lm":
+        return {"class": "UnigramTokenizer", "num_iterations": 10, "shrinking_factor": 0.75, **pretok}
     raise ValueError(f"unknown variant {name!r}")
 
 
@@ -257,7 +264,7 @@ def train_variant(name: str, corpus: List[str], vocab_size: int, lexicon: Dict[s
 
     params = variant_config(name, vocab_size)
     cls = getattr(models, params.pop("class"))
-    if name == "morpheme_bpe":
+    if SPACE_PREFIX_VARIANTS.get(name, name) == "morpheme_bpe":
         params["morpheme_lexicon"] = lexicon
     return cls.train(corpus=corpus, vocab_size=vocab_size, **params)
 
@@ -434,6 +441,7 @@ def write_json(path: Path, payload: Dict[str, Any]) -> None:
 __all__ = [
     "DEFAULT_VOCAB_SIZE",
     "STANDARD_VOCAB_SIZES",
+    "SPACE_PREFIX_VARIANTS",
     "VARIANTS",
     "add_common_args",
     "assert_disjoint",

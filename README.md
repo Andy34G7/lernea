@@ -70,6 +70,16 @@ shrinking factor 0.75. The benchmark suite trains with these values and $\lambda
 written before this was added, including the committed results from `603a983`, list only the scorer
 and non-default values; that commit used the defaults above).
 
+**Pre-tokenizer.** Every variant except `super_bpe` (and `byte_entropy`) splits text into segments
+that no token spans, the same way for training, encoding, Unigram's lattice and the exported
+`tokenizer.json` (a `Split` regex that Hugging Face reproduces exactly; `from_pretrained` restores
+the mode). `pretokenizer="whitespace"` (the default, used by every committed result) isolates each
+maximal run of Unicode whitespace, so every space is a token of its own. `pretokenizer="space_prefix"`
+is GPT-2-style: a word takes the one U+0020 space right before it (`"a  b"` -> `a`, ` `, ` b`),
+while newlines, tabs, other Unicode spaces and all but the last space of a run stay in
+whitespace-only segments; unlike GPT-2's `\s+(?!\S)| ?\S+` it does not split letters, digits and
+punctuation apart. Bytes that are not valid UTF-8 count as non-whitespace in both modes.
+
 ---
 
 ## Quickstart & CLI Usage
@@ -727,6 +737,23 @@ Findings (one seed per tokenizer: the seed-to-seed spread is not measured here):
 - Our 8 whitespace-isolating tokenizers (the repo's pre-tokenizer makes every whitespace run its own token) get 2.70-2.75 val bytes per token, so each 524,288-token step holds 38-39% less text than GPT-2's (train bytes per token). The comparison is confounded by that design choice: they train on less text, not only on different tokens.
 - Early training: after 600 steps GPT-2 is at 5.18 nats per token on val, far from the speedrun's target of 3.28; no tokenizer reaches the target. The ranking at this budget need not hold for longer training.
 <!-- END GENERATED: nanogpt_swap -->
+
+**Space-prefix retrain.** The 8 whitespace-isolating variants above (all of ours but `super_bpe`)
+retrained with `pretokenizer="space_prefix"` as `<variant>_sp`: the same 50 MB of training text,
+parameters, size and lexicon, but a word carries the space before it, so that space no longer
+costs a token of its own. They run as a separate job with the same recipe, data source and val documents,
+and the table compares each with its whitespace run above (GPT-2's row for reference).
+
+```bash
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap-sp --prepare-only --tokenizers \
+  bpe_frequency_sp wp_bpe_pig_sp wp_bpe_ppig_sp wp_bpe_npmi_sp unigram_lm_sp length_penalized_sp morpheme_bpe_sp mdl_bits_sp
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap-sp --gpu A100 --steps 600 --eval-every 100 \
+  --output-dir benchmarks/results/nanogpt_swap_sp
+```
+
+<!-- BEGIN GENERATED: nanogpt_swap_sp -->
+_The space-prefix retrain has not been run yet: no `benchmarks/results/nanogpt_swap_sp/nanogpt_swap.json` is committed, so there is nothing to compare._
+<!-- END GENERATED: nanogpt_swap_sp -->
 
 ### Known limitations
 

@@ -1,5 +1,6 @@
 use crate::engine::bottom_up::{BottomUpModel, TrainState};
 use crate::error::{Result, TokeniserError};
+use crate::pretokenizer::Pretokenizer;
 use crate::scoring::PairScorer;
 use crate::vocab::BASE_VOCAB_SIZE;
 
@@ -48,45 +49,15 @@ impl<'a> SuperBpeTrainer<'a> {
         }
     }
 
-    /// Splits text into alternating maximal runs of whitespace and non-whitespace characters.
-    ///
-    /// Whitespace is Unicode `White_Space` (`char::is_whitespace`), so U+3000, U+00A0, U+2028 etc.
-    /// separate words just like ASCII space. This is THE segmentation used for training and must
-    /// be reused verbatim by any encoder that pre-splits text (see [`Self::segment_bytes`]).
+    /// [`Pretokenizer::Whitespace`] segmentation: alternating maximal runs of whitespace and
+    /// non-whitespace characters. SuperBPE always trains on these segments.
     pub fn segment_text(text: &str) -> Vec<Vec<u8>> {
-        Self::segment_bytes(text.as_bytes())
-            .into_iter()
-            .map(<[u8]>::to_vec)
-            .collect()
+        Pretokenizer::Whitespace.segment_text(text)
     }
 
-    /// Byte-level form of [`Self::segment_text`]: identical on valid UTF-8; bytes that are not
-    /// valid UTF-8 count as non-whitespace. Concatenating the returned slices gives back `bytes`.
+    /// Byte-level form of [`Self::segment_text`] ([`Pretokenizer::segment_bytes`]).
     pub fn segment_bytes(bytes: &[u8]) -> Vec<&[u8]> {
-        // (is_whitespace, byte length) per char; each invalid UTF-8 run is one non-ws unit.
-        let units = bytes.utf8_chunks().flat_map(|chunk| {
-            let invalid = chunk.invalid().len();
-            chunk
-                .valid()
-                .chars()
-                .map(|c| (c.is_whitespace(), c.len_utf8()))
-                .chain((invalid > 0).then_some((false, invalid)))
-        });
-        let mut segments = Vec::new();
-        let (mut start, mut pos) = (0, 0);
-        let mut prev_ws: Option<bool> = None;
-        for (ws, len) in units {
-            if prev_ws.is_some_and(|p| p != ws) {
-                segments.push(&bytes[start..pos]);
-                start = pos;
-            }
-            prev_ws = Some(ws);
-            pos += len;
-        }
-        if pos > start {
-            segments.push(&bytes[start..pos]);
-        }
-        segments
+        Pretokenizer::Whitespace.segment_bytes(bytes)
     }
 
     /// Trains Two-Stage SuperBPE on a collection of document lines.
