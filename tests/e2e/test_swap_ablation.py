@@ -5,6 +5,7 @@ Colab VM (``train_tokenizers``, fake colab CLI), jobs assembled from prepared po
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -141,6 +142,24 @@ def test_colab_training_downloads_each_tokenizer_resumes_and_makes_a_pool(tmp_pa
         f.write_text(json.dumps(run))
         with pytest.raises(RuntimeError, match=why):
             tt.finish(bad, cfg, result, START)
+
+
+def test_file_names_from_the_vm_cannot_escape_the_job_dir(tmp_path):
+    """Run-file names (colab status) and tokenizer file names (a run's "files") come from the VM: a name
+    with a path in it is refused before anything is written."""
+    (tmp_path / "job").mkdir()
+    for f in ["../escaped.json", "/tmp/abs.json", "..", "a/b.json"]:
+        with pytest.raises(colab.ColabError, match="not a plain file name"):
+            colab.ColabOrchestrator(colab_bin="x")._sync_runs("s", {"runs": [f]}, tmp_path / "job" / "runs")
+    pool = tmp_path / "pool" / "p"
+    (pool / "remote" / "runs").mkdir(parents=True)
+    text = {"docs": 1}
+    run = {"tokenizer_text": text, "files": {"../../escaped.txt": "x"},
+           "files_sha256": {"../../escaped.txt": hashlib.sha256(b"x").hexdigest()}}
+    (pool / "remote" / "runs" / "v_sp1.json").write_text(json.dumps(run))
+    with pytest.raises(colab.ColabError, match="not a plain file name"):
+        tt.finish(pool, {"variants": ["v_sp1"]}, {"data": {"tokenizer_text": text}}, START)
+    assert not list(tmp_path.rglob("escaped*")) and not (tmp_path / "job" / "runs").exists()
 
 
 def test_failed_training_keeps_finished_tokenizers_and_stops(tmp_path, monkeypatch, toks, shards):

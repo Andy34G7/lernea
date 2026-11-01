@@ -67,6 +67,7 @@ def finish(job: Path, cfg: Dict[str, Any], result: Dict[str, Any], start: Dict[s
     """Writes the pool from the downloaded run files: ``tokenizers/<name>/`` (the files exactly as the
     VM saved them, by sha256), tokenizers.tar.gz and a swap job's config.json."""
     from tokenisers import models
+    from tokenisers.benchmarks.colab import plain_name
 
     remote = job / "remote"
     specs: List[Dict[str, Any]] = []
@@ -83,7 +84,7 @@ def finish(job: Path, cfg: Dict[str, Any], result: Dict[str, Any], start: Dict[s
             data = text.encode("utf-8")
             if hashlib.sha256(data).hexdigest() != run["files_sha256"][fname]:
                 raise RuntimeError(f"{name}/{fname}: not the file the VM saved")
-            (out / fname).write_bytes(data)
+            (out / plain_name(fname)).write_bytes(data)
         tok = getattr(models, run["class"]).from_pretrained(str(out))
         if tok.pretokenizer != run["pretokenizer"] or tok.vocab_size != run["record"]["vocab_size"]:
             raise RuntimeError(f"{name}: reloads as another tokenizer")

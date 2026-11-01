@@ -89,6 +89,14 @@ class ColabError(RuntimeError):
     """A ``colab`` CLI step or the remote job failed (the message carries the remote traceback)."""
 
 
+def plain_name(f: Any) -> str:
+    """A file name the VM reported, returned only if it names a file directly inside the target dir:
+    no separator, no '..', not absolute (a misbehaving VM must not write outside the job)."""
+    if not isinstance(f, str) or f in ("", ".", "..") or Path(f).name != f or "\\" in f:
+        raise ColabError(f"refusing the file name {f!r} from the VM: not a plain file name")
+    return f
+
+
 @dataclass
 class ColabSession:
     session_id: str
@@ -178,7 +186,7 @@ class ColabOrchestrator:
         one try each (the next poll retries); after the last poll ``attempts`` tries, ``delay`` s
         apart, as nothing retries them once the session stops."""
         failed: Dict[str, str] = {}
-        for f in status.get("runs", []):
+        for f in map(plain_name, status.get("runs", [])):
             if not (local / f).exists():
                 local.mkdir(exist_ok=True)
                 try:
@@ -302,4 +310,5 @@ __all__ = [
     "ColabSession",
     "run_job",
     "run_local",
+    "plain_name",
 ]
