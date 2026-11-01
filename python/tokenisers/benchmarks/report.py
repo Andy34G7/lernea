@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 import statistics
-from typing import Any, Callable, Dict, List, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 
 def _mb(n: Any) -> str:
@@ -192,9 +192,12 @@ def colab_compare_stats(small: Dict[str, Any], big: Dict[str, Any], ref: str = "
     return names, stats
 
 
-def render_colab_compare(small: Dict[str, Any], big: Dict[str, Any], ref: str = "bpe_frequency") -> str:
+def render_colab_compare(small: Dict[str, Any], big: Optional[Dict[str, Any]], ref: str = "bpe_frequency") -> str:
     """Proxy-LM ranking of the tokenizers both tiers trained, small LM vs big LM: rank by mean macro val BPB
-    and the difference to ``ref`` in the same tier, ± its standard error over the seeds."""
+    and the difference to ``ref`` in the same tier, ± its standard error over the seeds. ``big`` is None until
+    the big tier has been run."""
+    if big is None:
+        return "_The big proxy LM has not been run yet, so there is nothing to compare._"
     names, stats = colab_compare_stats(small, big, ref)
 
     def setup(doc: Dict[str, Any]) -> str:
@@ -351,6 +354,7 @@ def render_nanogpt_swap(doc: Dict[str, Any]) -> str:
     data = meta.get("data") or {}
     tt = meta["tokenizer_text"]
     pilot = meta["mode"] == "pilot"
+    pretoks = sorted({v["pretokenizer"] for v in (meta["prepared"].get("variants") or {}).values() if "pretokenizer" in v})
     head = [
         f"- {'PILOT (timing only, not a result): ' if pilot else ''}{b.get('gpu') or meta['requested_gpu']}, "
         f"torch {b.get('torch', '?')}, Colab session `{b.get('session', '?')}`; commit `{commit}`; "
@@ -362,7 +366,8 @@ def render_nanogpt_swap(doc: Dict[str, Any]) -> str:
         f"{meta['source']['val_tokens']:,} GPT-2 val tokens), the same bytes for every tokenizer; BPB = NLL bits "
         "over every val token (one separator per document included) / UTF-8 bytes",
         f"- our tokenizers: trained on the first {tt['docs']:,} train documents ({_mb(tt['bytes'])}) at 50,256 "
-        "tokens + 1 separator; TokenMonster: " + meta["prepared"]["tokenmonster_why"],
+        "tokens + 1 separator" + (f", pre-tokenizer {' / '.join(pretoks)}" if pretoks else "")
+        + "; TokenMonster: " + meta["prepared"]["tokenmonster_why"],
         f"- target: the speedrun's {meta['target']['nats_per_gpt2_token']} nats per GPT-2 token = "
         + (f"{target:.4f} BPB on this val text" if target else "? (GPT-2 did not run)"),
         *([f"- note: {meta['note']}"] if meta.get("note") else []),
@@ -403,5 +408,53 @@ def render_nanogpt_swap(doc: Dict[str, Any]) -> str:
     return "\n".join(head + lines)
 
 
+SPACE_PREFIX_SWAP = "benchmarks/results/nanogpt_swap_sp/nanogpt_swap.json"
+
+
+def render_nanogpt_swap_space_prefix(base: Dict[str, Any], sp: Optional[Dict[str, Any]]) -> str:
+    """Per variant, the whitespace-isolating run (``base``, the committed tokenizer swap) against its
+    ``_sp`` space-prefix retrain (``sp``, a separate run of the same recipe; None until it exists),
+    with GPT-2's row from ``base`` for reference."""
+    if sp is None:
+        return (f"_The space-prefix retrain has not been run yet: no `{SPACE_PREFIX_SWAP}` is committed, so "
+                "there is nothing to compare._")
+    bm, sm = base["models"], sp["models"]
+    g = bm.get("gpt2", {})
+    bmeta, smeta = base["meta"], sp["meta"]
+    checks = {
+        "recipe": bmeta["recipe"]["args"] == smeta["recipe"]["args"],
+        "val documents": {m["val_docs_sha256"] for m in bm.values()} == {m["val_docs_sha256"] for m in sm.values()},
+        "tokenizer training text": bmeta["tokenizer_text"]["docs_sha256"] == smeta["tokenizer_text"]["docs_sha256"],
+    }
+    differ = [k for k, ok in checks.items() if not ok]
+    gpus = [(x.get("backend") or {}).get("gpu") or x.get("requested_gpu") for x in (bmeta, smeta)]
+    commit = (smeta.get("git_commit") or "unknown")[:10] + (" (dirty)" if smeta.get("git_dirty") else "")
+
+    def num(m: Optional[Dict[str, Any]], key: str, fmt: str) -> str:
+        return format(m[key], fmt) if m and m.get(key) is not None else "-"
+
+    lines = [
+        f"- space-prefix run: {gpus[1]}, commit `{commit}`, generated {smeta['created_utc']}; whitespace run: "
+        f"{gpus[0]}",
+        "- " + (f"DIFFERENT {', '.join(differ)} from the whitespace run: the BPB columns are not comparable"
+                if differ else "same recipe, val documents and tokenizer training text as the whitespace run"),
+        "",
+        "| Variant | Val B/token whitespace | Val B/token space_prefix | Final BPB whitespace | "
+        "Final BPB space_prefix | Change |",
+        "| :--- |" + " ---: |" * 5,
+    ]
+    for name, m in sm.items():
+        old = bm.get(name[:-3] if name.endswith("_sp") else name)
+        change = (f"{m['final_bpb'] - old['final_bpb']:+.4f}"
+                  if old and "final_bpb" in old and "final_bpb" in m else "-")
+        lines.append(f"| `{name[:-3] if name.endswith('_sp') else name}` | {num(old, 'val_bytes_per_token', '.3f')} | "
+                     f"{num(m, 'val_bytes_per_token', '.3f')} | {num(old, 'final_bpb', '.4f')} | "
+                     f"{num(m, 'final_bpb', '.4f')} | {change} |")
+    if g:
+        lines.append(f"| `gpt2` (reference) | {num(g, 'val_bytes_per_token', '.3f')} | | "
+                     f"{num(g, 'final_bpb', '.4f')} | | |")
+    return "\n".join(lines)
+
+
 __all__ = ["render_tokka", "render_intrinsic", "render_colab", "render_colab_compare", "colab_compare_stats",
-           "render_throughput", "render_nanogpt_swap"]
+           "render_throughput", "render_nanogpt_swap", "render_nanogpt_swap_space_prefix"]

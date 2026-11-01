@@ -2,6 +2,8 @@
 """Regenerate the README.md leaderboard sections from the committed benchmark result JSON.
 
 Each section sits between ``<!-- BEGIN GENERATED: <name> -->`` and ``<!-- END GENERATED: <name> -->``.
+A section renders one result file, or several (the first must exist; a missing later one is passed
+to the renderer as None).
 
     uv run python scripts/gen_readme_tables.py           # rewrite README.md
     uv run python scripts/gen_readme_tables.py --check   # exit 1 if README.md is stale
@@ -15,8 +17,8 @@ from pathlib import Path
 import sys
 from typing import List, Optional
 
-from tokenisers.benchmarks.report import (render_colab, render_colab_compare, render_intrinsic, render_nanogpt_swap,
-                                          render_throughput,
+from tokenisers.benchmarks.report import (SPACE_PREFIX_SWAP, render_colab, render_colab_compare, render_intrinsic,
+                                          render_nanogpt_swap, render_nanogpt_swap_space_prefix, render_throughput,
                                           render_tokka)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +46,10 @@ SECTIONS["throughput_local"] = ("benchmarks/results/throughput/local/throughput.
                                 "tokenisers.benchmarks.throughput --job-dir DIR")
 SECTIONS["nanogpt_swap"] = ("benchmarks/results/nanogpt_swap/nanogpt_swap.json", render_nanogpt_swap,
                             "tokenisers.benchmarks.nanogpt_swap --job-dir DIR --gpu L4")
+SECTIONS["nanogpt_swap_sp"] = (("benchmarks/results/nanogpt_swap/nanogpt_swap.json", SPACE_PREFIX_SWAP),
+                               render_nanogpt_swap_space_prefix,
+                               "tokenisers.benchmarks.nanogpt_swap --job-dir DIR --gpu A100 "
+                               "--output-dir benchmarks/results/nanogpt_swap_sp")
 
 
 def render_readme(text: str, root: Path = ROOT) -> str:
@@ -52,11 +58,11 @@ def render_readme(text: str, root: Path = ROOT) -> str:
         i = text.index(begin) + len(begin)
         j = text.index(end, i)
         rels = (rels,) if isinstance(rels, str) else rels
-        missing = [rel for rel in rels if not (root / rel).is_file()]
-        if not missing:
-            body = render(*(json.loads((root / rel).read_text(encoding="utf-8")) for rel in rels))
+        if (root / rels[0]).is_file():
+            docs = [json.loads(p.read_text(encoding="utf-8")) if p.is_file() else None for p in (root / r for r in rels)]
+            body = render(*docs)
         else:
-            body = (f"_Not yet run. No results committed (`{missing[0]}` is missing). Run `uv run python -m {module}`, then "
+            body = (f"_Not yet run. No results committed (`{rels[0]}` is missing). Run `uv run python -m {module}`, then "
                     "`uv run python scripts/gen_readme_tables.py`._")
         text = text[:i] + "\n" + body + "\n" + text[j:]
     return text

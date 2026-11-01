@@ -7,6 +7,7 @@ use tokenisers_core::curricula::super_bpe::{SuperBpeConfig, SuperBpeTrainer};
 use tokenisers_core::engine::bottom_up::{BottomUpModel, BottomUpTrainer};
 use tokenisers_core::engine::unigram::UnigramTrainer;
 use tokenisers_core::export::huggingface::{HfTokenizerJson, WHITESPACE_RANGES};
+use tokenisers_core::pretokenizer::Pretokenizer;
 use tokenisers_core::scoring::*;
 use tokenisers_core::vocab::TokenId;
 use tokenizers::{OffsetReferential, OffsetType, PreTokenizedString, PreTokenizer, Tokenizer};
@@ -248,4 +249,155 @@ fn export_keeps_merges_inside_unicode_whitespace_segments() {
     assert_eq!(model.encode(s.as_bytes()), per_segment);
     let tok = hf(&HfTokenizerJson::from_bpe_model(&model, None));
     assert_eq!(hf_ids(&tok, s), per_segment);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Space-prefix mode: the exported Split regex must reproduce `Pretokenizer::SpacePrefix`.
+// ---------------------------------------------------------------------------------------------
+
+/// Word counts in `pretokenizer` segments, as the Python binding builds them.
+fn word_counts_in(docs: &[String], pretokenizer: Pretokenizer) -> Vec<(Vec<u8>, u64)> {
+    let mut counts: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
+    for d in docs {
+        for seg in pretokenizer.segment_text(d) {
+            *counts.entry(seg).or_insert(0) += 1;
+        }
+    }
+    counts.into_iter().collect()
+}
+
+/// Extra probes for the space rules: a space before tabs, newlines and Unicode spaces, runs of
+/// spaces before and after words, and spaces at both ends.
+const SPACE_TESTS: &[&str] = &[
+    "a \tb",
+    "a\t b",
+    "a \nb \n c",
+    "x \u{3000}y\u{3000} z",
+    "x\u{a0} y \u{a0}z",
+    "  two leading",
+    "two trailing  ",
+    "   ",
+    " \n ",
+    "\n\n\tif x:\n    return  y",
+    "a \u{200b}b \u{feff}c",
+    " 中文 文本 ",
+];
+
+fn random_text(rng: &mut fastrand::Rng) -> String {
+    let ws: Vec<char> = WHITESPACE_RANGES.iter().flat_map(|&(lo, hi)| lo..=hi).collect();
+    let other = ['a', 'Z', '1', '.', '中', 'é', '🚀', '\u{200b}', '\u{feff}', '\u{180e}', '\u{1c}', '\u{ad}'];
+    (0..rng.usize(0..30))
+        .map(|_| match rng.u8(0..10) {
+            0..=3 => ' ',
+            4..=5 => ws[rng.usize(0..ws.len())],
+            _ => other[rng.usize(0..other.len())],
+        })
+        .collect()
+}
+
+fn hf_splits(tok: &Tokenizer, s: &str) -> Vec<(usize, usize)> {
+    let mut pts = PreTokenizedString::from(s);
+    tok.get_pre_tokenizer().expect("pre_tokenizer").pre_tokenize(&mut pts).unwrap();
+    pts.get_splits(OffsetReferential::Original, OffsetType::Byte)
+        .into_iter()
+        .map(|(_, offsets, _)| offsets)
+        .collect()
+}
+
+fn native_splits(pretokenizer: Pretokenizer, s: &str) -> Vec<(usize, usize)> {
+    let mut pos = 0;
+    pretokenizer
+        .segment_bytes(s.as_bytes())
+        .into_iter()
+        .map(|seg| {
+            pos += seg.len();
+            (pos - seg.len(), pos)
+        })
+        .collect()
+}
+
+#[test]
+fn hf_split_regex_reproduces_both_pretokenizers_on_random_text() {
+    let wc = word_counts(&corpus_docs());
+    let mut rng = fastrand::Rng::with_seed(3);
+    let random: Vec<String> = (0..20_000).map(|_| random_text(&mut rng)).collect();
+    let mut probe = String::from("a");
+    for &(lo, hi) in &WHITESPACE_RANGES {
+        for c in lo..=hi {
+            probe.extend([' ', c, 'b', c, ' ', 'b']);
+        }
+    }
+    for p in [Pretokenizer::Whitespace, Pretokenizer::SpacePrefix] {
+        let model = BottomUpTrainer::new(&BpeScorer, 300).with_pretokenizer(p).train(&wc).unwrap();
+        let tok = hf(&HfTokenizerJson::from_bpe_model(&model, None));
+        let texts = TESTS.iter().chain(SPACE_TESTS).map(|s| s.to_string()).chain([probe.clone()]).chain(random.clone());
+        for s in texts {
+            assert_eq!(hf_splits(&tok, &s), native_splits(p, &s), "{p:?} for {s:?}");
+        }
+    }
+}
+
+#[test]
+fn space_prefix_bpe_family_export_matches_native_ids() {
+    let wc = word_counts_in(&corpus_docs(), Pretokenizer::SpacePrefix);
+    let train = |scorer: &dyn PairScorer| {
+        BottomUpTrainer::new(scorer, 420).with_pretokenizer(Pretokenizer::SpacePrefix).train(&wc).unwrap()
+    };
+    let models = [
+        ("bpe_frequency", train(&BpeScorer)),
+        ("wordpiece", train(&WordPieceScorer::default())),
+        ("wp_bpe_base", train(&WpBpeBaseScorer::default())),
+        ("wp_bpe_ft", train(&WpBpeFtScorer::default())),
+        ("wp_bpe_pig", train(&WpBpePigScorer::default())),
+        ("wp_bpe_scp", train(&WpBpeScpScorer::default())),
+        ("wp_bpe_npmi", train(&WpBpeNpmiScorer::default())),
+        ("wp_bpe_ppig", train(&WpBpePpigScorer::default())),
+        ("mdl", train(&MdlScorer::default())),
+        ("length_penalized", train(&LengthPenalizedScorer::default())),
+    ];
+    let mut rng = fastrand::Rng::with_seed(4);
+    let random: Vec<String> = (0..300).map(|_| random_text(&mut rng)).collect();
+    let mut spaced = 0;
+    for (name, model) in models {
+        assert!(model.pretokenize && model.pretokenizer == Pretokenizer::SpacePrefix, "{name}");
+        spaced += model.merges.iter().filter(|m| model.vocab.get_bytes(m.2).unwrap().starts_with(b" ")).count();
+        let json = HfTokenizerJson::from_bpe_model(&model, None);
+        assert_eq!(json.pretokenizer().unwrap(), Some(Pretokenizer::SpacePrefix));
+        let reparsed: HfTokenizerJson = serde_json::from_str(&json.to_json_string().unwrap()).unwrap();
+        assert_eq!(reparsed.pretokenizer().unwrap(), Some(Pretokenizer::SpacePrefix));
+        let tok = hf(&json);
+        assert_parity(name, &tok, |s| model.encode(s.as_bytes()));
+        for s in SPACE_TESTS.iter().copied().chain(random.iter().map(String::as_str)) {
+            assert_eq!(model.encode(s.as_bytes()), hf_ids(&tok, s), "[{name}] for {s:?}");
+        }
+    }
+    assert!(spaced > 50, "the family must learn space-prefixed tokens: {spaced}");
+}
+
+#[test]
+fn space_prefix_unigram_export_matches_native_ids() {
+    let wc = word_counts_in(&corpus_docs(), Pretokenizer::SpacePrefix);
+    let mut model = UnigramTrainer::new(500, 0.2).train(&wc).unwrap();
+    model.pretokenizer = Pretokenizer::SpacePrefix;
+    let json = HfTokenizerJson::from_unigram_model(&model, None);
+    assert_eq!(json.pretokenizer().unwrap(), Some(Pretokenizer::SpacePrefix));
+    let tok = hf(&json);
+    assert_parity("unigram space_prefix", &tok, |s| model.encode(s.as_bytes()));
+    let mut rng = fastrand::Rng::with_seed(5);
+    for s in SPACE_TESTS.iter().map(|s| s.to_string()).chain((0..300).map(|_| random_text(&mut rng))) {
+        assert_eq!(model.encode(s.as_bytes()), hf_ids(&tok, &s), "for {s:?}");
+    }
+    assert!(model.encode(b" the").len() < 4, "space-prefixed pieces must be learned");
+}
+
+#[test]
+fn whitespace_export_is_unchanged_by_the_new_mode() {
+    let model = &bpe_models()[0].1;
+    assert_eq!(model.pretokenizer, Pretokenizer::Whitespace);
+    let json = HfTokenizerJson::from_bpe_model(model, None);
+    let v: serde_json::Value = serde_json::from_str(&json.to_json_string().unwrap()).unwrap();
+    // The exact Split pattern every earlier export wrote.
+    let expected = r"[\x{9}-\x{D}\x{20}\x{85}\x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}-\x{2029}\x{202F}\x{205F}\x{3000}]+";
+    assert_eq!(v["pre_tokenizer"]["pretokenizers"][0]["pattern"]["Regex"], expected);
+    assert_eq!(json.pretokenizer().unwrap(), Some(Pretokenizer::Whitespace));
 }

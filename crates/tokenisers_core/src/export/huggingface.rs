@@ -7,6 +7,7 @@ use std::path::Path;
 use crate::engine::bottom_up::BottomUpModel;
 use crate::engine::unigram::UnigramModel;
 use crate::error::{Result, TokeniserError};
+use crate::pretokenizer::Pretokenizer;
 use crate::vocab::{Vocabulary, BASE_VOCAB_SIZE};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -45,7 +46,7 @@ pub enum SplitPattern {
 }
 
 /// Code-point ranges of Unicode `White_Space`, i.e. exactly the chars where `char::is_whitespace`
-/// is true. `SuperBpeTrainer::segment_text` splits on these.
+/// is true. `Pretokenizer` segmentation splits on these.
 pub const WHITESPACE_RANGES: [(char, char); 10] = [
     ('\u{9}', '\u{D}'),
     ('\u{20}', '\u{20}'),
@@ -59,9 +60,9 @@ pub const WHITESPACE_RANGES: [(char, char); 10] = [
     ('\u{3000}', '\u{3000}'),
 ];
 
-/// Oniguruma regex matching maximal whitespace runs, as `segment_text` defines them.
-pub fn whitespace_run_regex() -> String {
-    let class: String = WHITESPACE_RANGES
+/// The `WHITESPACE_RANGES` inside an Oniguruma character class.
+fn whitespace_class() -> String {
+    WHITESPACE_RANGES
         .iter()
         .map(|&(lo, hi)| {
             if lo == hi {
@@ -70,8 +71,33 @@ pub fn whitespace_run_regex() -> String {
                 format!("\\x{{{:X}}}-\\x{{{:X}}}", lo as u32, hi as u32)
             }
         })
-        .collect();
-    format!("[{class}]+")
+        .collect()
+}
+
+/// Oniguruma regex matching maximal whitespace runs, as `Pretokenizer::Whitespace` defines them.
+pub fn whitespace_run_regex() -> String {
+    format!("[{}]+", whitespace_class())
+}
+
+/// Oniguruma regex whose matches are exactly the `Pretokenizer::SpacePrefix` segments (they tile
+/// the text, so `Isolated` leaves no gaps). With W = whitespace and N = non-whitespace, at the
+/// start of a segment it matches, in order:
+/// - ` ?N+`: a word, with the space right before it if there is one;
+/// - `W+?(?= N)`: the whitespace run before a word up to the space the word takes (lazy: the
+///   shortest W+ followed by " N" ends right before the run's last char, a space);
+/// - `W+`: any other whitespace run, whole (at the end of the text, or ending in a whitespace
+///   char other than U+0020 before a word).
+pub fn space_prefix_regex() -> String {
+    let ws = whitespace_class();
+    format!("\\x{{20}}?[^{ws}]+|[{ws}]+?(?=\\x{{20}}[^{ws}])|[{ws}]+")
+}
+
+/// The `Split` regex reproducing `pretokenizer`'s segmentation.
+pub fn split_regex(pretokenizer: Pretokenizer) -> String {
+    match pretokenizer {
+        Pretokenizer::Whitespace => whitespace_run_regex(),
+        Pretokenizer::SpacePrefix => space_prefix_regex(),
+    }
 }
 
 /// Raw bytes -> GPT-2 byte-level chars on the whole input (no GPT-2 regex: native encoding has
@@ -84,16 +110,16 @@ fn byte_level() -> PreTokenizerConfig {
     }
 }
 
-/// HF equivalent of native pre-tokenization: split into `segment_text` segments (whitespace runs
-/// isolated), then byte-level map. Without `pretokenize` (SuperBPE) the whole text is one word.
-fn pre_tokenizer(pretokenize: bool) -> PreTokenizerConfig {
-    if !pretokenize {
+/// HF equivalent of native pre-tokenization: split into `pretokenizer` segments, then byte-level
+/// map. Without a pretokenizer (SuperBPE) the whole text is one word.
+fn pre_tokenizer(pretokenizer: Option<Pretokenizer>) -> PreTokenizerConfig {
+    let Some(pretokenizer) = pretokenizer else {
         return byte_level();
-    }
+    };
     PreTokenizerConfig::Sequence {
         pretokenizers: vec![
             PreTokenizerConfig::Split {
-                pattern: SplitPattern::Regex(whitespace_run_regex()),
+                pattern: SplitPattern::Regex(split_regex(pretokenizer)),
                 behavior: "Isolated".into(),
                 invert: false,
             },
@@ -217,7 +243,7 @@ impl HfTokenizerJson {
             padding: None,
             added_tokens: added_tokens(vocab),
             normalizer: None,
-            pre_tokenizer: pre_tokenizer(model.pretokenize),
+            pre_tokenizer: pre_tokenizer(model.pretokenize.then_some(model.pretokenizer)),
             post_processor: None,
             decoder: DecoderConfig::ByteLevel {
                 add_prefix_space: false,
@@ -258,7 +284,7 @@ impl HfTokenizerJson {
             padding: None,
             added_tokens: added_tokens(&model.vocab),
             normalizer: None,
-            pre_tokenizer: pre_tokenizer(true),
+            pre_tokenizer: pre_tokenizer(Some(model.pretokenizer)),
             post_processor: None,
             decoder: DecoderConfig::ByteLevel {
                 add_prefix_space: false,
@@ -273,29 +299,39 @@ impl HfTokenizerJson {
         }
     }
 
-    /// `BottomUpModel::pretokenize` for a model loaded from this file: false for the bare
-    /// whole-text byte-level pre-tokenizer (what SuperBPE exports), true for the whitespace-run
-    /// split + byte level that the other exports write. Native encoding implements nothing else, so
+    /// `BottomUpModel::pretokenize` for a model loaded from this file (see `pretokenizer`).
+    pub fn pretokenize(&self) -> Result<bool> {
+        self.pretokenizer().map(|p| p.is_some())
+    }
+
+    /// The segmentation of a model loaded from this file: None for the bare whole-text byte-level
+    /// pre-tokenizer (what SuperBPE exports), `Some(p)` for the `split_regex(p)` split + byte level
+    /// that the other exports write. Native encoding implements nothing else, so
     /// any other pre-tokenizer (GPT-2 regex, `add_prefix_space`, other split patterns) or any
     /// normalizer is an error rather than a silently different encoding.
-    pub fn pretokenize(&self) -> Result<bool> {
+    pub fn pretokenizer(&self) -> Result<Option<Pretokenizer>> {
         let bare = |p: &PreTokenizerConfig| {
             matches!(
                 p,
                 PreTokenizerConfig::ByteLevel { add_prefix_space: false, use_regex: false, .. }
             )
         };
+        let split = |re: &str| {
+            [Pretokenizer::Whitespace, Pretokenizer::SpacePrefix]
+                .into_iter()
+                .find(|&p| split_regex(p) == re)
+        };
         let flag = match &self.pre_tokenizer {
-            p if bare(p) => Some(false),
+            p if bare(p) => Some(None),
             PreTokenizerConfig::Sequence { pretokenizers } => match pretokenizers.as_slice() {
                 [PreTokenizerConfig::Split {
                     pattern: SplitPattern::Regex(re),
                     behavior,
                     invert: false,
                 }, byte]
-                    if *re == whitespace_run_regex() && behavior == "Isolated" && bare(byte) =>
+                    if split(re).is_some() && behavior == "Isolated" && bare(byte) =>
                 {
-                    Some(true)
+                    Some(split(re))
                 }
                 _ => None,
             },

@@ -5,6 +5,7 @@ pub mod error;
 pub mod export;
 pub mod index;
 pub mod inference;
+pub mod pretokenizer;
 pub mod scoring;
 pub mod vocab;
 
@@ -20,6 +21,7 @@ pub use engine::{
 pub use error::{Result, TokeniserError};
 pub use export::huggingface::HfTokenizerJson;
 pub use index::{InvertedIndex, OccurrenceRef, Pair};
+pub use pretokenizer::Pretokenizer;
 pub use inference::{
     byte_entropy::{ByteEntropyConfig, ByteEntropyPatcher},
     unigram_sample::{LatticeEdge, UnigramSampler},
