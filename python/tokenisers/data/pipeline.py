@@ -446,9 +446,9 @@ class DataPipeline:
 
         manifest, splits = self._build(config, splitter)
         manifest["key"] = key
-        dataset = self._write(root, manifest, splits)
-        if not manifest["complete"]:
-            msg = f"dataset {root} is incomplete: " + "; ".join(e["error"] for e in manifest["errors"])
+        dataset = self._write(root, manifest, splits)  # may be a concurrent builder's dataset
+        if not dataset.manifest["complete"]:
+            msg = f"dataset {root} is incomplete: " + "; ".join(e["error"] for e in dataset.manifest["errors"])
             logger.warning(msg)
             if not allow_partial:
                 raise IncompleteDatasetError(msg + " (pass allow_partial=True to use it)", dataset)
@@ -644,6 +644,10 @@ class DataPipeline:
                     "sha256": _sha256_file(path),
                 }
             (tmp / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+            done = self._load(root)  # a concurrent builder of this key finished first: keep its dataset
+            if done is not None and done.manifest["complete"]:
+                shutil.rmtree(tmp, ignore_errors=True)
+                return done
             if root.exists():  # stale, corrupt or incomplete: move aside, then drop
                 trash = Path(tempfile.mkdtemp(prefix=f".old-{root.name}-", dir=self.cache_dir))
                 os.replace(root, trash / "d")
@@ -651,7 +655,7 @@ class DataPipeline:
             try:
                 os.replace(tmp, root)
             except OSError:
-                # ponytail: concurrent builders of one key -> first rename wins, we reuse it.
+                # Another builder renamed its dataset in after the check above: reuse it.
                 winner = self._load(root)
                 if winner is None:
                     raise

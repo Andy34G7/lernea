@@ -102,6 +102,25 @@ def test_corrupted_cache_file_is_detected_and_rebuilt(tmp_path):
     assert again.path("val").read_bytes() == good
 
 
+def test_a_builder_keeps_the_dataset_a_concurrent_builder_finished_first(tmp_path):
+    """Builder B is still building when builder A writes the same key: B returns A's dataset instead
+    of moving it aside and deleting it (which also left a window with no manifest at the root)."""
+    b = DataPipeline(cache_dir=tmp_path, force_offline=True)
+    build, first = b._build, {}
+
+    def a_finishes_meanwhile(config, splitter):
+        out = build(config, splitter)
+        first["a"] = DataPipeline(cache_dir=tmp_path, force_offline=True).prepare(train_bytes=20_000)
+        first["inode"] = os.stat(first["a"].root / "manifest.json").st_ino
+        return out
+
+    b._build = a_finishes_meanwhile
+    ds = b.prepare(train_bytes=20_000)
+    assert ds.root == first["a"].root and ds.manifest == first["a"].manifest
+    assert os.stat(ds.root / "manifest.json").st_ino == first["inode"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == [ds.root.name]
+
+
 def test_failed_write_leaves_no_half_written_dataset(tmp_path, monkeypatch):
     pipeline = DataPipeline(cache_dir=tmp_path, force_offline=True)
     real_sha = pl._sha256_file
