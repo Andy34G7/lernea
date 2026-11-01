@@ -25,6 +25,7 @@ def test_readme_tables_match_committed_results(repo_root):
     gen = _gen_module(repo_root)
     readme = (repo_root / "README.md").read_text(encoding="utf-8")
     assert gen.render_readme(readme, repo_root) == readme, "run: uv run python scripts/gen_readme_tables.py"
+    assert "_Not yet run." not in readme  # every section, the GPT-2 tokenizer swap included, renders committed JSON
 
 
 def _meta(**kw):
