@@ -203,7 +203,8 @@ def test_reloads_a_tokenizer_json_re_saved_by_hugging_face(saved, tmp_path):
 
 
 UNSUPPORTED = {
-    "gpt2 regex": {"pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": False, "trim_offsets": False, "use_regex": True}},
+    "gpt2 regex with prefix space": {"pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": True, "trim_offsets": False,
+                                                        "use_regex": True}},
     "prefix space": {"pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": True, "trim_offsets": False, "use_regex": False}},
     "other split": {"pre_tokenizer": {"type": "Sequence", "pretokenizers": [
         {"type": "Split", "pattern": {"Regex": "\\s+"}, "behavior": "Isolated", "invert": False},

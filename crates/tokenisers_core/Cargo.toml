@@ -16,6 +16,7 @@ ahash = { workspace = true }
 fastrand = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
+fancy-regex = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

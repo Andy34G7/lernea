@@ -78,7 +78,14 @@ maximal run of Unicode whitespace, so every space is a token of its own. `pretok
 is GPT-2-style: a word takes the one U+0020 space right before it (`"a  b"` -> `a`, ` `, ` b`),
 while newlines, tabs, other Unicode spaces and all but the last space of a run stay in
 whitespace-only segments; unlike GPT-2's `\s+(?!\S)| ?\S+` it does not split letters, digits and
-punctuation apart. Bytes that are not valid UTF-8 count as non-whitespace in both modes.
+punctuation apart. `pretokenizer="gpt2"` is GPT-2's exact pre-split: the matches of tiktoken's gpt2
+`pat_str` (`'(?:[sdmt]|ll|ve|re)| ?\p{L}++| ?\p{N}++| ?[^\s\p{L}\p{N}]++|\s++$|\s+(?!\S)|\s`, run with
+fancy-regex as tiktoken's Rust core does), so contractions, letter runs, digit runs and punctuation
+runs are separate segments, each with the space before it (`"it's 2024!"` -> `it`, `'s`, ` 2024`,
+`!`); its export is Hugging Face's own `ByteLevel(use_regex=true)`. On all 14,982 FineWeb val
+documents of the tokenizer swap the native split equals Hugging Face's and tiktoken's, and GPT-2's
+merges loaded natively give tiktoken's ids. Bytes that are not valid UTF-8 count as non-whitespace in
+every mode; in `gpt2` each invalid sequence is split exactly like one U+FFFD (a symbol).
 
 ---
 
@@ -891,6 +898,31 @@ uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap-sp --gpu
 | `mdl_bits` | 2.718 | 4.689 | 1.9684 | 1.7067 | -0.2617 |
 | `gpt2` (reference) | 4.436 | | 1.6851 | | |
 <!-- END GENERATED: nanogpt_swap_sp -->
+
+**Pre-split and data-scaling ablation.** Two follow-ups to the space-prefix retrain in one job of six
+tokenizers, with the same recipe (600 steps, lr 6e-4, val every 100), train stream and val
+documents: three variants retrained with `pretokenizer="gpt2"` (`<variant>_g2`: GPT-2's exact regex
+pre-split, the same 50 MB of text), and three space-prefix variants trained on 300 MB instead of 50
+(`<variant>_sp300`: the first train documents up to 300 MB, an extension of the same ordered stream
+whose first documents are the 50 MB, checked by sha256 like their disjointness from val). Training
+takes about 60-75 bytes of RAM per byte of text, about 20 GB at 300 MB, so `train_tokenizers` trains
+those on a Colab VM (default L4, 53 GB RAM) and downloads each tokenizer as it finishes. All 8 `_g2`
+tokenizers are prepared locally in a pool, and any three of them make the job with any three
+`_sp300`:
+
+```bash
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir POOL_G2 --prepare-only --tokenizers bpe_frequency_g2 \
+  wp_bpe_pig_g2 wp_bpe_ppig_g2 wp_bpe_npmi_g2 unigram_lm_g2 length_penalized_g2 morpheme_bpe_g2 mdl_bits_g2
+uv run python -m tokenisers.benchmarks.nanogpt_swap.train_tokenizers --job-dir POOL_SP300 --variants A B C  # Colab L4
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir JOB --prepare-only --from-pool POOL_G2 POOL_SP300 \
+  --tokenizers X_g2 Y_g2 Z_g2 A_sp300 B_sp300 C_sp300
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir JOB --gpu A100 --steps 600 --eval-every 100 \
+  --output-dir benchmarks/results/nanogpt_swap_ablation
+```
+
+<!-- BEGIN GENERATED: nanogpt_swap_ablation -->
+_Not yet run: no `benchmarks/results/nanogpt_swap_ablation/nanogpt_swap.json` is committed, so there is nothing to compare._
+<!-- END GENERATED: nanogpt_swap_ablation -->
 
 ### Known limitations
 

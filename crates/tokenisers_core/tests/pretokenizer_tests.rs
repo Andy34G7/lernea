@@ -1,5 +1,6 @@
-//! `Pretokenizer` segmentation: the default `Whitespace` mode is the old maximal-run split, and
-//! `SpacePrefix` (GPT-2-style) lets a word take the one U+0020 space before it.
+//! `Pretokenizer` segmentation: the default `Whitespace` mode is the old maximal-run split,
+//! `SpacePrefix` (GPT-2-style) lets a word take the one U+0020 space before it, and `Gpt2` is
+//! GPT-2's exact regex pre-split.
 mod common;
 
 use std::collections::BTreeMap;
@@ -8,7 +9,8 @@ use tokenisers_core::curricula::super_bpe::SuperBpeTrainer;
 use tokenisers_core::engine::bottom_up::{BottomUpModel, BottomUpTrainer};
 use tokenisers_core::engine::unigram::{CompactTrie, UnigramTrainer};
 use tokenisers_core::inference::unigram_sample::UnigramSampler;
-use tokenisers_core::pretokenizer::Pretokenizer::{self, SpacePrefix, Whitespace};
+use tokenisers_core::pretokenizer::Pretokenizer::{self, Gpt2, SpacePrefix, Whitespace};
+use tokenisers_core::pretokenizer::GPT2_PATTERN;
 use tokenisers_core::scoring::BpeScorer;
 
 fn segs(p: Pretokenizer, bytes: &[u8]) -> Vec<Vec<u8>> {
@@ -261,5 +263,250 @@ fn rebuilt_models_default_to_whitespace() {
     assert!(!model.pretokenize && model.pretokenizer == Whitespace);
     assert_eq!(Pretokenizer::from_name("space_prefix").unwrap(), SpacePrefix);
     assert_eq!(Pretokenizer::from_name("whitespace").unwrap().name(), "whitespace");
-    assert!(Pretokenizer::from_name("gpt2").is_err());
+    assert_eq!(Pretokenizer::from_name("gpt2").unwrap(), Gpt2);
+    assert!(Pretokenizer::from_name("GPT2").is_err() && Pretokenizer::from_name("gpt-2").is_err());
+    for p in Pretokenizer::ALL {
+        assert_eq!(Pretokenizer::from_name(p.name()).unwrap(), p);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Gpt2: GPT-2's regex pre-split
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn gpt2_pattern_is_tiktokens_gpt2_pat_str() {
+    // tiktoken 0.14.0, tiktoken_ext/openai_public.py: r50k_pat_str, the "gpt2" encoding's pat_str.
+    assert_eq!(
+        GPT2_PATTERN,
+        r"'(?:[sdmt]|ll|ve|re)| ?\p{L}++| ?\p{N}++| ?[^\s\p{L}\p{N}]++|\s++$|\s+(?!\S)|\s"
+    );
+}
+
+#[test]
+fn gpt2_edge_cases() {
+    let cases: &[(&str, &[&str])] = &[
+        ("", &[]),
+        ("hello", &["hello"]),
+        ("the cat", &["the", " cat"]),
+        (" lead", &[" lead"]),
+        ("  lead", &[" ", " lead"]),
+        ("trail ", &["trail", " "]),
+        ("trail  ", &["trail", "  "]),
+        ("   ", &["   "]),
+        ("a  b", &["a", " ", " b"]),
+        ("a   b", &["a", "  ", " b"]),
+        // \s+(?!\S): a whitespace run before a word gives up only its last char, and only a
+        // U+0020 joins the word; any other last char is a segment of its own.
+        ("a \nb", &["a", " ", "\n", "b"]),
+        ("a \n b", &["a", " \n", " b"]),
+        ("a\n\nb", &["a", "\n", "\n", "b"]),
+        ("a\n\n b", &["a", "\n\n", " b"]),
+        ("a\tb", &["a", "\t", "b"]),
+        ("a\t\t  b", &["a", "\t\t ", " b"]),
+        ("a\r\n\r\nb", &["a", "\r\n\r", "\n", "b"]),
+        ("x\n", &["x", "\n"]),
+        ("x \n ", &["x", " \n "]),
+        ("中文\u{3000}文本", &["中文", "\u{3000}", "文本"]),
+        ("中文 \u{3000}文本", &["中文", " ", "\u{3000}", "文本"]),
+        ("a\u{a0} b", &["a", "\u{a0}", " b"]),
+        // Contractions: only these seven, lower case, and before anything; a space never joins one.
+        ("it's", &["it", "'s"]),
+        ("don't they're we've I'm you'll he'd", &["don", "'t", " they", "'re", " we", "'ve", " I", "'m", " you", "'ll", " he", "'d"]),
+        ("IT'S", &["IT", "'", "S"]),
+        ("'s", &["'s"]),
+        (" 's", &[" '", "s"]),
+        ("x 'll", &["x", " '", "ll"]),
+        ("'sa", &["'s", "a"]),
+        ("rock'n'roll", &["rock", "'", "n", "'", "roll"]),
+        ("''s", &["''", "s"]),
+        ("o'clock's", &["o", "'", "clock", "'s"]),
+        ("it’s", &["it", "’", "s"]), // U+2019 is not an apostrophe to GPT-2
+        // Digits: \p{N} runs, never joined with letters or punctuation.
+        ("abc123def", &["abc", "123", "def"]),
+        ("2024-11-01", &["2024", "-", "11", "-", "01"]),
+        (" 3.14159", &[" 3", ".", "14159"]),
+        ("$1,299.00", &["$", "1", ",", "299", ".", "00"]),
+        ("x²+½ ⅷ ٣٤ १२", &["x", "²", "+", "½", " ⅷ", " ٣٤", " १२"]),
+        // Punctuation and symbol runs, with the space before them.
+        ("hello, world!!!", &["hello", ",", " world", "!!!"]),
+        ("a -- b", &["a", " --", " b"]),
+        ("f(x): pass", &["f", "(", "x", "):", " pass"]),
+        ("emoji 🚀🔥 party", &["emoji", " 🚀🔥", " party"]),
+        ("👩‍👩‍👧", &["👩‍👩‍👧"]),
+        ("e\u{301}t\u{e9}", &["e", "\u{301}", "t\u{e9}"]), // a combining mark is \p{M}, not \p{L}
+        // Unicode letters: every script's \p{L}, including CJK, kana and Hangul.
+        ("Héllo wörld naïve", &["Héllo", " wörld", " naïve"]),
+        ("日本語のテキスト、中文文本。", &["日本語のテキスト", "、", "中文文本", "。"]),
+        ("한국어 텍스트", &["한국어", " 텍스트"]),
+        ("Привет, мир", &["Привет", ",", " мир"]),
+        // Not White_Space: zero-width space, BOM, Mongolian vowel separator are symbols (Cf).
+        ("a \u{200b}b", &["a", " \u{200b}", "b"]),
+    ];
+    for &(text, expected) in cases {
+        assert_eq!(strs(Gpt2, text), expected, "gpt2 {text:?}");
+    }
+}
+
+/// `Gpt2` segments of the original GPT-2 release pattern, run by fancy-regex directly: an
+/// independent check of tiktoken's "equivalent, but executes faster" rewrite and of the cutting.
+fn original_gpt2(text: &str) -> Vec<String> {
+    let re = fancy_regex::Regex::new(r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+").unwrap();
+    re.find_iter(text).map(|m| m.unwrap().as_str().to_string()).collect()
+}
+
+fn random_text(rng: &mut fastrand::Rng) -> String {
+    const PIECES: &[&str] = &[
+        " ", " ", " ", "  ", "\t", "\n", "\r\n", "\u{3000}", "\u{a0}", "\u{2028}", "\u{85}", "a", "bc", "Z", "x.",
+        "中", "é", "e\u{301}", "1", "42", "½", "²", "٣", "'", "'s", "'t", "'re", "'ve", "'m", "'ll", "'d", "'S", "’",
+        "!", "...", "-", "$", "🚀", "\u{200b}", "\u{feff}", "\u{fffd}", "_", "#",
+    ];
+    (0..rng.usize(0..30)).map(|_| PIECES[rng.usize(0..PIECES.len())]).collect()
+}
+
+#[test]
+fn gpt2_segments_tile_the_text_and_match_the_original_pattern() {
+    let mut rng = fastrand::Rng::with_seed(21);
+    for _ in 0..30_000 {
+        let text = random_text(&mut rng);
+        let got = strs(Gpt2, &text);
+        assert_eq!(got.concat(), text);
+        assert!(got.iter().all(|s| !s.is_empty()), "empty segment for {text:?}");
+        assert_eq!(got, original_gpt2(&text), "for {text:?}");
+        // Every segment segments to itself, so trained words are single segments (`pretokenize`).
+        for s in &got {
+            assert_eq!(strs(Gpt2, s), [s.clone()], "segment {s:?} of {text:?} is not stable");
+        }
+    }
+}
+
+#[test]
+fn gpt2_reads_invalid_utf8_as_one_replacement_char_per_invalid_sequence() {
+    let cases: &[(&[u8], &[&[u8]])] = &[
+        (b"\xff", &[b"\xff"]),
+        (b"a\xffb", &[b"a", b"\xff", b"b"]),
+        (b"a \xff\xfe!b", &[b"a", b" \xff\xfe!", b"b"]),
+        (b"\xe3\x80 x", &[b"\xe3\x80", b" x"]),
+        (b"it\xc3's", &[b"it", b"\xc3'", b"s"]), // a symbol before "'s" takes the apostrophe
+        (b"1\x802", &[b"1", b"\x80", b"2"]),
+        (b"\xff  \x80", &[b"\xff", b" ", b" \x80"]),
+        (b"\xff\n", &[b"\xff", b"\n"]),
+        ("\u{fffd}\u{ff}".as_bytes(), &["\u{fffd}".as_bytes(), "\u{ff}".as_bytes()]),
+        (b"\xef\xbf\xbd\xff", &[b"\xef\xbf\xbd\xff"]),
+    ];
+    for &(bytes, expected) in cases {
+        assert_eq!(segs(Gpt2, bytes), expected, "gpt2 {bytes:?}");
+    }
+    // In general: the segments of the text with every invalid sequence replaced by U+FFFD, mapped
+    // back to the original bytes.
+    let mut rng = fastrand::Rng::with_seed(22);
+    for _ in 0..10_000 {
+        let bytes = random_bytes(&mut rng);
+        let got = segs(Gpt2, &bytes);
+        assert_eq!(got.concat(), bytes);
+        let replaced: Vec<String> = got.iter().map(|s| String::from_utf8_lossy(s).into_owned()).collect();
+        // (Also: no invalid sequence is split, or its two parts would read as two U+FFFD.)
+        assert_eq!(replaced, strs(Gpt2, &String::from_utf8_lossy(&bytes)), "for {bytes:?}");
+    }
+}
+
+#[test]
+fn gpt2_completes_a_whitespace_run_too_long_for_the_regex() {
+    // fancy-regex fails with a stack overflow on ~1M whitespace chars before a word (tiktoken
+    // panics); the split must go on exactly as `\s+(?!\S)` defines it.
+    let n = 1_500_000;
+    for (ws, word, expected_tail) in [(" ", "x", vec![" x".to_string()]), ("\n", "ab", vec!["\n".into(), "ab".into()])] {
+        let text = format!("a{}{word}", ws.repeat(n));
+        let got = strs(Gpt2, &text);
+        let mut expected = vec!["a".to_string(), ws.repeat(n - 1)];
+        expected.extend(expected_tail);
+        assert_eq!(got, expected, "{ws:?} run");
+    }
+    let text = format!("x{}", " \t".repeat(n));
+    assert_eq!(strs(Gpt2, &text), ["x".to_string(), " \t".repeat(n)]);
+    let text = format!("{}\u{3000}y z", " ".repeat(n));
+    assert_eq!(strs(Gpt2, &text), [" ".repeat(n), "\u{3000}".into(), "y".into(), " z".into()]);
+}
+
+#[test]
+fn gpt2_round_trips_losslessly_through_a_trained_model() {
+    let text = common::pseudo_text(3, 30_000) + " it's 1999, don't 3.14 — naïve!! \n\n  end";
+    let mut counts: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
+    for seg in Gpt2.segment_text(&text) {
+        *counts.entry(seg).or_insert(0) += 1;
+    }
+    let corpus: Vec<(Vec<u8>, u64)> = counts.into_iter().collect();
+    let model = BottomUpTrainer::new(&BpeScorer, 600).with_pretokenizer(Gpt2).train(&corpus).unwrap();
+    assert!(model.pretokenize && model.pretokenizer == Gpt2);
+    // No learned token mixes letters with digits or punctuation (GPT-2's sub-split).
+    for id in 256..model.vocab.len() as u32 {
+        let tok = String::from_utf8_lossy(model.vocab.get_bytes(id).unwrap()).into_owned();
+        assert_eq!(strs(Gpt2, &tok).len(), 1, "token {tok:?} spans GPT-2 segments");
+    }
+    let mut rng = fastrand::Rng::with_seed(5);
+    let mut probes = vec![text.as_bytes().to_vec(), b"\xff  \xe3\x80 \x80\n x it\xc3's".to_vec()];
+    probes.extend((0..500).map(|_| random_bytes(&mut rng)));
+    probes.extend((0..500).map(|_| random_text(&mut rng).into_bytes()));
+    for probe in probes {
+        let ids = model.encode(&probe);
+        assert_eq!(model.decode(&ids).unwrap(), probe);
+        let per_segment: Vec<u32> = Gpt2.segment_bytes(&probe).iter().flat_map(|s| model.encode(s)).collect();
+        assert_eq!(ids, per_segment, "encode must pre-split like training for {probe:?}");
+        let dropped = model.encode_with_dropout(&probe, 0.3, Some(1));
+        assert_eq!(model.decode(&dropped).unwrap(), probe);
+    }
+    assert!(model.encode(text.as_bytes()).len() * 2 < text.len(), "merges must apply");
+}
+
+#[test]
+fn bpe_dropout_scope_is_the_gpt2_segment() {
+    let corpus = vec![(b" ab".to_vec(), 10u64), (b"ab".to_vec(), 3), (b"12".to_vec(), 5)];
+    let model = BottomUpTrainer::new(&BpeScorer, 260).with_pretokenizer(Gpt2).train(&corpus).unwrap();
+    let text = b"ab ab12  ab";
+    assert_eq!(model.encode_with_dropout(text, 1.0, Some(3)), text.iter().map(|&b| b as u32).collect::<Vec<_>>());
+    assert_eq!(model.encode_with_dropout(text, 1e-9, Some(3)), model.encode(text));
+    let whole = model.encode(b" ab");
+    assert_eq!(whole.len(), 1, "\" ab\" must be one token");
+    let twelve = model.encode(b"12");
+    assert_eq!(twelve.len(), 1);
+    assert_eq!(model.encode(text), [model.encode(b"ab"), whole.clone(), twelve, vec![b' ' as u32], whole].concat());
+}
+
+#[test]
+fn unigram_encodes_and_samples_per_gpt2_segment() {
+    // "it's": segments "it", "'s"; the token "t'" spanning them is never usable.
+    let vocab = vec![
+        (b"i".to_vec(), 1, -0.5),
+        (b"t".to_vec(), 2, -5.0),
+        (b"'".to_vec(), 3, -5.0),
+        (b"s".to_vec(), 4, -0.5),
+        (b"it".to_vec(), 5, -1.0),
+        (b"'s".to_vec(), 6, -1.0),
+        (b"t'".to_vec(), 7, -0.01),
+    ];
+    let trie = CompactTrie::build(&vocab);
+    let g2 = UnigramSampler { trie: &trie, pretokenizer: Gpt2 };
+    for seed in 0..50 {
+        for ids in [g2.sample_ffbs(b"it's", 1.0, Some(seed)), g2.sample_kbest(b"it's", 4, 1.0, Some(seed))] {
+            assert!(!ids.contains(&7), "{ids:?}");
+        }
+        assert_eq!(g2.sample_ffbs(b"it's", 1e-3, Some(seed)), vec![5, 6]);
+    }
+    // Without the split, "i" + "t'" + "s" is the best path.
+    assert_eq!(UnigramSampler::new(&trie).sample_ffbs(b"it's", 1e-3, Some(0)), vec![1, 7, 4]);
+
+    let text = common::pseudo_text(4, 20_000) + " it's 2024, isn't it?";
+    let mut counts: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
+    for seg in Gpt2.segment_text(&text) {
+        *counts.entry(seg).or_insert(0) += 1;
+    }
+    let corpus: Vec<(Vec<u8>, u64)> = counts.into_iter().collect();
+    let mut model = UnigramTrainer::new(400, 0.2).train(&corpus).unwrap();
+    model.pretokenizer = Gpt2;
+    let ids = model.encode(text.as_bytes());
+    let per_segment: Vec<u32> = Gpt2.segment_bytes(text.as_bytes()).iter().flat_map(|s| model.encode(s)).collect();
+    assert_eq!(ids, per_segment);
+    assert_eq!(model.decode(&ids).unwrap(), text.as_bytes());
+    let raw = b"\xff it\xc3's \x80\x80 x";
+    assert_eq!(model.decode(&model.encode(raw)).unwrap(), raw);
 }

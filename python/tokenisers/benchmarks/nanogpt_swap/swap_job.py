@@ -157,6 +157,21 @@ class SourceDocs:
         log(f"decoded {name}: {len(self.train):,} train docs, {sum(self.train_bytes) / 1e9:.2f} GB")
         return True
 
+    def first_docs(self, budget: int) -> Tuple[List[str], int]:
+        """The longest prefix of the train documents with at most ``budget`` UTF-8 bytes, decoding
+        more shards while the decoded ones hold no more than that (so a larger budget extends the
+        same ordered stream: a smaller budget's documents are its prefix). Returns (docs, bytes)."""
+        while sum(self.train_bytes) <= budget and self.extend():
+            pass
+        docs: List[str] = []
+        nbytes = 0
+        for d, b in zip(self.train, self.train_bytes):
+            if nbytes + b > budget:
+                break
+            docs.append(d)
+            nbytes += b
+        return docs, nbytes
+
     def assert_disjoint(self) -> None:
         overlap = sum(doc_hash(d) in self.val_hashes for d in self.train)
         if overlap:
@@ -420,11 +435,14 @@ def run_job(job_dir: str) -> Dict[str, Any]:
     log(f"val: {len(source.val):,} documents, {sum(len(d.encode()) for d in source.val):,} bytes")
     if docs_sha256(source.val) != cfg["val_docs_sha256"]:
         raise RuntimeError("the val documents differ from those decoded at preparation")
-    tt = cfg["tokenizer_text"]  # the first train documents trained our tokenizers: same decode here?
-    while len(source.train) < tt["docs"] and source.extend():
-        pass
-    if docs_sha256(source.train[:tt["docs"]]) != tt["docs_sha256"]:
-        raise RuntimeError("the first train documents differ from the tokenizer training text decoded at preparation")
+    # The first train documents trained our tokenizers (the job's text, and each tokenizer's own
+    # when it was trained on more, e.g. on a Colab VM): the same decode here?
+    for tt in [cfg["tokenizer_text"], *(s["tokenizer_text"] for s in cfg["tokenizers"] if "tokenizer_text" in s)]:
+        while len(source.train) < tt["docs"] and source.extend():
+            pass
+        if docs_sha256(source.train[:tt["docs"]]) != tt["docs_sha256"]:
+            raise RuntimeError(f"the first {tt['docs']:,} train documents differ from a tokenizer training text "
+                               "decoded at preparation")
     timings["source_seconds"] = round(time.time() - t0, 1)
 
     steps, batch = int(cfg["trainer_args"]["num_iterations"]), int(cfg["trainer_args"]["total_batch_size"])
@@ -481,12 +499,12 @@ def run_job(job_dir: str) -> Dict[str, Any]:
     return result
 
 
-def main(job_dir: str) -> int:
-    """Runs the job and writes ``status.json`` last, atomically: {"state": "ok"} or
-    {"state": "error", "traceback": ...}; the orchestrator polls for it."""
+def main(job_dir: str, run: Optional[Callable[[str], Any]] = None) -> int:
+    """Runs the job (``run``, default ``run_job``) and writes ``status.json`` last, atomically:
+    {"state": "ok"} or {"state": "error", "traceback": ...}; the orchestrator polls for it."""
     job = Path(job_dir)
     try:
-        run_job(job_dir)
+        (run or run_job)(job_dir)
         status: Dict[str, Any] = {"state": "ok"}
     except BaseException:
         status = {"state": "error", "traceback": traceback.format_exc()}

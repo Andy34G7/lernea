@@ -170,6 +170,57 @@ fn space_prefix_training_matches_bruteforce_and_encodes_text_like_training() {
 }
 
 #[test]
+fn gpt2_training_matches_bruteforce_and_encodes_text_like_training() {
+    // Word counts in GPT-2 regex segments (" ab", "'s", "12", " !.", "\n", ...): merges must equal
+    // brute force, and encoding whole lines must give each segment's training segmentation (a
+    // whitespace or space-prefix split would keep "ab12" or "ab's" whole).
+    let (mut spaced_merges, mut split_kinds) = (0, 0);
+    for (name, scorer, min_freq) in scorers() {
+        for seed in 0..60u64 {
+            let mut rng = fastrand::Rng::with_seed(seed);
+            let alphabet: &[u8] = [&b"ab1'  s"[..], b"ab12.! \t", b"ab'st \n9"][(seed % 3) as usize];
+            let lines: Vec<Vec<u8>> = (0..15)
+                .map(|_| (0..rng.usize(1..20)).map(|_| alphabet[rng.usize(0..alphabet.len())]).collect())
+                .collect();
+            let mut counts: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
+            for line in &lines {
+                for seg in Pretokenizer::Gpt2.segment_bytes(line) {
+                    *counts.entry(seg.to_vec()).or_default() += 1;
+                }
+                split_kinds += (Pretokenizer::Gpt2.segment_bytes(line) != Pretokenizer::SpacePrefix.segment_bytes(line)) as usize;
+            }
+            let corpus: Vec<(Vec<u8>, u64)> = counts.into_iter().collect();
+            let target = 256 + 25;
+            let model = BottomUpTrainer::new(scorer.as_ref(), target)
+                .with_min_frequency(min_freq)
+                .with_pretokenizer(Pretokenizer::Gpt2)
+                .train(&corpus)
+                .unwrap();
+            let (ref_merges, ref_words) = reference_train(scorer.as_ref(), &corpus, target, min_freq);
+            assert_eq!(model.merges, ref_merges, "{name}: merge sequence differs from brute force (seed {seed})");
+            assert!(model.pretokenize && model.pretokenizer == Pretokenizer::Gpt2, "{name} (seed {seed})");
+
+            let trained: HashMap<&[u8], &Vec<TokenId>> =
+                corpus.iter().map(|(w, _)| w.as_slice()).zip(&ref_words).collect();
+            for line in &lines {
+                let expected: Vec<TokenId> = Pretokenizer::Gpt2
+                    .segment_bytes(line)
+                    .into_iter()
+                    .flat_map(|seg| trained[seg].iter().copied())
+                    .collect();
+                assert_eq!(model.encode(line), expected, "{name}: encode != training (seed {seed}, {line:?})");
+            }
+            spaced_merges += model.merges.iter().filter(|&&(_, _, w)| {
+                let b = model.vocab.get_bytes(w).unwrap();
+                b[0] == b' ' && b.iter().any(|c| !c.is_ascii_whitespace())
+            }).count();
+        }
+    }
+    assert!(spaced_merges > 300, "space + word merges must be exercised: {spaced_merges}");
+    assert!(split_kinds > 1000, "lines must split differently from space_prefix: {split_kinds}");
+}
+
+#[test]
 fn every_builtin_scorer_declares_narrow_deps() {
     for (name, scorer, _) in scorers() {
         let expected_arbitrary = name == "arbitrary_deps";

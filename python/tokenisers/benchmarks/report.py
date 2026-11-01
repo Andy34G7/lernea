@@ -353,6 +353,10 @@ def render_nanogpt_swap(doc: Dict[str, Any]) -> str:
     commit = (meta.get("git_commit") or "unknown")[:10] + (" (dirty)" if meta.get("git_dirty") else "")
     data = meta.get("data") or {}
     tt = meta["tokenizer_text"]
+    # Each of our tokenizers' training text (its spec's, e.g. 300 MB from a Colab VM, else the job's).
+    texts = sorted({(t["docs"], t["bytes"]) for t in (m["spec"].get("tokenizer_text") or tt for m in models.values()
+                                                     if m["spec"].get("kind") == "tokenisers")}
+                   or {(tt["docs"], tt["bytes"])}, key=lambda x: x[1])
     pilot = meta["mode"] == "pilot"
     pretoks = sorted({v["pretokenizer"] for v in (meta["prepared"].get("variants") or {}).values() if "pretokenizer" in v})
     head = [
@@ -365,7 +369,7 @@ def render_nanogpt_swap(doc: Dict[str, Any]) -> str:
         f"- val: {data.get('val_docs', '?')} FineWeb documents ({_mb(data.get('val_bytes'))}, the speedrun's first "
         f"{meta['source']['val_tokens']:,} GPT-2 val tokens), the same bytes for every tokenizer; BPB = NLL bits "
         "over every val token (one separator per document included) / UTF-8 bytes",
-        f"- our tokenizers: trained on the first {tt['docs']:,} train documents ({_mb(tt['bytes'])}) at 50,256 "
+        f"- our tokenizers: trained on the first {' / '.join(f'{d:,} train documents ({_mb(n)})' for d, n in texts)} at 50,256 "
         "tokens + 1 separator" + (f", pre-tokenizer {' / '.join(pretoks)}" if pretoks else "")
         + "; TokenMonster: " + meta["prepared"]["tokenmonster_why"],
         f"- target: the speedrun's {meta['target']['nats_per_gpt2_token']} nats per GPT-2 token = "
@@ -456,5 +460,70 @@ def render_nanogpt_swap_space_prefix(base: Dict[str, Any], sp: Optional[Dict[str
     return "\n".join(lines)
 
 
+ABLATION_SWAP = "benchmarks/results/nanogpt_swap_ablation/nanogpt_swap.json"
+
+
+def render_nanogpt_swap_ablation(base: Dict[str, Any], sp: Optional[Dict[str, Any]],
+                                 abl: Optional[Dict[str, Any]]) -> str:
+    """The pre-split and data-scaling ablation (``abl``: ``<variant>_g2`` = GPT-2's regex pre-split
+    and ``<variant>_sp300`` = space-prefix on 300 MB, one run of the same recipe; None until it
+    exists) per variant against its whitespace run (``base``) and its 50 MB space-prefix run (``sp``,
+    None until committed), with GPT-2's row from ``base`` for reference. Cells: final val BPB (val
+    bytes per token)."""
+    if abl is None:
+        return (f"_Not yet run: no `{ABLATION_SWAP}` is committed, so there is nothing to compare._")
+    import re
+
+    bm, am = base["models"], abl["models"]
+    bmeta, ameta = base["meta"], abl["meta"]
+    parsed = {n: re.fullmatch(r"(.+)_(sp|g2)([0-9]*)", n) for n in am}
+    suffixes = list(dict.fromkeys(f"_{m[2]}{m[3]}" for m in parsed.values() if m))
+    variants = list(dict.fromkeys(m[1] for m in parsed.values() if m))
+    tt = bmeta["tokenizer_text"]
+
+    def text(name: str) -> str:
+        t = am[name]["spec"].get("tokenizer_text") or ameta["tokenizer_text"]
+        same = t["docs_sha256"] == tt["docs_sha256"] or (t.get("starts_with") or {}).get("docs_sha256") == tt["docs_sha256"]
+        return f"{t['docs']:,} docs, {_mb(t['bytes'])}" + ("" if same else " (NOT starting with the 50 MB text)")
+
+    checks = {
+        "recipe": bmeta["recipe"]["args"] == ameta["recipe"]["args"],
+        "val documents": {m["val_docs_sha256"] for m in bm.values()} == {m["val_docs_sha256"] for m in am.values()},
+    }
+    differ = [k for k, ok in checks.items() if not ok]
+    commit = (ameta.get("git_commit") or "unknown")[:10] + (" (dirty)" if ameta.get("git_dirty") else "")
+    gpu = (ameta.get("backend") or {}).get("gpu") or ameta.get("requested_gpu")
+    cols = [("whitespace, 50 MB", bm, ""), ("space_prefix, 50 MB", (sp or {}).get("models") or {}, "_sp")]
+    for suf in suffixes:
+        mode = "gpt2" if suf.startswith("_g2") else "space_prefix"
+        size = f"{suf[3:]} MB" if suf[3:] else "50 MB"
+        cols.append((f"{mode}, {size}", am, suf))
+
+    def cell(models: Dict[str, Any], name: str) -> str:
+        m = models.get(name)
+        if not m:
+            return "-"
+        bpb = f"**{m['final_bpb']:.4f}**" if m.get("final_bpb") is not None else "-"
+        return f"{bpb} ({m['val_bytes_per_token']:.2f})"
+
+    lines = [
+        f"- ablation run: {gpu}, commit `{commit}`, generated {ameta['created_utc']}"
+        + ("" if sp else "; the 50 MB space-prefix run is not committed yet (its column is empty)"),
+        "- " + (f"DIFFERENT {', '.join(differ)} from the whitespace run: the BPB columns are not comparable"
+                if differ else "same recipe and val documents as the whitespace run"),
+        "- training text: " + "; ".join(f"`{n}` {text(n)}" for n in am if parsed.get(n)),
+        "- cells: final val BPB (val bytes per token)",
+        "",
+        "| Variant | " + " | ".join(c[0] for c in cols) + " |",
+        "| :--- |" + " ---: |" * len(cols),
+    ]
+    for v in variants:
+        lines.append(f"| `{v}` | " + " | ".join(cell(models, v + suf) for _, models, suf in cols) + " |")
+    if "gpt2" in bm:
+        lines.append(f"| `gpt2` (reference) | {cell(bm, 'gpt2')} |" + " |" * (len(cols) - 1))
+    return "\n".join(lines)
+
+
 __all__ = ["render_tokka", "render_intrinsic", "render_colab", "render_colab_compare", "colab_compare_stats",
-           "render_throughput", "render_nanogpt_swap", "render_nanogpt_swap_space_prefix"]
+           "render_throughput", "render_nanogpt_swap", "render_nanogpt_swap_space_prefix",
+           "render_nanogpt_swap_ablation"]
