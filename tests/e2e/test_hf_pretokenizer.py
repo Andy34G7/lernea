@@ -180,6 +180,14 @@ def test_malformed_pretokenizer_arguments_are_rejected():
                        (3, "pretokenizer must be"), ("hf", "pretokenizer must be")):
         with pytest.raises(ValueError, match=match):
             tokenisers.BpeTokenizer.train(CORPUS, 300, pretokenizer=bad)
+    # serde ignores unknown fields: a misspelt one would silently keep its default ("Isolated").
+    for bad, match in (({"type": "Punctuation", "behaviour": "Contiguous"}, 'Punctuation has no field "behaviour"'),
+                       (seq(PUNCT, {**DIGITS, "individual_digit": False}), 'Digits has no field "individual_digit"'),
+                       ({**DIGITS, "extra": 1}, 'Digits has no field "extra"')):
+        for call in (lambda: _core.pretokenize(b"a!!b 12", {"hf": bad}),
+                     lambda: tokenisers.BpeTokenizer.train(CORPUS, 300, pretokenizer={"hf": bad})):
+            with pytest.raises(ValueError, match=match):
+                call()
 
 
 # ----------------------------------------------------------------------------

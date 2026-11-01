@@ -680,6 +680,9 @@ fn hf_rejects_every_component_that_is_not_a_lossless_splitter() {
         // tokenizers panics on it ("chunk size must be non-zero"), so it must not reach the probe.
         (json!({"type": "FixedLength", "length": 0}), "FixedLength with length 0"),
         (seq(&[byte_level(false), json!({"type": "FixedLength", "length": 0})]), "FixedLength with length 0"),
+        // serde ignores unknown fields, so a misspelt one would silently keep its default.
+        (json!({"type": "Punctuation", "behaviour": "Contiguous"}), "Punctuation has no field \"behaviour\""),
+        (seq(&[PUNCT(), json!({"type": "Digits", "individual_digits": true, "extra": 1})]), "Digits has no field \"extra\""),
         (json!({"type": "Bogus"}), "Bogus is not a known lossless splitter"),
         (json!({"type": "Digits"}), "missing field `individual_digits`"),
         (json!("Digits"), "HF pre-tokenizer"),

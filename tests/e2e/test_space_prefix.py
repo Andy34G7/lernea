@@ -293,6 +293,16 @@ def test_pretokenizer_property():
     assert tokenisers.SuperBpeTokenizer.train(CORPUS, vocab_size=460).pretokenizer is None  # whole text
 
 
+def test_whitespace_mode_keeps_runs_apart_but_a_run_can_be_one_token(repo_root):
+    """What README.md and models.py say of the default mode (the README once said every space was a token)."""
+    with _quiet():
+        tok = tokenisers.BpeTokenizer.train(["def f(x):\n    return x  # a b\n        pass\n"] * 50, 300)
+    pieces = [tok.id_to_bytes(i) for i in tok.encode("a    b  c \n d")]
+    assert b"    " in pieces and b"  " in pieces
+    assert all(p.isspace() or not set(p) & set(b" \n") for p in pieces)
+    assert "every space is a token" not in (repo_root / "README.md").read_text()
+
+
 def test_space_prefixed_words_get_the_lexicon_boundaries():
     """A lexicon word also annotates its " word" segment (the space joins the first morpheme), so a
     strong prior keeps " walk|ing" apart; without the lexicon the word becomes one token."""

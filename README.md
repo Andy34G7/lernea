@@ -75,7 +75,8 @@ and non-default values; that commit used the defaults above).
 that no token spans, the same way for training, encoding, Unigram's lattice and the exported
 `tokenizer.json` (a `Split` regex that Hugging Face reproduces exactly; `from_pretrained` restores
 the mode). `pretokenizer="whitespace"` (the default, used by every committed result) isolates each
-maximal run of Unicode whitespace, so every space is a token of its own. `pretokenizer="space_prefix"`
+maximal run of Unicode whitespace in a segment of its own, so no token mixes whitespace with other
+text (a run such as `"    "` or `" \n"` can still be one token). `pretokenizer="space_prefix"`
 is GPT-2-style: a word takes the one U+0020 space right before it (`"a  b"` -> `a`, ` `, ` b`),
 while newlines, tabs, other Unicode spaces and all but the last space of a run stay in
 whitespace-only segments; unlike GPT-2's `\s+(?!\S)| ?\S+` it does not split letters, digits and
@@ -90,7 +91,8 @@ Face `pre_tokenizer` config (a dict or a JSON string) with `tokenizers` itself: 
 `Punctuation` (any behavior but `Removed`), `Digits`, `FixedLength`, one `ByteLevel` without
 `add_prefix_space`, and `Sequence`s of these; a component that drops or rewrites text (`Whitespace`,
 `WhitespaceSplit`, `BertPreTokenizer`, `CharDelimiterSplit`, `Metaspace`, `UnicodeScripts`, which drops
-the spaces a piece starts with) is a `ValueError` naming it. The export writes the config back
+the spaces a piece starts with) is a `ValueError` naming it, and so is a field the component does
+not have (`tokenizers` would ignore a misspelt `"behaviour"`). The export writes the config back
 unchanged (followed by the byte-level map when it has no `ByteLevel`) and `from_pretrained` restores
 it; `.pretokenizer` reports `{"hf": config}`. Training rejects a config whose export is another
 pretokenizer's, with the same split, and names that one: a lone `ByteLevel(use_regex=true)` is `"gpt2"`,
