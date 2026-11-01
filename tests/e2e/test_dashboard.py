@@ -4,9 +4,13 @@ End-to-End Tests for Tokenisers Lab Benchmark Intelligence Dashboard & REST APIs
 
 from __future__ import annotations
 
+import copy
 import http.client
 import json
+import re
+import shutil
 import socket
+import subprocess
 import threading
 import time
 import urllib.request
@@ -509,11 +513,25 @@ def test_flores_section_shows_premium_by_language_and_group(dashboard_server: st
         assert anchor in html, anchor
 
 
+REAL_RESULTS = server_mod.REPO_ROOT / "benchmarks" / "results"
+
+
+def _ablation_doc(real, real_sp):
+    """An ablation run: _g2 for two variants, _sp300 for one (shaped like the space-prefix run)."""
+    abl = copy.deepcopy(real_sp)
+    sp_models = abl.pop("models")
+    abl["meta"]["recipe"] = copy.deepcopy(real["meta"]["recipe"])
+    abl["models"] = {}
+    for name, bpb in (("bpe_frequency_g2", 1.71), ("mdl_bits_g2", 1.72), ("mdl_bits_sp300", 1.70)):
+        m = copy.deepcopy(sp_models[name.rsplit("_", 1)[0] + "_sp"])
+        m["spec"]["name"] = name
+        abl["models"][name] = {**m, "final_bpb": bpb, "val_bytes_per_token": 4.4}
+    return abl
+
+
 def test_ablation_section_shows_not_yet_run_then_every_arm(tmp_path, monkeypatch) -> None:
     """No nanogpt_swap_ablation/ results: 'not yet run'. With one, per variant: whitespace (original swap),
     space_prefix (the 50 MB rerun), _g2 and _sp300 (the ablation run), and GPT-2 from the original run."""
-    import copy
-
     real = json.loads((server_mod.REPO_ROOT / "benchmarks/results/nanogpt_swap/nanogpt_swap.json").read_text())
     real_sp = json.loads((server_mod.REPO_ROOT / "benchmarks/results/nanogpt_swap_sp/nanogpt_swap.json").read_text())
     _swap_fixture(tmp_path, "nanogpt_swap", real)
@@ -523,16 +541,7 @@ def test_ablation_section_shows_not_yet_run_then_every_arm(tmp_path, monkeypatch
     assert abl_entry["path"] == "benchmarks/results/nanogpt_swap_ablation/nanogpt_swap.json"
     assert "ablation" not in abl_entry
 
-    # The ablation run: _g2 for two variants, _sp300 for one (shaped like the space-prefix run)
-    abl = copy.deepcopy(real_sp)
-    sp_models = abl.pop("models")
-    abl["meta"]["recipe"] = copy.deepcopy(real["meta"]["recipe"])
-    abl["models"] = {}
-    for name, bpb in (("bpe_frequency_g2", 1.71), ("mdl_bits_g2", 1.72), ("mdl_bits_sp300", 1.70)):
-        m = copy.deepcopy(sp_models[name.rsplit("_", 1)[0] + "_sp"])
-        m["spec"]["name"] = name
-        abl["models"][name] = {**m, "final_bpb": bpb, "val_bytes_per_token": 4.4}
-    _swap_fixture(tmp_path, "nanogpt_swap_ablation", abl)
+    _swap_fixture(tmp_path, "nanogpt_swap_ablation", _ablation_doc(real, real_sp))
 
     # Without the space-prefix run: its column is empty, and the README renderer says so
     entry = server_mod.load_benchmark_data()["results"]["swap_ablation"]
@@ -555,3 +564,247 @@ def test_ablation_section_shows_not_yet_run_then_every_arm(tmp_path, monkeypatch
     assert a["gpt2"]["final_bpb"] == real["models"]["gpt2"]["final_bpb"]
     # Provenance from report.render_nanogpt_swap_ablation: same recipe and val documents as the whitespace run
     assert any("same recipe and val documents" in line for line in entry["provenance"]), entry["provenance"]
+
+
+def test_gpt2_equivalent_steps_read_off_the_steps_csv_match_the_committed_ones() -> None:
+    """server.sp_gpt2_equivalent reads GPT-2's curve from the steps CSV: on the original run's own tokenizers it
+    reproduces that run's committed GPT-2-equivalent steps."""
+    base = json.loads((REAL_RESULTS / "nanogpt_swap/nanogpt_swap.json").read_text())
+    ours = {**base, "models": {k: m for k, m in base["models"].items() if k != "gpt2"}}
+    steps = server_mod.sp_gpt2_equivalent(base, ours, REAL_RESULTS / "nanogpt_swap/nanogpt_swap_steps.csv")
+    assert steps == {k: v for k, v in base["gpt2_equivalent"]["steps"].items() if k != "gpt2"}
+
+
+def _single_seed(doc):
+    """A proxy-LM result as colab/lm.py writes it for one seed: no sd (None), one by-seed entry."""
+    doc = copy.deepcopy(doc)
+    doc["meta"]["seeds"] = doc["meta"]["seeds"][:1]
+    for m in doc["models"].values():
+        m["macro_val_bpb_by_seed"] = dict(list(m["macro_val_bpb_by_seed"].items())[:1])
+        m["macro_val_bpb_sd"] = None
+        for d in m["val_domains"].values():
+            d["bpb_sd"] = None
+    return doc
+
+
+def test_single_seed_proxy_run_keeps_the_api_up(tmp_path, monkeypatch) -> None:
+    """A single-seed big LM has no standard errors for the small vs big comparison: the comparison is left out
+    with the reason and both proxy-LM files still show (the TypeError used to make /api/benchmarks a 500)."""
+    _write_results(tmp_path, None, proxy_lm=json.loads((REAL_RESULTS / "colab/extrinsic_bpb_results.json").read_text()))
+    big = tmp_path / "benchmarks/results/colab_big/extrinsic_bpb_results.json"
+    big.parent.mkdir(parents=True)
+    real_big = json.loads((REAL_RESULTS / "colab_big/extrinsic_bpb_results.json").read_text())
+    big.write_text(json.dumps(_single_seed(real_big)), encoding="utf-8")
+    monkeypatch.setattr(server_mod, "REPO_ROOT", tmp_path)
+    data = server_mod.load_benchmark_data()
+    res = data["results"]
+    assert res["proxy_small"]["available"] and res["proxy_big"]["available"] and res["proxy_big"]["provenance"]
+    assert res["proxy_compare"]["available"] is False and "TypeError" in res["proxy_compare"]["error"]
+    json.dumps(data)  # what do_GET sends
+    if NODE:  # the Proxy LM tab says why the comparison is missing instead of calling the files missing
+        errors, html = _render(tmp_path, data)
+        assert errors == [] and "TypeError" in _text(html["compare-facts"])
+
+
+# --- static/app.js under node: the renderers on /api/benchmarks payloads ---------------------------------------
+
+# A DOM stub just big enough for app.js: every element is a plain object whose innerHTML the test reads back;
+# console.error (where renderAllViews reports a failed section) and uncaught throws are collected.
+HARNESS_JS = r"""
+const fs = require('fs');
+const vm = require('vm');
+const [appPath, dataPath, calls] = process.argv.slice(2);
+const els = {};
+const errors = [];
+function el(id) {
+  if (!els[id]) {
+    const cls = new Set();
+    els[id] = {
+      id, innerHTML: '', textContent: '', value: '', tabIndex: 0, dataset: {}, attrs: {},
+      classList: { add: (c) => cls.add(c), remove: (c) => cls.delete(c), contains: (c) => cls.has(c),
+                   toggle: (c, on) => ((on ?? !cls.has(c)) ? cls.add(c) : cls.delete(c)) },
+      setAttribute(k, v) { this.attrs[k] = v; }, removeAttribute(k) { delete this.attrs[k]; },
+      addEventListener() {}, focus() {},
+    };
+  }
+  return els[id];
+}
+class Chart { destroy() {} resize() {} }
+Chart.defaults = { font: {} };
+const ctx = vm.createContext({
+  console: { log() {}, warn() {}, error: (...a) => errors.push(a.map((x) => (x && x.stack) || String(x)).join(' ')) },
+  setTimeout: () => 0, Chart,
+  document: { getElementById: el, querySelectorAll: () => [], querySelector: () => null, addEventListener() {},
+              documentElement: el('html'), body: el('body') },
+  window: { matchMedia: () => ({ matches: false, addEventListener() {} }) },
+  localStorage: { getItem: () => null, setItem() {} },
+  getComputedStyle: () => ({ getPropertyValue: () => '#336699' }),
+  location: { hash: '' }, history: { replaceState() {} },
+});
+vm.runInContext(fs.readFileSync(appPath, 'utf8'), ctx);
+vm.runInContext(`state.data = ${fs.readFileSync(dataPath, 'utf8')};`, ctx);
+for (const c of JSON.parse(calls)) {
+  try { vm.runInContext(c, ctx); } catch (e) { errors.push(`${c}: ${e.stack}`); }
+}
+const html = Object.fromEntries(Object.entries(els).map(([k, v]) => [k, v.innerHTML || v.textContent]));
+process.stdout.write(JSON.stringify({ errors, html }));
+"""
+NODE = shutil.which("node")
+needs_node = pytest.mark.skipif(NODE is None, reason="needs node to run static/app.js")
+
+
+def _render(tmp_path, data, calls=("renderAllViews()",)):
+    """Run static/app.js on an /api/benchmarks payload: (errors, {element id: innerHTML})."""
+    harness, payload = tmp_path / "harness.js", tmp_path / "payload.json"
+    harness.write_text(HARNESS_JS, encoding="utf-8")
+    payload.write_text(json.dumps(data), encoding="utf-8")
+    app = server_mod.STATIC_DIR / "app.js"
+    out = subprocess.run([NODE, str(harness), str(app), str(payload), json.dumps(list(calls))],
+                         capture_output=True, text=True, timeout=120, check=True)
+    res = json.loads(out.stdout)
+    return res["errors"], res["html"]
+
+
+def _text(html: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html)).strip()
+
+
+def _signed(v: float, digits: int = 4) -> str:  # app.js signed()
+    return f"{'+' if v > 0 else '−' if v < 0 else ''}{abs(v):.{digits}f}"
+
+
+@needs_node
+def test_dashboard_renders_the_committed_results(tmp_path) -> None:
+    """Every section on the committed results, none failing; the claims on the page come from the files."""
+    import html as htmllib
+    import math
+    import statistics
+
+    data = server_mod.load_benchmark_data()
+    errors, html = _render(tmp_path, data)
+    assert errors == []
+
+    # Proxy caveat: each tier's top-two margin in standard errors (seedMargin), not a fixed claim
+    caveat = _text(html["proxy-caveat-small"])
+    assert "cannot separate" not in caveat
+    for key, tier in (("proxy_small", "small LM"), ("proxy_big", "big LM")):
+        ms = data["results"][key]["data"]["models"]
+        a, b = sorted(ms, key=lambda n: ms[n]["macro_val_bpb"])[:2]
+        se2 = [ms[n]["macro_val_bpb_sd"] ** 2 / len(ms[n]["macro_val_bpb_by_seed"]) for n in (a, b)]
+        z = (ms[b]["macro_val_bpb"] - ms[a]["macro_val_bpb"]) / math.sqrt(sum(se2))
+        assert (f"{tier}: {a} ahead of {b} by {z:.1f} standard errors over the seeds, "
+                f"{'resolved' if z >= 2 else 'not resolved'}") in caveat, caveat
+
+    # Space-prefix rerun: GPT-2-equivalent steps for every row (read off the original run's GPT-2 curve)
+    sp_table = _text(html["sp-table"])
+    for r in data["results"]["swap_space_prefix"]["pairs"]["rows"]:
+        assert f" {r['sp']['gpt2_equivalent_steps']} " in f" {sp_table} ", r
+
+    # FLORES+: the "UTF-8 bytes" reference of the findings is on the page, as a row of the premium heatmap
+    meta = data["results"]["flores"]["data"]["meta"]
+    text, eng, langs = meta["text"], meta["languages"]["english"], meta["languages"]
+    ratio = {lang: text[lang]["bytes"] / text[eng]["bytes"] for lang in text}
+    in_mix, out_mix = list(langs["in_mix"].values()), langs["out_of_mix"]
+    cells = ([ratio[x] for x in in_mix] + [statistics.fmean(ratio[x] for x in in_mix)]
+             + [ratio[x] for x in out_mix] + [statistics.fmean(ratio[x] for x in out_mix)])
+    row = f"UTF-8 bytes {text[eng]['bytes'] / text[eng]['sentences']:.1f} " + " ".join(f"{c:.2f}" for c in cells)
+    assert row in _text(html["flores-heat"])
+    notes = htmllib.unescape(html["flores-notes"])
+    assert '"UTF-8 bytes" row' in notes and 'column "UTF-8 bytes"' not in notes
+
+
+@needs_node
+def test_one_tokeniser_proxy_run_renders_every_section(tmp_path, monkeypatch) -> None:
+    """A proxy-LM file with one tokeniser has no runner-up: its leader card leaves the margin out. And a
+    section that fails no longer blanks the sections rendered after it."""
+    small = json.loads((REAL_RESULTS / "colab/extrinsic_bpb_results.json").read_text())
+    small["models"] = {"bpe_frequency": small["models"]["bpe_frequency"]}
+    _write_results(tmp_path, None, proxy_lm=small)
+    monkeypatch.setattr(server_mod, "REPO_ROOT", tmp_path)
+    data = server_mod.load_benchmark_data()
+    errors, html = _render(tmp_path, data)
+    assert errors == []
+    assert "Proxy LM · small" in html["leaders"] and "bpe_frequency" in html["leaders"]
+    assert "BPE (Frequency)" in html["leaderboard-tbody"]
+
+    errors, html = _render(tmp_path, data, ["renderSummary = () => { throw new Error('boom'); }", "renderAllViews()"])
+    assert len(errors) == 1 and "boom" in errors[0]
+    assert "BPE (Frequency)" in html["leaderboard-tbody"]
+
+
+def _sp_root(tmp_path, sp):
+    """The committed original swap run (with its steps CSV) and ``sp`` as the space-prefix rerun."""
+    base = json.loads((REAL_RESULTS / "nanogpt_swap/nanogpt_swap.json").read_text())
+    _swap_fixture(tmp_path, "nanogpt_swap", base)
+    shutil.copy(REAL_RESULTS / "nanogpt_swap/nanogpt_swap_steps.csv", tmp_path / "benchmarks/results/nanogpt_swap")
+    _swap_fixture(tmp_path, "nanogpt_swap_sp", sp)
+    return base
+
+
+def test_space_prefix_rerun_that_is_not_comparable_is_flagged(tmp_path, monkeypatch) -> None:
+    """The README's comparability check (report.render_nanogpt_swap_space_prefix) heads the section: a rerun with
+    another recipe or other val documents is flagged, and no GPT-2-equivalent steps are read off the original
+    run's GPT-2 curve for it."""
+    sp = json.loads((REAL_RESULTS / "nanogpt_swap_sp/nanogpt_swap.json").read_text())
+    sp["meta"]["recipe"]["args"]["learning_rate"] = 0.0018
+    for m in sp["models"].values():
+        m["val_docs_sha256"] = "0" * 64
+    _sp_root(tmp_path, sp)
+    monkeypatch.setattr(server_mod, "REPO_ROOT", tmp_path)
+    data = server_mod.load_benchmark_data()
+    e = data["results"]["swap_space_prefix"]
+    assert any(line.startswith("DIFFERENT recipe, val documents") for line in e["provenance"]), e["provenance"]
+    rows = e["pairs"]["rows"]
+    assert len(rows) == 8 and all(r["sp"]["gpt2_equivalent_steps"] is None for r in rows)
+    if NODE:  # the warning is on the page, above the BPB changes, not only in the collapsed provenance
+        errors, html = _render(tmp_path, data, ["renderSpacePrefix()"])
+        facts = _text(html["sp-body"])
+        assert errors == [] and facts.startswith("Not comparable: DIFFERENT recipe, val documents"), facts
+
+    # The committed rerun: same recipe and val documents, so its steps come from the original GPT-2 curve
+    shutil.copy(REAL_RESULTS / "nanogpt_swap_sp/nanogpt_swap.json", tmp_path / "benchmarks/results/nanogpt_swap_sp")
+    e = server_mod.load_benchmark_data()["results"]["swap_space_prefix"]
+    assert not any(line.startswith("DIFFERENT") for line in e["provenance"])
+    assert e["pairs"]["gpt2"]["run"] == "old"
+    assert all(isinstance(r["sp"]["gpt2_equivalent_steps"], int) for r in e["pairs"]["rows"])
+
+
+@needs_node
+def test_ablation_facts_compare_each_arm_with_the_arm_it_changes(tmp_path, monkeypatch) -> None:
+    """space_prefix against whitespace (the pre-split), _g2 and _sp300 against space_prefix (GPT-2's regex rules;
+    300 MB instead of 50 MB), so the space-prefix effect is not credited to the other arms; the per-variant
+    tally only counts variants run in every arm."""
+    import statistics
+
+    real = json.loads((REAL_RESULTS / "nanogpt_swap/nanogpt_swap.json").read_text())
+    real_sp = json.loads((REAL_RESULTS / "nanogpt_swap_sp/nanogpt_swap.json").read_text())
+    for rel, doc in (("nanogpt_swap", real), ("nanogpt_swap_sp", real_sp),
+                     ("nanogpt_swap_ablation", _ablation_doc(real, real_sp))):
+        _swap_fixture(tmp_path, rel, doc)
+    monkeypatch.setattr(server_mod, "REPO_ROOT", tmp_path)
+    errors, html = _render(tmp_path, server_mod.load_benchmark_data(), ["renderAblation()"])
+    assert errors == []
+    facts = _text(html["abl-body"])
+    sp = {v: real_sp["models"][f"{v}_sp"]["final_bpb"] for v in ("bpe_frequency", "mdl_bits")}
+    g2 = [1.71 - sp["bpe_frequency"], 1.72 - sp["mdl_bits"]]
+    assert (f"space_prefix, 300 MB (_sp300) against space_prefix, 50 MB: lower final BPB for 1 of 1 variants; "
+            f"median change {_signed(1.70 - sp['mdl_bits'])} BPB") in facts, facts
+    assert (f"GPT-2 regex split (_g2), 50 MB against space_prefix, 50 MB: lower final BPB for {sum(d < 0 for d in g2)} "
+            f"of 2 variants; median change {_signed(statistics.median(g2))} BPB") in facts, facts
+    assert "Lowest final BPB, over the 1 variant run in every arm:" in facts, facts
+
+
+@needs_node
+def test_table_headers_escape_labels_from_result_files(tmp_path) -> None:
+    """Column labels built from result JSON (morph languages, the FLORES+ parity threshold, proxy-LM domains) are
+    text, not markup: a crafted result file cannot inject script into the dashboard's origin."""
+    evil = "<img src=x onerror=alert(1)>"
+    data = server_mod.load_benchmark_data()
+    res = data["results"]
+    next(iter(res["intrinsic_16384"]["data"]["models"].values()))["morph_words_by_lang"][evil] = 3
+    res["flores"]["data"]["meta"]["parity_threshold"] = evil
+    res["proxy_small"]["data"]["meta"]["val_domains"].append(evil)
+    errors, html = _render(tmp_path, data)
+    assert errors == []
+    for table in ("morph-table", "flores-table", "proxy-table"):
+        assert "<img" not in html[table] and "&lt;img" in html[table], table

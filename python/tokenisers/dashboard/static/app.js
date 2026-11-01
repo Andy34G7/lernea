@@ -243,7 +243,9 @@ function drawTable(id) {
     .map((col, i) => {
       const s = i === sort.i ? ` aria-sort="${sign < 0 ? 'descending' : 'ascending'}"` : '';
       const tip = col.tip ? ` title="${esc(col.tip)}"` : '';
-      return `<th class="${col.text ? '' : 'r'}"${s}><button type="button" class="th-btn"${tip} onclick="sortTable('${id}', ${i})">${col.label}${arrow(col.dir)}</button></th>`;
+      // Labels can come from result files (languages, thresholds): text, never markup; sub: a muted suffix
+      const sub = col.sub === undefined ? '' : ` <span class="sd">${esc(col.sub)}</span>`;
+      return `<th class="${col.text ? '' : 'r'}"${s}><button type="button" class="th-btn"${tip} onclick="sortTable('${id}', ${i})">${esc(col.label)}${sub}${arrow(col.dir)}</button></th>`;
     })
     .join('');
   const body = sorted
@@ -398,20 +400,21 @@ async function fetchBenchmarkData() {
   }
 }
 
+// One section failing on an odd result file must not leave every section after it empty
+function renderEach(fns) {
+  fns.forEach((f) => {
+    try {
+      f();
+    } catch (err) {
+      console.error(`${f.name} failed:`, err);
+    }
+  });
+}
+
 // Master Render Function
 function renderAllViews() {
   if (!state.data) return;
-
-  renderMeta();
-  renderSummary();
-  renderLeaderboard();
-  renderIntrinsicTab();
-  renderSwap();
-  renderFlores();
-  renderConceptFacts();
-  renderCharts();
-
-  renderMath();
+  renderEach([renderMeta, renderSummary, renderLeaderboard, renderIntrinsicTab, renderSwap, renderFlores, renderConceptFacts, renderCharts, renderMath]);
 }
 
 // KaTeX auto-render skips single-dollar inline math unless asked
@@ -429,12 +432,7 @@ function renderMath() {
 // Everything that draws a chart (re-run on theme change so colours follow the tokens)
 function renderCharts() {
   if (!state.data) return;
-  renderQuadrantChart();
-  renderProxy();
-  renderTokkaTab();
-  renderRadarView();
-  renderThroughput();
-  renderSwapChart();
+  renderEach([renderQuadrantChart, renderProxy, renderTokkaTab, renderRadarView, renderThroughput, renderSwapChart]);
 }
 
 function renderMeta() {
@@ -509,20 +507,29 @@ function ranked(models, get, dir) {
     .sort((a, b) => (b[1] - a[1]) * dir);
 }
 
-// Margin between the two leaders of a seeded proxy-LM run, in standard errors of the difference
-function seedMargin(models, a, b) {
+// Margin between the two leaders (r: ranked() of a seeded proxy-LM run) in standard errors of the difference;
+// null without a runner-up or a seed spread
+function seedZ(models, r) {
+  if (r.length < 2) return null;
   const se = (m) => (m.macro_val_bpb_sd ?? 0) ** 2 / Object.keys(m.macro_val_bpb_by_seed || {}).length;
-  const d = models[b].macro_val_bpb - models[a].macro_val_bpb;
-  const z = d / Math.sqrt(se(models[a]) + se(models[b]));
-  return isNum(z) && Number.isFinite(z) ? `Lead over the runner-up: ${z.toFixed(1)} standard errors over the seeds, ${z < 2 ? 'not resolved' : 'resolved'}.` : '';
+  const [a, b] = [models[r[0][0]], models[r[1][0]]];
+  const z = (b.macro_val_bpb - a.macro_val_bpb) / Math.sqrt(se(a) + se(b));
+  return Number.isFinite(z) ? z : null;
+}
+
+const resolvedIn = (z) => `${z.toFixed(1)} standard errors over the seeds, ${z < 2 ? 'not resolved' : 'resolved'}`;
+
+function seedMargin(models, r) {
+  const z = seedZ(models, r);
+  return z === null ? '' : `Lead over the runner-up: ${resolvedIn(z)}.`;
 }
 
 function leaderSpecs() {
   const tp = R('throughput_local');
   const spreads = tp.available ? Object.values(tp.data.models?.['16384'] || {}).map((m) => spread(m.encode_mb_per_sec)).filter(isNum) : [];
   return [
-    { set: 'proxy_small', eyebrow: 'Proxy LM · small', unit: 'BPB', dir: -1, d: 3, tab: 'proxy', get: (m) => m.macro_val_bpb, what: 'Macro val bits per byte, mean of the seeds', caveat: (r, M) => seedMargin(M, r[0][0], r[1][0]) },
-    { set: 'proxy_big', eyebrow: 'Proxy LM · big', unit: 'BPB', dir: -1, d: 3, tab: 'proxy', get: (m) => m.macro_val_bpb, what: 'Macro val bits per byte, mean of the seeds', caveat: (r, M) => seedMargin(M, r[0][0], r[1][0]) },
+    { set: 'proxy_small', eyebrow: 'Proxy LM · small', unit: 'BPB', dir: -1, d: 3, tab: 'proxy', get: (m) => m.macro_val_bpb, what: 'Macro val bits per byte, mean of the seeds', caveat: (r, M) => seedMargin(M, r) },
+    { set: 'proxy_big', eyebrow: 'Proxy LM · big', unit: 'BPB', dir: -1, d: 3, tab: 'proxy', get: (m) => m.macro_val_bpb, what: 'Macro val bits per byte, mean of the seeds', caveat: (r, M) => seedMargin(M, r) },
     {
       set: 'swap', eyebrow: 'GPT-2 swap', unit: 'BPB', dir: -1, d: 4, tab: 'swap', get: (m) => m.final_bpb, what: 'Final val bits per byte of GPT-2 small',
       caveat: (r, M) => {
@@ -863,15 +870,24 @@ function renderProxy() {
 
 function renderCompare() {
   const e = R('proxy_compare');
-  const cav = document.getElementById('proxy-caveat-small');
+  // Caveat from the files: each tier's top-two margin (as on the leader cards), then each tier against the reference
+  const tops = [['proxy_small', 'small LM'], ['proxy_big', 'big LM']]
+    .map(([key, tier]) => {
+      const M = R(key).data?.models || {};
+      const r = ranked(M, (m) => m.macro_val_bpb, -1);
+      const z = seedZ(M, r);
+      return z === null ? null : `${tier}: ${esc(r[0][0])} ahead of ${esc(r[1][0])} by ${resolvedIn(z)}`;
+    })
+    .filter(Boolean);
+  const vsRef = ['small LM:', 'big LM:'].map((p) => (e.provenance || []).find((l) => l.startsWith(p))).filter(Boolean);
+  setHtml('proxy-caveat-small', [tops.length ? `Top two: ${tops.join('; ')}.` : '', vsRef.length ? `Against bpe_frequency: ${vsRef.map(md).join('; ')}.` : ''].join(' ').trim() || 'No seeded proxy-LM results yet.');
   if (!e.available) {
-    setHtml('compare-facts', `<li>${notRun({ path: `${R('proxy_small').path} and ${R('proxy_big').path}` })}</li>`);
+    const why = e.error ? `<div class="empty"><b>Not computed.</b> Both proxy-LM files are committed, but the ${esc(e.error)}.</div>` : notRun({ path: `${R('proxy_small').path} and ${R('proxy_big').path}` });
+    setHtml('compare-facts', `<li>${why}</li>`);
     setHtml('compare-table', '');
     return;
   }
   setHtml('compare-facts', e.provenance.map((l) => `<li>${md(l)}</li>`).join(''));
-  const tierLine = (p) => e.provenance.find((l) => l.startsWith(p));
-  if (cav && tierLine('small LM:')) cav.innerHTML = `The small LM cannot separate the top tokenisers; ${md(tierLine('small LM:'))}. With the ${md(tierLine('big LM:') ?? 'big LM: not run')}.`;
 
   const { ref, names, tiers } = e.data;
   const s = tiers['small LM'];
@@ -1156,7 +1172,7 @@ function renderIntrinsicTab() {
     [
       NAME_COL,
       { label: 'Mean over languages', dir: 1, get: (r) => r.morph_f1, fmt: (v) => fmt(v), tip: 'The headline morph F1' },
-      ...Object.keys(words).map((l) => ({ label: `${l} <span class="sd">${words[l].toLocaleString('en-US')}</span>`, dir: 1, get: (r) => r.morph_f1_by_lang?.[l], fmt: (v) => fmt(v), tip: `${words[l]} gold words` })),
+      ...Object.keys(words).map((l) => ({ label: l, sub: words[l].toLocaleString('en-US'), dir: 1, get: (r) => r.morph_f1_by_lang?.[l], fmt: (v) => fmt(v), tip: `${words[l]} gold words` })),
       { label: 'Word-weighted', dir: 1, get: (r) => r.morph_f1_word_weighted, fmt: (v) => fmt(v) },
     ],
     Object.entries(docModels).map(([key, m]) => ({ key, ...m })),
@@ -1381,14 +1397,15 @@ function renderSpacePrefix() {
   }
   const p = e.pairs;
   if (!p || !p.rows.length) {
-    setHtml('sp-body', `<div class="empty">The space-prefix file is present, but ${p ? 'none of its tokenisers matches one in' : 'there is no'} <code>${esc(R('swap').path)}</code> to compare against.</div>${provHtml(e)}`);
+    const why = !p && e.error ? esc(e.error) : `${p ? 'none of its tokenisers matches one in' : 'there is no'} <code>${esc(R('swap').path)}</code> to compare against`;
+    setHtml('sp-body', `<div class="empty">The space-prefix file is present, but ${why}.</div>${provHtml(e)}`);
     return;
   }
   const g = p.gpt2;
   const rows = p.rows.map((r) => ({ key: r.variant, ...r }));
   const deltas = rows.map((r) => r.delta_bpb).filter(isNum);
   const best = [...rows].filter((r) => isNum(r.sp.final_bpb)).sort((a, b) => a.sp.final_bpb - b.sp.final_bpb)[0];
-  const facts = [];
+  const facts = [notComparable(e)].filter(Boolean);
   if (g) facts.push(`<b>GPT-2 reference</b> (${g.run === 'sp' ? 'from the space-prefix run' : 'from the original run'}): final BPB ${fmt(g.final_bpb, 4)}, ${fmt(g.val_bytes_per_token)} val bytes per token.`);
   if (deltas.length) facts.push(`<b>${deltas.filter((d) => d < 0).length} of ${deltas.length}</b> tokenisers have a lower final BPB with the space prefix; median change ${signed(median(deltas), 4)} BPB.`);
   facts.push(`Val bytes per token: ${range(rows.map((r) => r.old.val_bytes_per_token).filter(isNum))} before, ${range(rows.map((r) => r.sp.val_bytes_per_token).filter(isNum))} with the space prefix.`);
@@ -1412,19 +1429,28 @@ function renderSpacePrefix() {
       { label: 'Δ BPB', dir: -1, get: (r) => r.delta_bpb, fmt: (v) => `<span class="${v <= 0 ? 'delta-good' : 'delta-bad'}">${signed(v, 4)}</span>` },
       { label: 'vs GPT-2', dir: -1, get: (r) => (g && isNum(r.sp.final_bpb) ? r.sp.final_bpb - g.final_bpb : null), fmt: (v) => signed(v, 4), tip: 'Space-prefix final BPB minus GPT-2\'s' },
       { label: 'GPT-2-eq. steps, orig.', dir: 1, get: (r) => r.old.gpt2_equivalent_steps, fmt: (v) => (isNum(v) ? String(v) : DASH) },
-      { label: 'GPT-2-eq. steps, SP', dir: 1, get: (r) => r.sp.gpt2_equivalent_steps, fmt: (v) => (isNum(v) ? String(v) : DASH) },
+      {
+        label: 'GPT-2-eq. steps, SP', dir: 1, get: (r) => r.sp.gpt2_equivalent_steps, fmt: (v) => (isNum(v) ? String(v) : DASH),
+        tip: g?.run === 'sp' ? 'Read off GPT-2\'s curve in the space-prefix run' : 'Read off GPT-2\'s train curve in the original run; only when both runs have the same recipe and val documents',
+      },
     ],
     rows,
     4,
   );
 }
 
-// Ablation arms (server.ABLATION_ARMS): [column label, short label]
+// report.py's check that a rerun is comparable with the whitespace run, shown above its numbers when it fails
+function notComparable(e) {
+  const line = (e.provenance || []).find((l) => l.startsWith('DIFFERENT'));
+  return line ? `<b class="delta-bad">Not comparable:</b> ${md(line)}.` : null;
+}
+
+// Ablation arms (server.ABLATION_ARMS): [column label, short label, the arm it changes one thing of]
 const ABLATION_LABELS = {
   whitespace: ['whitespace, 50 MB', 'ws'],
-  space_prefix: ['space_prefix, 50 MB', 'SP'],
-  gpt2_split: ['GPT-2 regex split (_g2), 50 MB', 'G2'],
-  space_prefix_300mb: ['space_prefix, 300 MB (_sp300)', 'SP300'],
+  space_prefix: ['space_prefix, 50 MB', 'SP', 'whitespace'], // the pre-split: a space joins the next word
+  gpt2_split: ['GPT-2 regex split (_g2), 50 MB', 'G2', 'space_prefix'], // GPT-2's regex rules on top of that
+  space_prefix_300mb: ['space_prefix, 300 MB (_sp300)', 'SP300', 'space_prefix'], // 300 MB of text instead of 50 MB
 };
 
 function renderAblation() {
@@ -1440,7 +1466,8 @@ function renderAblation() {
   }
   const a = e.ablation;
   if (!a || !a.rows.length) {
-    setHtml('abl-body', `<div class="empty">The ablation file is present, but ${a ? 'it has no <code>_g2</code> or <code>_sp300</code> tokeniser' : `there is no <code>${esc(R('swap').path)}</code> to compare against`}.</div>${provHtml(e)}`);
+    const why = a ? 'it has no <code>_g2</code> or <code>_sp300</code> tokeniser' : e.error ? esc(e.error) : `there is no <code>${esc(R('swap').path)}</code> to compare against`;
+    setHtml('abl-body', `<div class="empty">The ablation file is present, but ${why}.</div>${provHtml(e)}`);
     return;
   }
   const g = a.gpt2;
@@ -1448,18 +1475,21 @@ function renderAblation() {
   const bpb = (r, arm) => r[arm]?.final_bpb;
   const label = (arm) => ABLATION_LABELS[arm]?.[0] ?? arm;
   const short = (arm) => ABLATION_LABELS[arm]?.[1] ?? arm;
-  const facts = [];
+  const facts = [notComparable(e)].filter(Boolean);
   if (g) facts.push(`<b>GPT-2 reference</b> (original run): final BPB ${fmt(g.final_bpb, 4)}, ${fmt(g.val_bytes_per_token)} val bytes per token.`);
-  a.arms.slice(1).forEach((arm) => {
-    const d = rows.map((r) => (isNum(bpb(r, arm)) && isNum(bpb(r, 'whitespace')) ? bpb(r, arm) - bpb(r, 'whitespace') : null)).filter(isNum);
-    if (d.length) facts.push(`<b>${esc(label(arm))}</b>: lower final BPB than whitespace for <b>${d.filter((x) => x < 0).length} of ${d.length}</b> variants; median change ${signed(median(d), 4)} BPB.`);
+  // Each arm against the arm it changes one thing of, so one arm's effect is not credited to another
+  a.arms.forEach((arm) => {
+    const base = ABLATION_LABELS[arm]?.[2];
+    const d = rows.map((r) => (base && isNum(bpb(r, arm)) && isNum(bpb(r, base)) ? bpb(r, arm) - bpb(r, base) : null)).filter(isNum);
+    if (d.length) facts.push(`<b>${esc(label(arm))}</b> against ${esc(label(base))}: lower final BPB for <b>${d.filter((x) => x < 0).length} of ${d.length}</b> variants; median change ${signed(median(d), 4)} BPB.`);
   });
-  const wins = Object.fromEntries(a.arms.map((arm) => [arm, 0]));
-  rows.forEach((r) => {
-    const done = a.arms.filter((arm) => isNum(bpb(r, arm)));
-    if (done.length) wins[done.reduce((x, y) => (bpb(r, y) < bpb(r, x) ? y : x))] += 1;
-  });
-  facts.push(`Lowest final BPB per variant: ${a.arms.map((arm) => `${esc(label(arm))} <b>${wins[arm]}</b>`).join(', ')}.`);
+  // A variant missing an arm would win among fewer arms: count only variants run in every arm
+  const full = rows.filter((r) => a.arms.every((arm) => isNum(bpb(r, arm))));
+  if (full.length) {
+    const wins = Object.fromEntries(a.arms.map((arm) => [arm, 0]));
+    full.forEach((r) => (wins[a.arms.reduce((x, y) => (bpb(r, y) < bpb(r, x) ? y : x))] += 1));
+    facts.push(`Lowest final BPB, over the ${full.length} variant${full.length === 1 ? '' : 's'} run in every arm: ${a.arms.map((arm) => `${esc(label(arm))} <b>${wins[arm]}</b>`).join(', ')}.`);
+  }
   setHtml(
     'abl-body',
     `<ul class="facts">${facts.map((f) => `<li>${f}</li>`).join('')}</ul>
@@ -1532,12 +1562,16 @@ function renderFlores() {
     .sort((a, b) => (a.inMix.mean_premium ?? Infinity) - (b.inMix.mean_premium ?? Infinity));
   setHtml('flores-sub', esc(`${rows.length} tokenisers of the ${FLORES_TIERS[state.floresTier] ?? state.floresTier}. ${int(meta.flores?.sentences)} parallel sentences per language (${meta.flores?.split ?? '?'} split), each encoded on its own; premium = tokens in the language / tokens in English.`));
 
-  // Heatmap: premium per language, in-mix then out-of-mix, each group followed by its mean; shaded by rank per column
+  // Heatmap: premium per language, in-mix then out-of-mix, each group followed by its mean; shaded by rank per column.
+  // bytes: the UTF-8 byte ratio to English, the premium of one token per byte (the findings' "UTF-8 bytes")
+  const T = meta.text || {};
+  const ratio = (l) => (T[l]?.bytes && T[L.english]?.bytes ? T[l].bytes / T[L.english].bytes : null);
+  const groupRatio = (ls) => mean(ls.map(ratio).filter(isNum));
   const cols = [
-    ...inMix.map((l) => ({ label: l, get: (r) => r.languages?.[l]?.premium })),
-    { label: 'In-mix mean', avg: true, get: (r) => r.inMix.mean_premium },
-    ...outMix.map((l) => ({ label: l, get: (r) => r.languages?.[l]?.premium })),
-    { label: 'Out-of-mix mean', avg: true, get: (r) => r.outMix.mean_premium },
+    ...inMix.map((l) => ({ label: l, get: (r) => r.languages?.[l]?.premium, bytes: ratio(l) })),
+    { label: 'In-mix mean', avg: true, get: (r) => r.inMix.mean_premium, bytes: groupRatio(inMix) },
+    ...outMix.map((l) => ({ label: l, get: (r) => r.languages?.[l]?.premium, bytes: ratio(l) })),
+    { label: 'Out-of-mix mean', avg: true, get: (r) => r.outMix.mean_premium, bytes: groupRatio(outMix) },
   ];
   const shade = (c, v) => {
     const vals = rows.map(c.get).filter(isNum).sort((x, y) => x - y);
@@ -1550,7 +1584,9 @@ function renderFlores() {
   const body = rows
     .map((r) => `<tr><td class="model-name">${esc(r.key)}</td><td class="cell">${fmt(r.en, 1)}</td>${cols.map((c) => `<td class="cell${c.avg ? ' avg' : ''}" style="${shade(c, c.get(r))}">${fmt(c.get(r), 2)}</td>`).join('')}</tr>`)
     .join('');
-  setHtml('flores-heat', `<thead>${group}${head}</thead><tbody>${body}</tbody>`);
+  const en = T[L.english];
+  const bytesRow = `<tr><td class="model-name muted" title="The premium of a tokeniser with one token per byte: UTF-8 bytes of the language / of English; EN column: bytes per English sentence">UTF-8 bytes</td><td class="cell muted">${fmt(en ? en.bytes / en.sentences : null, 1)}</td>${cols.map((c) => `<td class="cell muted${c.avg ? ' avg' : ''}">${fmt(c.bytes, 2)}</td>`).join('')}</tr>`;
+  setHtml('flores-heat', `<thead>${group}${head}</thead><tbody>${bytesRow}${body}</tbody>`);
 
   table(
     'flores-table',
@@ -1569,7 +1605,9 @@ function renderFlores() {
     rows,
     3,
   );
-  setHtml('flores-notes', (e.notes || []).map((l) => `<li>${md(l)}</li>`).join('') || '<li>No findings (the file lacks a field the README renderer needs).</li>');
+  // The README's "UTF-8 bytes" column is the first row of the heatmap here
+  const notes = (e.notes || []).map((l) => l.replace('(column "UTF-8 bytes")', '(the "UTF-8 bytes" row of the heatmap above)'));
+  setHtml('flores-notes', notes.map((l) => `<li>${md(l)}</li>`).join('') || '<li>No findings (the file lacks a field the README renderer needs).</li>');
 
   // The caveat with this tier's numbers: the lowest premium next to its English cost
   const best = rows.find((r) => isNum(r.inMix.mean_premium) && isNum(r.en));
