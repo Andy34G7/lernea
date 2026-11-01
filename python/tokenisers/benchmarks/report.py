@@ -29,7 +29,9 @@ def _swap_provenance(meta: Dict[str, Any], models: Dict[str, Any]) -> str:
     earlier ``--prepare-only``, and each ``--from-pool`` pool that trained them) and that ran a run kept
     from an earlier session (``--resume``), wherever they differ from the run's."""
     own, prep = _commit(meta), meta.get("prepared") or {}
-    made = sorted({_commit(p) for p in [prep, *(prep.get("pools") or {}).values()]} - {own})
+    # Results written before pools carried provenance store each pool as its command list: no commit to report.
+    pools = [p for p in (prep.get("pools") or {}).values() if isinstance(p, dict)]
+    made = sorted({_commit(p) for p in [prep, *pools]} - {own})
     ran: Dict[str, List[str]] = {}
     for n, m in models.items():
         if m.get("launched") and _commit(m["launched"]) != own:

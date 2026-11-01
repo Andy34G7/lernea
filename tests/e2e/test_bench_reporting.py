@@ -259,3 +259,15 @@ def test_readme_setup_paragraph_accounts_for_every_results_section(repo_root):
             named |= set(range(int(lo), int(hi or lo) + 1))
     assert sections - named == set(), f"Scale and setup says nothing about sections {sorted(sections - named)}"
     assert f"listed after section {max(sections)}." in " ".join(setup.split())
+
+
+def test_swap_provenance_accepts_pools_recorded_as_command_lists():
+    """Ablation results written before pools carried provenance store each pool as its command list."""
+    from tokenisers.benchmarks.report import _swap_provenance
+
+    meta = {"git_commit": "950506bcafe", "git_dirty": False,
+            "prepared": {"git_commit": "950506bcafe", "git_dirty": False,
+                         "pools": {"/pool-g2": ["python", "-m", "x", "--prepare-only"], "/pool-sp300": ["python"]}}}
+    assert _swap_provenance(meta, {}) == ""
+    meta["prepared"]["pools"]["/pool-new"] = {"git_commit": "abcdef1234567", "git_dirty": True}
+    assert "`abcdef1234 (dirty)`" in _swap_provenance(meta, {})

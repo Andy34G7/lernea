@@ -959,7 +959,19 @@ uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir JOB --gpu A100 --s
 ```
 
 <!-- BEGIN GENERATED: nanogpt_swap_ablation -->
-_Not yet run: no `benchmarks/results/nanogpt_swap_ablation/nanogpt_swap.json` is committed, so there is nothing to compare._
+- ablation run: NVIDIA A100-SXM4-40GB, 40960 MiB, 580.82.07, commit `950506beba`, generated 2026-11-01T16:28:54Z
+- same recipe and val documents as the whitespace run
+- training text: `mdl_bits_g2` 16,157 docs, 50.0 MB; `unigram_lm_g2` 16,157 docs, 50.0 MB; `wp_bpe_npmi_g2` 16,157 docs, 50.0 MB; `wp_bpe_pig_g2` 16,157 docs, 50.0 MB; `wp_bpe_ppig_g2` 16,157 docs, 50.0 MB; `mdl_bits_sp300` 97,402 docs, 300.0 MB; `unigram_lm_sp300` 97,402 docs, 300.0 MB; `wp_bpe_npmi_sp300` 97,402 docs, 300.0 MB; `wp_bpe_pig_sp300` 97,402 docs, 300.0 MB; `wp_bpe_ppig_sp300` 97,402 docs, 300.0 MB
+- cells: final val BPB (val bytes per token)
+
+| Variant | whitespace, 50 MB | space_prefix, 50 MB | gpt2, 50 MB | space_prefix, 300 MB |
+| :--- | ---: | ---: | ---: | ---: |
+| `mdl_bits` | **1.9684** (2.72) | **1.7067** (4.69) | **1.6910** (4.45) | **1.7226** (4.72) |
+| `unigram_lm` | **2.0239** (2.73) | **1.7088** (4.69) | **1.6817** (4.42) | **1.7026** (4.70) |
+| `wp_bpe_npmi` | **1.9835** (2.70) | **1.7436** (4.66) | **1.7093** (4.43) | **1.7207** (4.69) |
+| `wp_bpe_pig` | **2.0077** (2.73) | **1.7749** (4.77) | **1.7029** (4.47) | **1.7644** (4.80) |
+| `wp_bpe_ppig` | **1.9561** (2.74) | **1.7552** (4.78) | **1.6946** (4.47) | **1.7090** (4.81) |
+| `gpt2` (reference) | **1.6851** (4.44) | | | |
 <!-- END GENERATED: nanogpt_swap_ablation -->
 
 ### 7. Cross-lingual Tokenization Parity (FLORES+)
