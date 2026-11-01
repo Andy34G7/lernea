@@ -1,3 +1,5 @@
+use tokenizers::{OffsetReferential, OffsetType, PreTokenizedString, PreTokenizer, PreTokenizerWrapper};
+
 use crate::error::{Result, TokeniserError};
 
 /// GPT-2's pre-tokenization regex, verbatim from tiktoken 0.14.0 (`tiktoken_ext/openai_public.py`,
@@ -14,7 +16,8 @@ pub const GPT2_PATTERN: &str =
 ///
 /// Whitespace is Unicode `White_Space` (`char::is_whitespace`, the regex `\s`), so U+3000, U+00A0,
 /// U+2028 etc. separate words just like ASCII space. Bytes that are not valid UTF-8 count as
-/// non-whitespace in every mode; `Gpt2` reads each maximal invalid sequence as one U+FFFD.
+/// non-whitespace in every mode; `Gpt2` reads each maximal invalid sequence as one U+FFFD, `Hf` each
+/// invalid byte as one U+0000.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Pretokenizer {
     /// Alternating maximal runs of whitespace and non-whitespace: every whitespace run is its own
@@ -42,6 +45,154 @@ pub enum Pretokenizer {
     /// by non-whitespace, where tiktoken panics. The split then goes on with the regex's own rule
     /// for that run (`\s+(?!\S)`: all of it but its last char), so the result is unchanged.
     Gpt2,
+    /// A lossless Hugging Face `tokenizers` pre-tokenizer given as its `pre_tokenizer` JSON config
+    /// and run by `tokenizers` itself (see [`HfPreTokenizer`]; made by [`Pretokenizer::hf`]).
+    Hf(&'static HfPreTokenizer),
+}
+
+/// A Hugging Face pre-tokenizer that only splits: `Split` and `Punctuation` with any behavior but
+/// `Removed`, `Digits`, `FixedLength`, at most one `ByteLevel` without `add_prefix_space`, and
+/// `Sequence`s of these. Every other component drops, adds or rewrites text (`Whitespace`,
+/// `WhitespaceSplit`, `BertPreTokenizer` and `CharDelimiterSplit` drop what they split on,
+/// `Metaspace` turns spaces into U+2581, `UnicodeScripts` drops the U+0020 spaces a piece starts
+/// with) and is rejected. On top of that, every new config must cut a probe text into segments
+/// that concatenate to it.
+///
+/// HF works on chars: its pieces are mapped back to bytes of the text, one byte per char when the
+/// config has a `ByteLevel` (which turns every byte into one GPT-2 byte-level char), else as the
+/// text itself. Pieces that do not tile the text are an error. A splitter after `ByteLevel` can
+/// cut inside a char, as HF does (Falcon's `Digits`: "ス" is E3 82 B9, mapped to "ãĤ¹", and "¹" is
+/// numeric; `Punctuation`: "ö" is "Ã¶"): such a segment is not valid UTF-8, and on its own need not
+/// split as it did in context, so models trust their training words to be segments.
+pub struct HfPreTokenizer {
+    /// The `pre_tokenizer` config as given; the Hugging Face export writes it back unchanged.
+    pub config: serde_json::Value,
+    pre_tokenizer: PreTokenizerWrapper,
+    /// GPT-2 byte-level char -> byte (`vocab::bytes_char`) when the config has a `ByteLevel`.
+    byte_level: Option<[Option<u8>; 512]>,
+}
+
+impl PartialEq for HfPreTokenizer {
+    fn eq(&self, other: &Self) -> bool {
+        self.config == other.config
+    }
+}
+
+impl Eq for HfPreTokenizer {}
+
+impl std::hash::Hash for HfPreTokenizer {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.config.to_string().hash(state); // objects serialise with sorted keys
+    }
+}
+
+impl std::fmt::Debug for HfPreTokenizer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.config)
+    }
+}
+
+/// Text of every kind a new `Hf` config must cut losslessly: scripts, digits in words, punctuation,
+/// emoji, combining marks, whitespace runs, leading and trailing spaces, and chars with a byte that
+/// GPT-2's byte-level map turns into punctuation (A1 ¡, A7 §, AB «, B6 ¶, B7 ·, BB », BF ¿).
+const PROBE: &str = " Hello, wörld!! It's 2024-11-01: naïve café e\u{301}t\u{e9}, x²+½ ٣٤ १२ $1,299.00\n\n\t \
+    \u{3000}中文文本。日本語のテキスト 한국어 Привет🚀🔥 👩\u{200d}👩\u{200d}👧 rock'n'roll   ab12cd \u{a0}\u{fffd}\u{200b}x \
+    ¡olá! «ç» ¿ÿ? ·ŧ ";
+
+/// Why the HF config component `config` (HF's own serialisation, so `type` is always set) is not
+/// a lossless splitter, if it is not; counts its `ByteLevel`s.
+fn check_splits_only(config: &serde_json::Value, byte_levels: &mut usize) -> std::result::Result<(), String> {
+    let kind = config["type"].as_str().unwrap_or_default();
+    let why = match kind {
+        "Sequence" => {
+            let parts = config["pretokenizers"].as_array().into_iter().flatten();
+            return parts.into_iter().try_for_each(|p| check_splits_only(p, byte_levels));
+        }
+        "Split" | "Punctuation" if config["behavior"] == "Removed" => "with behavior Removed drops what it splits on",
+        "Split" | "Punctuation" | "Digits" | "FixedLength" => return Ok(()),
+        "ByteLevel" if config["add_prefix_space"] != false => "with add_prefix_space adds a space",
+        "ByteLevel" => {
+            *byte_levels += 1;
+            return Ok(());
+        }
+        "Whitespace" | "WhitespaceSplit" | "BertPreTokenizer" => "drops whitespace",
+        "CharDelimiterSplit" => "drops the delimiter",
+        "Metaspace" => "replaces spaces with U+2581 (and can add one)",
+        "UnicodeScripts" => "drops the U+0020 spaces a piece starts with (\" ab\" -> \"ab\")",
+        _ => "is not a known lossless splitter",
+    };
+    Err(format!(
+        "{kind} {why}; only lossless splitters are allowed: Split and Punctuation (behavior not \
+         Removed), Digits, FixedLength, ByteLevel (add_prefix_space=false) and Sequences of these"
+    ))
+}
+
+impl HfPreTokenizer {
+    fn new(config: serde_json::Value) -> std::result::Result<Self, String> {
+        let pre_tokenizer: PreTokenizerWrapper = serde_json::from_value(config.clone())
+            .map_err(|e| check_splits_only(&config, &mut 0).err().unwrap_or_else(|| e.to_string()))?;
+        let mut byte_levels = 0;
+        check_splits_only(&serde_json::to_value(&pre_tokenizer).map_err(|e| e.to_string())?, &mut byte_levels)?;
+        if byte_levels > 1 {
+            return Err(format!("{byte_levels} ByteLevels would map the bytes {byte_levels} times; use one"));
+        }
+        let byte_level = (byte_levels == 1).then(|| crate::vocab::bytes_char().1);
+        let hf = Self { config, pre_tokenizer, byte_level };
+        hf.segments(PROBE.as_bytes())?;
+        Ok(hf)
+    }
+
+    /// The config has a `ByteLevel`, so HF's pieces are byte-level chars.
+    pub fn byte_level(&self) -> bool {
+        self.byte_level.is_some()
+    }
+
+    /// Segments of `bytes`. HF takes text, so each byte of invalid UTF-8 reads as U+0000, a symbol
+    /// (not whitespace, a letter, a digit or punctuation), one char per byte: HF's cuts are then
+    /// offsets in `bytes`, also where a splitter after `ByteLevel` cuts inside a char.
+    fn segments<'a>(&self, bytes: &'a [u8]) -> std::result::Result<Vec<&'a [u8]>, String> {
+        let text = match std::str::from_utf8(bytes) {
+            Ok(text) => std::borrow::Cow::Borrowed(text),
+            Err(_) => bytes
+                .utf8_chunks()
+                .map(|chunk| chunk.valid().to_owned() + &"\0".repeat(chunk.invalid().len()))
+                .collect(),
+        };
+        Ok(cut(bytes, &self.cuts(&text)?))
+    }
+
+    /// End offsets of the segments of `text` (ascending, the last one `text.len()`): HF's pieces
+    /// mapped back to `text`. An error unless they concatenate to `text` exactly.
+    // ponytail: HF keeps ~16 bytes of alignments per byte of text; chunk huge inputs if that matters.
+    fn cuts(&self, text: &str) -> std::result::Result<Vec<usize>, String> {
+        let mut pre = PreTokenizedString::from(text);
+        self.pre_tokenizer.pre_tokenize(&mut pre).map_err(|e| e.to_string())?;
+        let bytes = text.as_bytes();
+        let (mut cuts, mut pos) = (Vec::new(), 0);
+        for (piece, _, _) in pre.get_splits(OffsetReferential::Normalized, OffsetType::Byte) {
+            let tiles = match &self.byte_level {
+                Some(to_byte) => piece.chars().all(|c| {
+                    let byte = to_byte.get(c as usize).copied().flatten();
+                    let hit = byte.is_some() && bytes.get(pos).copied() == byte;
+                    pos += hit as usize;
+                    hit
+                }),
+                None => {
+                    let hit = bytes[pos..].starts_with(piece.as_bytes());
+                    pos += if hit { piece.len() } else { 0 };
+                    hit
+                }
+            };
+            if !tiles {
+                return Err(format!("not lossless: piece {piece:?} is not the text at byte {pos}"));
+            }
+            cuts.push(pos);
+        }
+        if pos != bytes.len() {
+            return Err(format!("not lossless: the pieces end at byte {pos} of {}", bytes.len()));
+        }
+        Ok(cuts)
+    }
 }
 
 thread_local! {
@@ -119,24 +270,46 @@ fn gpt2_segments(bytes: &[u8]) -> Vec<&[u8]> {
 }
 
 impl Pretokenizer {
-    /// Every mode.
+    /// Every named mode (`Hf` takes a config instead).
     pub const ALL: [Self; 3] = [Self::Whitespace, Self::SpacePrefix, Self::Gpt2];
 
-    /// The name used in the Python API and in result metadata.
+    /// The name used in the Python API and in result metadata ("hf" for every `Hf` config).
     pub fn name(self) -> &'static str {
         match self {
             Self::Whitespace => "whitespace",
             Self::SpacePrefix => "space_prefix",
             Self::Gpt2 => "gpt2",
+            Self::Hf(_) => "hf",
         }
     }
 
     pub fn from_name(name: &str) -> Result<Self> {
         Self::ALL.into_iter().find(|p| p.name() == name).ok_or_else(|| {
             TokeniserError::InvalidConfiguration(format!(
-                "pretokenizer must be \"whitespace\", \"space_prefix\" or \"gpt2\", got {name:?}"
+                "pretokenizer must be \"whitespace\", \"space_prefix\", \"gpt2\" or {{\"hf\": <pre_tokenizer \
+                 config>}}, got {name:?}"
             ))
         })
+    }
+
+    /// `Hf` mode for a Hugging Face `pre_tokenizer` JSON config, e.g. Llama-style single digits
+    /// `{"type": "Sequence", "pretokenizers": [{"type": "Digits", "individual_digits": true},
+    /// {"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": false, "use_regex": true}]}`.
+    /// An error names the component that is not a lossless splitter (see [`HfPreTokenizer`]).
+    pub fn hf(config: serde_json::Value) -> Result<Self> {
+        // ponytail: each distinct config is built and leaked once, for the process lifetime, so
+        // `Pretokenizer` stays `Copy`; an Arc and a non-Copy enum if configs ever get per-request.
+        static INTERNED: parking_lot::Mutex<Vec<&'static HfPreTokenizer>> = parking_lot::Mutex::new(Vec::new());
+        let mut interned = INTERNED.lock();
+        if let Some(&hf) = interned.iter().find(|hf| hf.config == config) {
+            return Ok(Self::Hf(hf));
+        }
+        let hf = HfPreTokenizer::new(config.clone()).map_err(|why| {
+            TokeniserError::InvalidConfiguration(format!("HF pre-tokenizer {config}: {why}"))
+        })?;
+        let hf: &'static HfPreTokenizer = Box::leak(Box::new(hf));
+        interned.push(hf);
+        Ok(Self::Hf(hf))
     }
 
     /// Segments of `text` (see [`Self::segment_bytes`]).
@@ -149,8 +322,11 @@ impl Pretokenizer {
 
     /// Non-empty segments of `bytes`; concatenated they give back `bytes`.
     pub fn segment_bytes(self, bytes: &[u8]) -> Vec<&[u8]> {
-        if self == Self::Gpt2 {
-            return gpt2_segments(bytes);
+        match self {
+            Self::Gpt2 => return gpt2_segments(bytes),
+            // `HfPreTokenizer::new` only accepts splitters, so this never fails.
+            Self::Hf(hf) => return hf.segments(bytes).unwrap_or_else(|e| panic!("HF pre-tokenizer {hf:?}: {e}")),
+            _ => {}
         }
         // (is_whitespace, byte length) per char; each invalid UTF-8 run is one non-ws unit.
         let units = bytes.utf8_chunks().flat_map(|chunk| {

@@ -221,6 +221,62 @@ fn gpt2_training_matches_bruteforce_and_encodes_text_like_training() {
 }
 
 #[test]
+fn hf_training_matches_bruteforce_and_encodes_text_like_training() {
+    // An `Hf` config that splits digits one by one, runs GPT-2's regex (`ByteLevel`), then isolates
+    // punctuation among the byte-level chars, cutting "á" (C3 A1, mapped "Ã¡") and "ö" (C3 B6, "Ã¶")
+    // inside the char: merges must equal brute force on its segments, and encoding whole lines must
+    // give each segment's training segmentation.
+    let config = serde_json::json!({"type": "Sequence", "pretokenizers": [
+        {"type": "Digits", "individual_digits": true},
+        {"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": false, "use_regex": true},
+        {"type": "Punctuation", "behavior": "Isolated"}]});
+    let hf = Pretokenizer::hf(config).unwrap();
+    const PIECES: &[&str] = &["a", "b", "ab", "1", "2", "'s", " ", " ", "  ", "\n", "á", "ö", ",", "!"];
+    let (mut digit_or_punct_merges, mut spaced_merges, mut inside_char) = (0, 0, 0);
+    for (name, scorer, min_freq) in scorers() {
+        for seed in 0..40u64 {
+            let mut rng = fastrand::Rng::with_seed(seed);
+            let lines: Vec<Vec<u8>> = (0..15)
+                .map(|_| (0..rng.usize(1..12)).flat_map(|_| PIECES[rng.usize(0..PIECES.len())].bytes()).collect())
+                .collect();
+            let mut counts: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
+            for line in &lines {
+                for seg in hf.segment_bytes(line) {
+                    *counts.entry(seg.to_vec()).or_default() += 1;
+                    inside_char += std::str::from_utf8(seg).is_err() as usize;
+                }
+            }
+            let corpus: Vec<(Vec<u8>, u64)> = counts.into_iter().collect();
+            let target = 256 + 25;
+            let model = BottomUpTrainer::new(scorer.as_ref(), target)
+                .with_min_frequency(min_freq)
+                .with_pretokenizer(hf)
+                .train(&corpus)
+                .unwrap();
+            let (ref_merges, ref_words) = reference_train(scorer.as_ref(), &corpus, target, min_freq);
+            assert_eq!(model.merges, ref_merges, "{name}: merge sequence differs from brute force (seed {seed})");
+            assert!(model.pretokenize && model.pretokenizer == hf, "{name} (seed {seed})");
+
+            let trained: HashMap<&[u8], &Vec<TokenId>> =
+                corpus.iter().map(|(w, _)| w.as_slice()).zip(&ref_words).collect();
+            for line in &lines {
+                let expected: Vec<TokenId> =
+                    hf.segment_bytes(line).into_iter().flat_map(|seg| trained[seg].iter().copied()).collect();
+                assert_eq!(model.encode(line), expected, "{name}: encode != training (seed {seed}, {line:?})");
+            }
+            for &(_, _, w) in &model.merges {
+                let b = model.vocab.get_bytes(w).unwrap();
+                digit_or_punct_merges += b.iter().any(|c| c.is_ascii_digit() || b",!'".contains(c)) as usize;
+                spaced_merges += (b[0] == b' ' && b.iter().any(|c| !c.is_ascii_whitespace())) as usize;
+            }
+        }
+    }
+    assert_eq!(digit_or_punct_merges, 0, "single digits and punctuation are segments of their own");
+    assert!(spaced_merges > 300, "space + word merges must be exercised: {spaced_merges}");
+    assert!(inside_char > 1000, "segments cut inside a char must be exercised: {inside_char}");
+}
+
+#[test]
 fn every_builtin_scorer_declares_narrow_deps() {
     for (name, scorer, _) in scorers() {
         let expected_arbitrary = name == "arbitrary_deps";

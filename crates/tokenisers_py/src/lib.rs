@@ -4,7 +4,7 @@ use std::path::Path;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
+use pyo3::types::{PyBytes, PyDict};
 
 use tokenisers_core::curricula::morpheme::{MorphemeGuidedScorer, MorphemeLexicon};
 use tokenisers_core::curricula::super_bpe::{SuperBpeConfig, SuperBpeTrainer};
@@ -97,8 +97,40 @@ fn value_err(e: impl ToString) -> PyErr {
     PyValueError::new_err(e.to_string())
 }
 
-fn parse_pretokenizer(name: &str) -> PyResult<Pretokenizer> {
-    Pretokenizer::from_name(name).map_err(value_err)
+/// `pretokenizer=`: a mode name ("whitespace", also for None, "space_prefix", "gpt2") or
+/// `{"hf": config}`, a Hugging Face `pre_tokenizer` config as a dict or a JSON string.
+fn parse_pretokenizer(spec: Option<&Bound<'_, PyAny>>) -> PyResult<Pretokenizer> {
+    let Some(spec) = spec else { return Ok(Pretokenizer::Whitespace) };
+    if let Ok(name) = spec.extract::<String>() {
+        return Pretokenizer::from_name(&name).map_err(value_err);
+    }
+    let config = spec
+        .downcast::<PyDict>()
+        .ok()
+        .filter(|d| d.len() == 1)
+        .and_then(|d| d.get_item("hf").ok().flatten())
+        .ok_or_else(|| {
+            value_err(format!(
+                "pretokenizer must be \"whitespace\", \"space_prefix\", \"gpt2\" or {{\"hf\": <pre_tokenizer \
+                 config>}}, got {spec}"
+            ))
+        })?;
+    let json: String = match config.extract() {
+        Ok(json) => json,
+        Err(_) => spec.py().import("json")?.call_method1("dumps", (config,))?.extract()?,
+    };
+    let config = serde_json::from_str(&json).map_err(|e| value_err(format!("pretokenizer {{\"hf\": ...}}: {e}")))?;
+    Pretokenizer::hf(config).map_err(value_err)
+}
+
+/// The `pretokenizer` property: the mode name, or `{"hf": config}`.
+fn pretokenizer_py(py: Python<'_>, pretokenizer: Pretokenizer) -> PyResult<Bound<'_, PyAny>> {
+    let Pretokenizer::Hf(hf) = pretokenizer else {
+        return Ok(pyo3::types::PyString::new(py, pretokenizer.name()).into_any());
+    };
+    let spec = PyDict::new(py);
+    spec.set_item("hf", py.import("json")?.call_method1("loads", (hf.config.to_string(),))?)?;
+    Ok(spec.into_any())
 }
 
 /// The string a token is known by in `id_to_token` (HF `id_to_token` on the export): a special
@@ -221,10 +253,10 @@ impl PyBpeModel {
         self.model.vocab.len()
     }
 
-    /// The segmentation encoding splits text into ("whitespace", "space_prefix" or "gpt2"), or
-    /// None for a model that encodes whole text (SuperBPE after stage 2).
-    pub fn pretokenizer(&self) -> Option<&'static str> {
-        self.model.pretokenize.then(|| self.model.pretokenizer.name())
+    /// The segmentation encoding splits text into ("whitespace", "space_prefix", "gpt2" or
+    /// `{"hf": config}`), or None for a model that encodes whole text (SuperBPE after stage 2).
+    pub fn pretokenizer<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        self.model.pretokenize.then(|| pretokenizer_py(py, self.model.pretokenizer)).transpose()
     }
 
     /// The keys of the exported tokenizer.json (HF `get_vocab(with_added_tokens=True)`): each
@@ -416,10 +448,10 @@ impl PyUnigramModel {
         self.model.vocab.len()
     }
 
-    /// The segmentation encoding and sampling split text into ("whitespace", "space_prefix" or
-    /// "gpt2").
-    pub fn pretokenizer(&self) -> Option<&'static str> {
-        Some(self.model.pretokenizer.name())
+    /// The segmentation encoding and sampling split text into ("whitespace", "space_prefix",
+    /// "gpt2" or `{"hf": config}`).
+    pub fn pretokenizer<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        pretokenizer_py(py, self.model.pretokenizer).map(Some)
     }
 
     /// `{token string: id}` with exactly `vocab_size()` entries (see `token_string`).
@@ -692,11 +724,11 @@ pub fn printable_to_bytes(text: &str) -> PyResult<Vec<u8>> {
     byte_vocab().printable_to_bytes(text).map_err(value_err)
 }
 
-/// The segments `pretokenizer` ("whitespace", "space_prefix" or "gpt2") splits `data` into, as
-/// training and encoding see them; concatenated they give back `data`.
+/// The segments `pretokenizer` ("whitespace", "space_prefix", "gpt2" or `{"hf": config}`) splits
+/// `data` into, as training and encoding see them; concatenated they give back `data`.
 #[pyfunction]
-pub fn pretokenize<'py>(py: Python<'py>, data: &[u8], pretokenizer: &str) -> PyResult<Vec<Bound<'py, PyBytes>>> {
-    let pretokenizer = parse_pretokenizer(pretokenizer)?;
+pub fn pretokenize<'py>(py: Python<'py>, data: &[u8], pretokenizer: &Bound<'py, PyAny>) -> PyResult<Vec<Bound<'py, PyBytes>>> {
+    let pretokenizer = parse_pretokenizer(Some(pretokenizer))?;
     Ok(pretokenizer.segment_bytes(data).into_iter().map(|seg| PyBytes::new(py, seg)).collect())
 }
 
@@ -720,10 +752,11 @@ fn check_param(name: &str, value: Option<f64>, allow_negative: bool) -> PyResult
 /// is an upper bound (training stops early when no eligible pair is left). Special tokens are cut
 /// out of the corpus before training, as encode cuts them out of the text. `None` parameters take
 /// the scorer's default; a parameter the scorer does not use raises `ValueError`. `pretokenizer`
-/// ("whitespace", "space_prefix" or "gpt2") is the segmentation of training and encoding.
+/// ("whitespace", "space_prefix", "gpt2" or `{"hf": config}`, see `parse_pretokenizer`) is the
+/// segmentation of training and encoding.
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
-#[pyo3(signature = (corpus, vocab_size, scorer_type="frequency", min_frequency=None, alpha=None, beta=None, penalty=None, special_tokens=None, pretokenizer="whitespace"))]
+#[pyo3(signature = (corpus, vocab_size, scorer_type="frequency", min_frequency=None, alpha=None, beta=None, penalty=None, special_tokens=None, pretokenizer=None))]
 pub fn train_bpe(
     py: Python<'_>,
     corpus: Vec<String>,
@@ -734,7 +767,7 @@ pub fn train_bpe(
     beta: Option<f64>,
     penalty: Option<f64>,
     special_tokens: Option<Vec<String>>,
-    pretokenizer: &str,
+    pretokenizer: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyBpeModel> {
     let pretokenizer = parse_pretokenizer(pretokenizer)?;
     check_param("alpha", alpha, false)?;
@@ -834,17 +867,17 @@ pub fn train_bpe(
 
 /// Trains a Unigram LM; `vocab_size` is an upper bound (the seed set may be smaller). Each round
 /// runs `num_iterations` EM steps, then keeps `shrinking_factor` of the vocabulary (SentencePiece
-/// semantics), never pruning below `vocab_size`. `pretokenizer` ("whitespace", "space_prefix" or
-/// "gpt2") is the segmentation of training, encoding and sampling.
+/// semantics), never pruning below `vocab_size`. `pretokenizer` ("whitespace", "space_prefix",
+/// "gpt2" or `{"hf": config}`) is the segmentation of training, encoding and sampling.
 #[pyfunction]
-#[pyo3(signature = (corpus, vocab_size, num_iterations=10, shrinking_factor=0.75, pretokenizer="whitespace"))]
+#[pyo3(signature = (corpus, vocab_size, num_iterations=10, shrinking_factor=0.75, pretokenizer=None))]
 pub fn train_unigram(
     py: Python<'_>,
     corpus: Vec<String>,
     vocab_size: usize,
     num_iterations: usize,
     shrinking_factor: f64,
-    pretokenizer: &str,
+    pretokenizer: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyUnigramModel> {
     let pretokenizer = parse_pretokenizer(pretokenizer)?;
     if vocab_size < BASE_VOCAB_SIZE {
@@ -924,7 +957,7 @@ pub fn train_super_bpe(
 /// segment of that mode. A word the mode splits (in "gpt2": "don't", "e-mail", "abc123") is never a
 /// training segment, so its entry has no effect.
 #[pyfunction]
-#[pyo3(signature = (corpus, vocab_size, morpheme_lexicon, lambda_weight=1.0, scorer="frequency", min_frequency=1, alpha=None, beta=None, penalty=None, special_tokens=None, pretokenizer="whitespace"))]
+#[pyo3(signature = (corpus, vocab_size, morpheme_lexicon, lambda_weight=1.0, scorer="frequency", min_frequency=1, alpha=None, beta=None, penalty=None, special_tokens=None, pretokenizer=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn train_morpheme_guided(
     py: Python<'_>,
@@ -938,7 +971,7 @@ pub fn train_morpheme_guided(
     beta: Option<f64>,
     penalty: Option<f64>,
     special_tokens: Option<Vec<String>>,
-    pretokenizer: &str,
+    pretokenizer: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyBpeModel> {
     let pretokenizer = parse_pretokenizer(pretokenizer)?;
     let specials = special_tokens.unwrap_or_default();

@@ -19,8 +19,12 @@ isolates every Unicode whitespace run, so every space is its own token; ``"space
 (GPT-2-style) lets a word take the one U+0020 space before it (" the"), while other whitespace
 stays in whitespace-only segments; ``"gpt2"`` is GPT-2's exact regex pre-split (tiktoken's gpt2
 ``pat_str``): contractions, letter runs, digit runs and punctuation runs apart, each with the
-space before it (" it", "'s", " 2024", "!"). The exported ``tokenizer.json`` reproduces it, and
-``from_pretrained`` restores it. ``tokenisers._core.pretokenize(data, mode)`` returns the segments.
+space before it (" it", "'s", " 2024", "!"); ``{"hf": config}`` is a Hugging Face ``pre_tokenizer``
+config (a dict or JSON string, e.g. ``{"type": "Digits", "individual_digits": True}``) run by
+``tokenizers`` itself, limited to splitters that keep every character (``Split``, ``Punctuation``,
+``Digits``, ``FixedLength``, ``ByteLevel`` without ``add_prefix_space``, ``Sequence``); anything
+else raises ``ValueError``. The exported ``tokenizer.json`` reproduces it, and ``from_pretrained``
+restores it. ``tokenisers._core.pretokenize(data, mode)`` returns the segments.
 """
 
 from __future__ import annotations
@@ -29,7 +33,7 @@ import json
 import os
 import warnings
 from collections import Counter
-from typing import Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 from tokenisers import _core
 
@@ -63,9 +67,9 @@ class _CoreTokenizer:
         return 0 if self._model is None else self._model.vocab_size()
 
     @property
-    def pretokenizer(self) -> Optional[str]:
-        """``"whitespace"``, ``"space_prefix"`` or ``"gpt2"``; None when the model encodes whole text
-        (SuperBPE after stage 2) or is not trained."""
+    def pretokenizer(self) -> Optional[Union[str, Dict[str, Any]]]:
+        """``"whitespace"``, ``"space_prefix"``, ``"gpt2"`` or ``{"hf": config}``; None when the model
+        encodes whole text (SuperBPE after stage 2) or is not trained."""
         return None if self._model is None else self._model.pretokenizer()
 
     def get_vocab(self) -> Dict[str, int]:
@@ -139,7 +143,7 @@ class BpeTokenizer(_CoreTokenizer):
         beta: Optional[float] = None,
         penalty: Optional[float] = None,
         special_tokens: Optional[List[str]] = None,
-        pretokenizer: str = "whitespace",
+        pretokenizer: Union[str, Dict[str, Any]] = "whitespace",
     ):
         """
         Trains on ``corpus``. ``vocab_size`` includes ``special_tokens``, which are cut out of the
@@ -369,7 +373,7 @@ class MorphemeGuidedTokenizer(BpeTokenizer):
         beta: Optional[float] = None,
         penalty: Optional[float] = None,
         special_tokens: Optional[List[str]] = None,
-        pretokenizer: str = "whitespace",
+        pretokenizer: Union[str, Dict[str, Any]] = "whitespace",
     ) -> MorphemeGuidedTokenizer:
         if not corpus:
             raise ValueError("Training corpus cannot be empty")
@@ -410,7 +414,7 @@ class UnigramTokenizer(_CoreTokenizer):
         vocab_size: int = 300,
         num_iterations: int = 10,
         shrinking_factor: float = 0.75,
-        pretokenizer: str = "whitespace",
+        pretokenizer: Union[str, Dict[str, Any]] = "whitespace",
     ) -> UnigramTokenizer:
         if not corpus:
             raise ValueError("Training corpus cannot be empty")

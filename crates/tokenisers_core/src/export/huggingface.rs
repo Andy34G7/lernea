@@ -37,6 +37,9 @@ pub enum PreTokenizerConfig {
     Sequence {
         pretokenizers: Vec<PreTokenizerConfig>,
     },
+    /// Any other config, as it is (`Pretokenizer::Hf` exports).
+    #[serde(untagged)]
+    Other(serde_json::Value),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -93,12 +96,12 @@ pub fn space_prefix_regex() -> String {
 }
 
 /// The `Split` regex reproducing `pretokenizer`'s segmentation; None for `Gpt2`, which HF's
-/// `ByteLevel(use_regex=true)` applies itself.
+/// `ByteLevel(use_regex=true)` applies itself, and for `Hf`, which is HF's own config.
 pub fn split_regex(pretokenizer: Pretokenizer) -> Option<String> {
     match pretokenizer {
         Pretokenizer::Whitespace => Some(whitespace_run_regex()),
         Pretokenizer::SpacePrefix => Some(space_prefix_regex()),
-        Pretokenizer::Gpt2 => None,
+        Pretokenizer::Gpt2 | Pretokenizer::Hf(_) => None,
     }
 }
 
@@ -114,11 +117,18 @@ fn byte_level(use_regex: bool) -> PreTokenizerConfig {
 
 /// HF equivalent of native pre-tokenization: split into `pretokenizer` segments, then byte-level
 /// map. Without a pretokenizer (SuperBPE) the whole text is one word. `Gpt2` is HF's own
-/// `ByteLevel(use_regex=true)`: GPT-2's pattern, which `Pretokenizer::Gpt2` runs natively.
+/// `ByteLevel(use_regex=true)`: GPT-2's pattern, which `Pretokenizer::Gpt2` runs natively. `Hf` is
+/// its config unchanged, followed by the byte-level map unless it has a `ByteLevel` of its own.
 fn pre_tokenizer(pretokenizer: Option<Pretokenizer>) -> PreTokenizerConfig {
     let Some(pretokenizer) = pretokenizer else {
         return byte_level(false);
     };
+    if let Pretokenizer::Hf(hf) = pretokenizer {
+        return PreTokenizerConfig::Other(match hf.byte_level() {
+            true => hf.config.clone(),
+            false => serde_json::json!({"type": "Sequence", "pretokenizers": [hf.config, byte_level(false)]}),
+        });
+    }
     let Some(regex) = split_regex(pretokenizer) else {
         return byte_level(true);
     };
@@ -313,9 +323,12 @@ impl HfTokenizerJson {
     /// The segmentation of a model loaded from this file: None for the bare whole-text byte-level
     /// pre-tokenizer (what SuperBPE exports), `Some(p)` for the `split_regex(p)` split + byte level
     /// that the other exports write, `Some(Gpt2)` for `ByteLevel` with GPT-2's regex (and no added
-    /// prefix space; `trim_offsets` only changes offsets). Native encoding implements nothing else,
-    /// so any other pre-tokenizer (`add_prefix_space`, other split patterns) or any normalizer is an
-    /// error rather than a silently different encoding.
+    /// prefix space; `trim_offsets` only changes offsets). Any other pre-tokenizer is `Some(Hf)`
+    /// if `Pretokenizer::hf` accepts it and it has one `ByteLevel` (byte-level models): the config
+    /// an `Hf` export wrote, i.e. without the byte-level map it added after a config that has no
+    /// `ByteLevel`, so a reload exports the same file. Native encoding implements nothing else, so
+    /// a lossy pre-tokenizer (`add_prefix_space`, `Metaspace`, ...) or any normalizer is an error
+    /// rather than a silently different encoding.
     pub fn pretokenizer(&self) -> Result<Option<Pretokenizer>> {
         let bare = |p: &PreTokenizerConfig| {
             matches!(
@@ -347,14 +360,38 @@ impl HfTokenizerJson {
             },
             _ => None,
         };
-        match flag {
-            Some(flag) if self.normalizer.is_none() => Ok(flag),
-            _ => Err(TokeniserError::InvalidConfiguration(format!(
-                "unsupported normalizer {:?} / pre_tokenizer {:?}: only the byte-level \
-                 pre-tokenizers this crate exports encode like native",
+        let unsupported = |why: String| {
+            TokeniserError::InvalidConfiguration(format!(
+                "unsupported normalizer {:?} / pre_tokenizer {:?}: {why}",
                 self.normalizer, self.pre_tokenizer
-            ))),
+            ))
+        };
+        match flag {
+            _ if self.normalizer.is_some() => Err(unsupported("native encoding has no normalizer".into())),
+            Some(flag) => Ok(flag),
+            None => self.hf_pretokenizer().map(Some).map_err(|e| unsupported(e.to_string())),
         }
+    }
+
+    /// `Pretokenizer::Hf` of a pre-tokenizer that no named mode exports (see `pretokenizer`).
+    fn hf_pretokenizer(&self) -> Result<Pretokenizer> {
+        let whole = serde_json::to_value(&self.pre_tokenizer)?;
+        let hf = Pretokenizer::hf(whole.clone())?;
+        if !matches!(hf, Pretokenizer::Hf(h) if h.byte_level()) {
+            return Err(TokeniserError::InvalidConfiguration(
+                "no ByteLevel: the model's tokens are GPT-2 byte-level strings".into(),
+            ));
+        }
+        if let Some([config, map]) = whole["pretokenizers"].as_array().map(Vec::as_slice) {
+            if *map == serde_json::to_value(byte_level(false))? {
+                if let Ok(p @ Pretokenizer::Hf(h)) = Pretokenizer::hf(config.clone()) {
+                    if !h.byte_level() {
+                        return Ok(p);
+                    }
+                }
+            }
+        }
+        Ok(hf)
     }
 
     /// Exports the tokenizer configuration to a file or directory.

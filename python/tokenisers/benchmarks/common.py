@@ -256,16 +256,33 @@ def load_morphology(
 # Tokenizer suite
 # ----------------------------------------------------------------------------
 
-def variant_config(name: str, vocab_size: int) -> Dict[str, Any]:
+def hf_pretokenizer_label(config: Any) -> str:
+    """``"hf:<sha>"``: the first 12 hex digits of the SHA-256 of a Hugging Face ``pre_tokenizer``
+    config (dict or JSON string) as canonical JSON (sorted keys, no spaces, UTF-8)."""
+    config = json.loads(config) if isinstance(config, str) else config
+    canonical = json.dumps(config, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return "hf:" + hashlib.sha256(canonical.encode()).hexdigest()[:12]
+
+
+def variant_config(name: str, vocab_size: int, pretokenizer: Any = None) -> Dict[str, Any]:
     """Class and every training parameter of a suite variant (or of its ``_sp`` / ``_g2`` retrain,
     see ``parse_variant``) besides corpus and vocab_size (the morpheme lexicon is in
-    meta.morphology), recorded in every result file."""
+    meta.morphology), recorded in every result file. ``pretokenizer`` (a mode name or
+    ``{"hf": config}``) replaces the name's mode; an HF config is recorded as
+    ``"pretokenizer": hf_pretokenizer_label(config)`` plus ``"pretokenizer_config": config``."""
     base, mode, _ = parse_variant(name)
-    pretok = {"pretokenizer": mode}
+    if isinstance(pretokenizer, dict):
+        config = pretokenizer["hf"]
+        config = json.loads(config) if isinstance(config, str) else config
+        pretok = {"pretokenizer": hf_pretokenizer_label(config), "pretokenizer_config": config}
+    else:
+        pretok = {"pretokenizer": pretokenizer or mode}
     if base in _BPE_SCORERS:
         scorer, params = _BPE_SCORERS[base]
         return {"class": "BpeTokenizer", "scorer": scorer, **params, **pretok}
     if base == "super_bpe":
+        if pretokenizer is not None:
+            raise ValueError("super_bpe has no pre-tokenizer modes")
         return {"class": "SuperBpeTokenizer", "v_switch": 256 + (max(vocab_size, 256) - 256) * 9 // 10}
     if base == "morpheme_bpe":
         return {"class": "MorphemeBpeTokenizer", "scorer": "frequency", "min_frequency": 1,
@@ -275,11 +292,14 @@ def variant_config(name: str, vocab_size: int) -> Dict[str, Any]:
     raise ValueError(f"unknown variant {name!r}")
 
 
-def train_variant(name: str, corpus: List[str], vocab_size: int, lexicon: Dict[str, List[str]]) -> Any:
+def train_variant(name: str, corpus: List[str], vocab_size: int, lexicon: Dict[str, List[str]],
+                  pretokenizer: Any = None) -> Any:
     """Trains ``name`` with exactly the parameters ``variant_config`` records."""
     from tokenisers import models
 
-    params = variant_config(name, vocab_size)
+    params = variant_config(name, vocab_size, pretokenizer)
+    if "pretokenizer_config" in params:
+        params["pretokenizer"] = {"hf": params.pop("pretokenizer_config")}
     cls = getattr(models, params.pop("class"))
     if parse_variant(name)[0] == "morpheme_bpe":
         params["morpheme_lexicon"] = lexicon

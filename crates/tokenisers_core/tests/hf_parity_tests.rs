@@ -528,3 +528,114 @@ fn byte_level_with_an_added_prefix_space_is_still_rejected() {
     };
     assert_eq!(json.pretokenizer().unwrap(), Some(Pretokenizer::Gpt2));
 }
+
+// ---------------------------------------------------------------------------------------------
+// Hf mode: a lossless HF pre-tokenizer config, exported as it is and restored by from_hf_json.
+// ---------------------------------------------------------------------------------------------
+
+fn hf_mode_configs() -> Vec<serde_json::Value> {
+    let bl = |use_regex: bool| {
+        serde_json::json!({"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": false, "use_regex": use_regex})
+    };
+    let digits = serde_json::json!({"type": "Digits", "individual_digits": true});
+    let punct = serde_json::json!({"type": "Punctuation", "behavior": "Isolated"});
+    let ws = serde_json::json!({"type": "Split", "pattern": {"Regex": r"\s+"}, "behavior": "MergedWithNext", "invert": false});
+    vec![
+        // Llama-style single digits before GPT-2's regex.
+        serde_json::json!({"type": "Sequence", "pretokenizers": [digits, bl(true)]}),
+        // No ByteLevel: the export adds the byte-level map.
+        serde_json::json!({"type": "Sequence", "pretokenizers": [ws, punct, digits]}),
+        // ByteLevel, then punctuation among byte-level chars (cuts inside chars).
+        serde_json::json!({"type": "Sequence", "pretokenizers": [bl(true), punct]}),
+        // Falcon's: splitters before and after ByteLevel (its Digits cut inside chars too).
+        serde_json::json!({"type": "Sequence", "pretokenizers": [
+            {"type": "Punctuation", "behavior": "Contiguous"},
+            {"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": true, "use_regex": true},
+            {"type": "Digits", "individual_digits": false},
+            {"type": "Split", "pattern": {"Regex": "[0-9][0-9][0-9]"}, "behavior": "Isolated", "invert": false}]}),
+        // HF's default use_regex (true) left out, which the export's typed ByteLevel needs.
+        serde_json::json!({"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": true}),
+        serde_json::json!({"type": "FixedLength", "length": 4}),
+    ]
+}
+
+#[test]
+fn hf_mode_exports_match_native_ids_and_reload_byte_identically() {
+    let mut rng = fastrand::Rng::with_seed(9);
+    let random: Vec<String> = (0..300).map(|_| random_gpt2_text(&mut rng)).collect();
+    let probes: Vec<&str> =
+        TESTS.iter().chain(SPACE_TESTS).chain(GPT2_TESTS).copied().chain(random.iter().map(String::as_str)).collect();
+    for config in hf_mode_configs() {
+        let p = Pretokenizer::hf(config.clone()).unwrap();
+        let wc = word_counts_in(&corpus_docs(), p);
+        let train = |scorer: &dyn PairScorer| BottomUpTrainer::new(scorer, 500).with_pretokenizer(p).train(&wc).unwrap();
+        let bpes = [("bpe", train(&BpeScorer)), ("wp_bpe_ppig", train(&WpBpePpigScorer::default())), ("mdl", train(&MdlScorer::default()))];
+        let mut unigram = UnigramTrainer::new(500, 0.2).train(&wc).unwrap();
+        unigram.pretokenizer = p;
+        let mut exports: Vec<(&str, HfTokenizerJson, Box<dyn Fn(&str) -> Vec<TokenId>>)> = Vec::new();
+        for (name, model) in bpes {
+            assert!(model.pretokenize && model.pretokenizer == p, "{name} {config}");
+            exports.push((name, HfTokenizerJson::from_bpe_model(&model, None), Box::new(move |s| model.encode(s.as_bytes()))));
+        }
+        let u = unigram.clone();
+        exports.push(("unigram", HfTokenizerJson::from_unigram_model(&unigram, None), Box::new(move |s| u.encode(s.as_bytes()))));
+        for (name, json, native) in exports {
+            let text = json.to_json_string().unwrap();
+            let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let Pretokenizer::Hf(h) = p else { unreachable!() };
+            // The config unchanged, wrapped with the byte-level map only when it has no ByteLevel.
+            if h.byte_level() {
+                assert_eq!(v["pre_tokenizer"], config, "{name}");
+            } else {
+                assert_eq!(v["pre_tokenizer"]["pretokenizers"][0], config, "{name}");
+            }
+            let reparsed: HfTokenizerJson = serde_json::from_str(&text).unwrap();
+            assert_eq!(reparsed.pretokenizer().unwrap(), Some(p), "{name} {config}");
+            let tok = hf(&json);
+            assert_parity(name, &tok, &native);
+            for s in &probes {
+                assert_eq!(native(s), hf_ids(&tok, s), "[{name} {config}] for {s:?}");
+            }
+        }
+        // Reload: rebuild each model with the restored pretokenizer; it exports the same file.
+        let reloaded = |json: &HfTokenizerJson| {
+            let reparsed: HfTokenizerJson = serde_json::from_str(&json.to_json_string().unwrap()).unwrap();
+            reparsed.pretokenizer().unwrap().unwrap()
+        };
+        let model = train(&BpeScorer);
+        let json = HfTokenizerJson::from_bpe_model(&model, None);
+        let mut again = BottomUpModel::new(model.vocab.clone(), model.merges.clone());
+        (again.pretokenize, again.pretokenizer) = (true, reloaded(&json));
+        assert_eq!(HfTokenizerJson::from_bpe_model(&again, None).to_json_string().unwrap(), json.to_json_string().unwrap());
+        let json = HfTokenizerJson::from_unigram_model(&unigram, None);
+        let mut again = unigram.clone();
+        again.pretokenizer = reloaded(&json);
+        assert_eq!(HfTokenizerJson::from_unigram_model(&again, None).to_json_string().unwrap(), json.to_json_string().unwrap());
+    }
+}
+
+#[test]
+fn foreign_lossless_pre_tokenizers_load_as_hf_and_lossy_ones_are_rejected() {
+    let model = &bpe_models()[0].1;
+    let mut json = HfTokenizerJson::from_bpe_model(model, None);
+    let bl = serde_json::json!({"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": false, "use_regex": false});
+    let split = serde_json::json!({"type": "Split", "pattern": {"Regex": r"\s+"}, "behavior": "Isolated", "invert": false});
+    let set = |json: &mut HfTokenizerJson, v: serde_json::Value| json.pre_tokenizer = serde_json::from_value(v).unwrap();
+    // Another split + the byte-level map: the split itself, as an `Hf` export of it would be.
+    set(&mut json, serde_json::json!({"type": "Sequence", "pretokenizers": [split, bl]}));
+    assert_eq!(json.pretokenizer().unwrap(), Some(Pretokenizer::hf(split.clone()).unwrap()));
+    // Without a ByteLevel the model would see raw text, not byte-level strings.
+    set(&mut json, split.clone());
+    assert!(json.pretokenizer().unwrap_err().to_string().contains("no ByteLevel"));
+    let lossy = [
+        serde_json::json!({"type": "Sequence", "pretokenizers": [{"type": "Whitespace"}, bl]}),
+        serde_json::json!({"type": "Metaspace", "replacement": "▁", "prepend_scheme": "always", "split": true}),
+        serde_json::json!({"type": "Sequence", "pretokenizers": [{"type": "UnicodeScripts"}, bl]}),
+        serde_json::json!({"type": "Sequence", "pretokenizers": [{"type": "Split", "pattern": {"Regex": r"\s+"}, "behavior": "Removed", "invert": false}, bl]}),
+    ];
+    for v in lossy {
+        set(&mut json, v.clone());
+        let err = json.pretokenizer().unwrap_err().to_string();
+        assert!(err.contains("unsupported") && err.contains("HF pre-tokenizer"), "{v}: {err}");
+    }
+}
