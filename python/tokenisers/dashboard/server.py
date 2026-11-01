@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tokenisers.benchmarks.report import (colab_compare_stats, render_colab, render_colab_compare, render_flores,
                                           render_intrinsic, render_nanogpt_swap, render_nanogpt_swap_ablation,
-                                          render_throughput, render_tokka)
+                                          render_nanogpt_swap_space_prefix, render_throughput, render_tokka)
 
 logger = logging.getLogger("tokenisers.dashboard")
 
@@ -351,13 +351,34 @@ def _train_bpb(csv_path: Path, models: Dict[str, Any]) -> Optional[Dict[str, Any
                     for n in names}}
 
 
-def space_prefix_pairs(old: Dict[str, Any], sp: Dict[str, Any]) -> Dict[str, Any]:
+def sp_gpt2_equivalent(base: Dict[str, Any], sp: Dict[str, Any], csv_path: Path) -> Dict[str, Optional[int]]:
+    """GPT-2-equivalent steps of a space-prefix rerun that has no GPT-2 run of its own, read off GPT-2's train
+    curve in the original swap run (nanogpt_swap's gpt2_equivalent on GPT-2's column of that run's steps CSV).
+    Only when both runs have the same recipe and val documents, so that GPT-2's curve and the rerun's final val
+    BPB measure the same training on the same text; else {}."""
+    bm, sm = base.get("models", {}), sp.get("models", {})
+    eq, g = base.get("gpt2_equivalent"), bm.get("gpt2")
+    same = (base["meta"]["recipe"]["args"] == sp["meta"]["recipe"]["args"]
+            and {m.get("val_docs_sha256") for m in bm.values()} == {m.get("val_docs_sha256") for m in sm.values()})
+    if "gpt2" in sm or not (eq and g and same and csv_path.is_file()):
+        return {}
+    from tokenisers.benchmarks.nanogpt_swap.__main__ import gpt2_equivalent
+
+    with csv_path.open(encoding="utf-8", newline="") as f:
+        steps = [{"step": int(r["step"]), "train_loss": float(r["gpt2"])} for r in csv.DictReader(f)]
+    run = {"trainer": {"steps": steps, "evals": []}, "train": {"bytes_per_token": g["train_bytes_per_token"]}}
+    return gpt2_equivalent(run, sm, eq["window"])["steps"]
+
+
+def space_prefix_pairs(old: Dict[str, Any], sp: Dict[str, Any],
+                       sp_steps: Optional[Dict[str, Optional[int]]] = None) -> Dict[str, Any]:
     """Each of our tokenizers in the space-prefix swap run next to its run in the original swap (matched by
     name, a trailing ``_sp`` / ``_space_prefix`` dropped), plus GPT-2 as the reference (from the space-prefix
-    run when it has one, else from the original run)."""
+    run when it has one, else from the original run). The space-prefix run's GPT-2-equivalent steps are its
+    own, else ``sp_steps`` (sp_gpt2_equivalent)."""
     om, sm = old.get("models", {}), sp.get("models", {})
     eq = {"old": (old.get("gpt2_equivalent") or {}).get("steps", {}),
-          "sp": (sp.get("gpt2_equivalent") or {}).get("steps", {})}
+          "sp": (sp.get("gpt2_equivalent") or {}).get("steps") or sp_steps or {}}
 
     def pick(name: str, m: Dict[str, Any], run: str) -> Dict[str, Any]:
         return {"name": name, "final_bpb": m.get("final_bpb"), "val_bytes_per_token": m.get("val_bytes_per_token"),
@@ -393,31 +414,52 @@ def ablation_arms(base: Dict[str, Any], sp: Optional[Dict[str, Any]], abl: Dict[
                      for v in variants]}
 
 
+def _derived(entry: Dict[str, Any], what: str, compute: Callable[[], Any]) -> Any:
+    """A view computed from result files (train BPB, small vs big, the swap pairings). An odd or partial file
+    (e.g. a single seed: no sd) must not turn /api/benchmarks into a 500 that blanks the whole dashboard: on a
+    failure the files' own numbers still show, ``entry["error"]`` says why, and the view is None."""
+    try:
+        return compute()
+    except Exception as e:
+        logger.warning(f"{what} failed: {e!r}")
+        entry["error"] = f"{what} failed: {type(e).__name__}: {e}"
+        return None
+
+
 def load_benchmark_data() -> Dict[str, Any]:
     """Every result set under benchmarks/results (with an availability flag), plus the unified V = 16,384
     per-tokenizer view (tokka, intrinsic, small and big proxy LM) the overview charts use."""
     results = {key: _load_result(rel, render) for key, (rel, render) in RESULT_SETS.items()}
+
+    def steps_csv(key: str) -> Path:
+        return REPO_ROOT / "benchmarks" / "results" / Path(RESULT_SETS[key][0]).parent / "nanogpt_swap_steps.csv"
+
     for key in ("swap", "swap_space_prefix"):
-        if results[key]["available"]:
-            csv_path = REPO_ROOT / "benchmarks" / "results" / Path(RESULT_SETS[key][0]).parent / "nanogpt_swap_steps.csv"
-            results[key]["train_bpb"] = _train_bpb(csv_path, results[key]["data"].get("models", {}))
+        e = results[key]
+        if e["available"]:
+            e["train_bpb"] = _derived(e, "train BPB from the steps CSV",
+                                      lambda: _train_bpb(steps_csv(key), e["data"].get("models", {})))
     small, big = results["proxy_small"], results["proxy_big"]
-    results["proxy_compare"] = {"path": f"{small['path']} + {big['path']}", "available": False, "data": None,
-                                "provenance": [], "notes": []}
+    cmp = results["proxy_compare"] = {"path": f"{small['path']} + {big['path']}", "available": False, "data": None,
+                                      "provenance": [], "notes": []}
     if small["available"] and big["available"]:
-        try:
-            names, stats = colab_compare_stats(small["data"], big["data"])
-            results["proxy_compare"].update(available=True, data={"ref": "bpe_frequency", "names": names, "tiers": stats},
-                                            **_report(render_colab_compare, small["data"], big["data"]))
-        except (KeyError, ZeroDivisionError) as e:
-            logger.warning(f"small vs big proxy LM comparison failed: {e!r}")
-    sp = results["swap_space_prefix"]
-    if sp["available"] and results["swap"]["available"]:
-        sp["pairs"] = space_prefix_pairs(results["swap"]["data"], sp["data"])
+        stats = _derived(cmp, "small vs big proxy-LM comparison",
+                         lambda: colab_compare_stats(small["data"], big["data"]))
+        if stats:
+            cmp.update(available=True, data={"ref": "bpe_frequency", "names": stats[0], "tiers": stats[1]},
+                       **_report(render_colab_compare, small["data"], big["data"]))
+    swap, sp = results["swap"], results["swap_space_prefix"]
+    if sp["available"] and swap["available"]:
+        # The README's check that the rerun is comparable (recipe, val documents, tokenizer training text) first
+        check = _report(render_nanogpt_swap_space_prefix, swap["data"], sp["data"])["provenance"]
+        sp["provenance"] = check + sp["provenance"]
+        sp["pairs"] = _derived(sp, "pairing with the original swap run", lambda: space_prefix_pairs(
+            swap["data"], sp["data"], sp_gpt2_equivalent(swap["data"], sp["data"], steps_csv("swap"))))
     abl = results["swap_ablation"]
-    if abl["available"] and results["swap"]["available"]:
-        docs = (results["swap"]["data"], sp["data"] if sp["available"] else None, abl["data"])
-        abl.update(ablation=ablation_arms(*docs), **_report(render_nanogpt_swap_ablation, *docs))
+    if abl["available"] and swap["available"]:
+        docs = (swap["data"], sp["data"] if sp["available"] else None, abl["data"])
+        abl.update(ablation=_derived(abl, "ablation arms", lambda: ablation_arms(*docs)),
+                   **_report(render_nanogpt_swap_ablation, *docs))
 
     def doc(key: str) -> Dict[str, Any]:
         d = results[key]["data"]

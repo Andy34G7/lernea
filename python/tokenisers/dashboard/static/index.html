@@ -756,7 +756,7 @@
           <dt>Measures</dt><dd>Validation bits per byte (BPB) on held-out English, multilingual and code text under a small causal Transformer trained from scratch on a fixed number of UTF-8 bytes per tokeniser; mean ± sample sd over 3 seeds.</dd>
           <dt>Read</dt><dd><b>BPB ↓</b>. Δ = macro BPB minus <code>bpe_frequency</code>'s in the same run: negative is better.</dd>
           <dt>Caveats</dt><dd><ul>
-            <li id="proxy-caveat-small">The small LM cannot separate the top tokenisers.</li>
+            <li id="proxy-caveat-small">Small margins between tokenisers may be seed noise: each tier's top-two margin, in standard errors over the seeds, shows here with the results.</li>
             <li>Both are proxies, not GPT models: no positional encoding (order only from the causal mask), ReLU FFN, tied embeddings. Rankings need not carry over to real LMs.</li>
             <li>The small LM's training text comes from the split the tokenisers were trained on; only the val split is held out.</li>
             <li><code>bpe_dropout_p0.1</code> is the <code>bpe_frequency</code> vocabulary with dropout on the LM's training ids only.</li>
