@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import warnings
 from collections import Counter
 from typing import Any, Dict, List, Optional, Sequence, Union
@@ -132,6 +133,25 @@ class _CoreTokenizer:
     def from_pretrained(cls, pretrained_model_name_or_path: str):
         """Loads a directory written by ``save`` (or a ``tokenizer.json`` path)."""
         return cls(model=cls._core_class.from_hf_json(str(pretrained_model_name_or_path)))
+
+    def __reduce__(self):
+        """Pickle / deepcopy (spawn workers, ``datasets.map(num_proc)``) as the tokenizer.json export:
+        the native model does not pickle, and its file round trip is the save/load path."""
+        if self._model is None:
+            return (type(self), ())
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "tokenizer.json")
+            self.export_hf_json(path)
+            with open(path, encoding="utf-8") as f:
+                return (_from_tokenizer_json, (type(self), f.read()))
+
+
+def _from_tokenizer_json(cls: type, text: str) -> _CoreTokenizer:
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "tokenizer.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return cls.from_pretrained(path)
 
 
 class BpeTokenizer(_CoreTokenizer):
@@ -612,11 +632,8 @@ class ByteEntropyTokenizer:
     def special_tokens(self) -> Dict[str, int]:
         return {}
 
-    def save(self, save_directory: str) -> None:
-        """Writes config, patch vocabulary and Markov counts to ``byte_entropy.json``."""
-        self._require()
-        os.makedirs(save_directory, exist_ok=True)
-        state = {
+    def _state(self) -> Dict[str, Any]:
+        return {
             "type": "ByteEntropy",
             "config": self.config,
             "patches": [p.hex() for p in self._patches],
@@ -624,8 +641,13 @@ class ByteEntropyTokenizer:
                 [ctx.hex(), counts] for ctx, counts in self._patcher.transitions()
             ],
         }
+
+    def save(self, save_directory: str) -> None:
+        """Writes config, patch vocabulary and Markov counts to ``byte_entropy.json``."""
+        self._require()
+        os.makedirs(save_directory, exist_ok=True)
         with open(os.path.join(save_directory, self._FILE), "w", encoding="utf-8") as f:
-            json.dump(state, f)
+            json.dump(self._state(), f)
 
     save_pretrained = save
 
@@ -638,9 +660,18 @@ class ByteEntropyTokenizer:
             state = json.load(f)
         if state.get("type") != "ByteEntropy":
             raise ValueError(f"{path} is not a saved ByteEntropyTokenizer")
+        return cls._from_state(state)
+
+    @classmethod
+    def _from_state(cls, state: Dict[str, Any]) -> ByteEntropyTokenizer:
         tok = cls(**state["config"])
-        tok._patcher.load_transitions(
-            [(bytes.fromhex(ctx), [tuple(bc) for bc in counts]) for ctx, counts in state["transitions"]]
-        )
+        if state["transitions"]:
+            tok._patcher.load_transitions(
+                [(bytes.fromhex(ctx), [tuple(bc) for bc in counts]) for ctx, counts in state["transitions"]]
+            )
         tok._set_patches([bytes.fromhex(p) for p in state["patches"]])
         return tok
+
+    def __reduce__(self):
+        """Pickle / deepcopy as the ``save`` state (the native patcher does not pickle)."""
+        return (type(self)._from_state, (self._state(),))

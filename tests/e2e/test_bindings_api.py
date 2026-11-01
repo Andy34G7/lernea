@@ -98,6 +98,28 @@ def test_token_strings_are_gpt2_byte_level(trained):
     assert _core.printable_to_bytes(_core.bytes_to_printable(bytes(range(256)))) == bytes(range(256))
 
 
+@pytest.mark.parametrize("name", ["bpe", "wordpiece", "unigram", "super_bpe", "morpheme", "byte_entropy"])
+def test_pickle_and_deepcopy_give_the_same_tokenizer(trained, name):
+    """Spawn/forkserver workers, datasets.map(num_proc) and copy.deepcopy pickle the tokenizer and the HF
+    wrapper over it; the copy encodes and decodes like the original (the native models do not pickle)."""
+    import copy
+    import pickle
+
+    from tokenisers.wrapper import DynamicResearchTokenizer
+
+    tok = trained[name]
+    wrapped = DynamicResearchTokenizer(tokenizer=tok)
+    for clone in (pickle.loads(pickle.dumps(tok)), copy.deepcopy(tok)):
+        assert type(clone) is type(tok) and clone.get_vocab() == tok.get_vocab()
+        assert clone.special_tokens() == tok.special_tokens() and getattr(clone, "pretokenizer", None) == getattr(tok, "pretokenizer", None)
+        for text in TEXTS + ["a <|endoftext|> b <pad>"]:
+            assert clone.encode(text) == tok.encode(text) and clone.decode(tok.encode(text)) == tok.decode(tok.encode(text))
+    for clone in (pickle.loads(pickle.dumps(wrapped)), copy.deepcopy(wrapped)):
+        assert clone(TEXTS)["input_ids"] == wrapped(TEXTS)["input_ids"]
+    untrained = type(tok)()
+    assert pickle.loads(pickle.dumps(untrained)).vocab_size == untrained.vocab_size
+
+
 @pytest.mark.parametrize("name", ["bpe", "unigram", "byte_entropy"])
 def test_decode_invalid_utf8_and_unknown_ids(trained, name):
     """P3/P5: invalid UTF-8 is replaced per sequence (not latin-1 for the whole string); unknown ids raise."""
