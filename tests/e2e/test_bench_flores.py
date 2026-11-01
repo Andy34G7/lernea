@@ -165,6 +165,48 @@ def test_cli_on_fixture(require_tokenisers, tmp_path):
     assert md == render_flores(doc) + "\n" and "How to read" in md and "cmn_Hani -> cmn_Hans" in md
 
 
+def test_intrinsic_tier_checks_test_bytes_per_token_against_the_committed_leaderboard(require_tokenisers, tmp_path,
+                                                                                      capsys):
+    """Each retrained tokenizer's test bytes/token is compared with the committed intrinsic leaderboard of the
+    same dataset: equal -> reproduces, else a warning; a leaderboard of another dataset is not compared."""
+    flores_dir = write_fixture(tmp_path / "flores")
+
+    def run(reference_dir):
+        out = tmp_path / "out"
+        fl.main(["--offline", "--cache-dir", str(tmp_path / "cache"), "--train-bytes", "30000", "--vocab-sizes",
+                 "300", "--variants", "bpe_frequency", "unigram_lm", "--swap-jobs", "--flores-dir", str(flores_dir),
+                 "--reference-dir", str(reference_dir), "--output-dir", str(out)])
+        return json.loads((out / "flores.json").read_text(encoding="utf-8"))
+
+    doc = run(tmp_path / "none")
+    root = doc["meta"]["intrinsic"]["dataset"]["root"]
+    bpt = {m["base"]: m["training"]["test_bytes_per_token"] for m in doc["models"].values()}
+    path = fl.committed_intrinsic(tmp_path / "ref", 300)
+    path.parent.mkdir(parents=True)
+
+    def commit(dataset_root):
+        path.write_text(json.dumps({"meta": {"dataset": {"root": dataset_root}}, "models": {
+            "bpe_frequency": {"bytes_per_token": bpt["bpe_frequency"]},
+            "unigram_lm": {"bytes_per_token": bpt["unigram_lm"] + 1e-9}}}), encoding="utf-8")
+
+    commit(root)
+    capsys.readouterr()
+    doc = run(tmp_path / "ref")
+    t = {m["base"]: m["training"] for m in doc["models"].values()}
+    assert t["bpe_frequency"]["reproduces_committed"] is True and t["unigram_lm"]["reproduces_committed"] is False
+    assert t["unigram_lm"]["committed_test_bytes_per_token"] == bpt["unigram_lm"] + 1e-9
+    err = capsys.readouterr().err
+    assert "warning: unigram_lm at V=300" in err and "bpe_frequency at V=300" not in err
+    from tokenisers.benchmarks.report import render_flores
+
+    assert "1 of 2 reproduce the committed test-split bytes/token exactly" in render_flores(doc)
+
+    commit("hf-another-dataset")  # the dataset-root guard
+    doc = run(tmp_path / "ref")
+    assert [m["training"]["reproduces_committed"] for m in doc["models"].values()] == [None, None]
+    assert doc["meta"]["intrinsic"]["committed_reference"] == {"300": None}
+
+
 def test_swap_tier_says_what_each_tokenizer_was_trained_on(repo_root):
     """The committed swap tier: GPT-2's and TokenMonster's vocabularies were not trained on FineWeb,
     and the 32k TokenMonster one is not about 50k tokens."""
