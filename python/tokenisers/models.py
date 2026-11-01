@@ -361,8 +361,8 @@ class MorphemeGuidedTokenizer(BpeTokenizer):
     never from evaluation gold. ``alpha`` (wordpiece), ``beta`` (length_penalized) and
     ``penalty`` (mdl entry cost in bits) default to the scorer's own defaults. With
     ``pretokenizer="space_prefix"`` or ``"gpt2"`` the segment " word" gets the boundaries of "word"
-    (the space joins the first morpheme); in ``"gpt2"`` a word the regex splits ("don't") is never
-    a training segment and has no effect.
+    (the space joins the first morpheme) unless the lexicon has its own " word" entry; in ``"gpt2"``
+    a word the regex splits ("don't") is never a training segment and has no effect.
     """
 
     @classmethod

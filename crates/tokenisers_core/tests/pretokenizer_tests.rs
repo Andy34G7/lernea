@@ -691,6 +691,17 @@ fn hf_rejects_every_component_that_is_not_a_lossless_splitter() {
 }
 
 #[test]
+fn hf_regex_past_onigs_backtracking_limit_unwinds_with_a_tokeniser_error() {
+    // Fast on the probe, exponential on a long run of "x" with no "y": onig hits its retry limit
+    // and panics; `segment_bytes` unwinds with a `TokeniserError` instead (a ValueError in Python).
+    let p = Pretokenizer::hf(split("(x+x+)+y", "Isolated", false)).unwrap();
+    assert_eq!(segs(p, b"x x y"), [b"x x y"]);
+    let panic = std::panic::catch_unwind(|| p.segment_bytes(&[b'x'; 40]).len()).unwrap_err();
+    let err = panic.downcast::<tokenisers_core::TokeniserError>().expect("a TokeniserError payload");
+    assert!(err.to_string().contains("retry-limit-in-match"), "{err}");
+}
+
+#[test]
 fn hf_configs_are_interned_and_named_hf() {
     let a = Pretokenizer::hf(seq(&[DIGITS(), byte_level(true)])).unwrap();
     let b = Pretokenizer::hf(seq(&[DIGITS(), byte_level(true)])).unwrap();

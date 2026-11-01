@@ -154,6 +154,26 @@ def test_lossy_components_are_rejected(why):
             call()
 
 
+def test_a_regex_past_onigs_backtracking_limit_raises_value_error():
+    """`(x+x+)+y` passes the probe, but onig gives up on a long run of "x" and panics: that is a
+    ValueError (not a PanicException, a BaseException) in pretokenize, training and encoding."""
+    config = {"hf": split("(x+x+)+y")}
+    assert _core.pretokenize(b"x x y", config) == [b"x x y"]
+    bad = "x" * 40
+    with _quiet():
+        bpe = tokenisers.BpeTokenizer.train(CORPUS, 300, pretokenizer=config)
+        uni = tokenisers.UnigramTokenizer.train(CORPUS, 300, pretokenizer=config)
+    for call in (lambda: _core.pretokenize(bad.encode(), config),
+                 lambda: tokenisers.BpeTokenizer.train([*CORPUS, bad], 300, pretokenizer=config),
+                 lambda: tokenisers.UnigramTokenizer.train([*CORPUS, bad], 300, pretokenizer=config),
+                 lambda: tokenisers.MorphemeBpeTokenizer.train(CORPUS, 300, morpheme_lexicon={bad: [bad]},
+                                                               pretokenizer=config),
+                 lambda: bpe.encode(bad), lambda: uni.encode(bad), lambda: uni.encode(bad, temperature=0.5)):
+        with pytest.raises(ValueError, match="HF pre-tokenizer .*retry-limit-in-match"):
+            call()
+    assert bpe.decode(bpe.encode("x x y")) == "x x y"  # the models still work
+
+
 def test_malformed_pretokenizer_arguments_are_rejected():
     for bad, match in (({"hf": "{not json"}, "pretokenizer"), ({"hf": {"type": "Digits"}}, "individual_digits"),
                        ({"hf": DIGITS, "x": 1}, "pretokenizer must be"), ({"HF": DIGITS}, "pretokenizer must be"),

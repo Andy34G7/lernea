@@ -306,6 +306,20 @@ def test_space_prefixed_words_get_the_lexicon_boundaries():
     assert b"".join(pieces) == b" walking" and b" walk" in pieces and b"ing" in pieces, pieces
 
 
+def test_an_explicit_spaced_lexicon_entry_wins_on_every_run():
+    """A lexicon with both "walking" and " walking" keeps the boundaries given for " walking". The
+    keys reach Rust in a new random order on each call, which used to pick the winner."""
+    corpus = ["the walking and talking, walking walking talking ok"] * 50
+    lex = {"walking": ["walk", "ing"], " walking": [" wal", "king"]}
+    runs = set()
+    with _quiet():
+        for _ in range(12):
+            tok = tokenisers.MorphemeBpeTokenizer.train(corpus, 280, morpheme_lexicon=lex, lambda_weight=50.0,
+                                                        pretokenizer=SP)
+            runs.add(tuple(tok.id_to_bytes(i) for i in tok.encode(" walking")))
+    assert runs == {(b" wal", b"king")}, runs
+
+
 # ----------------------------------------------------------------------------
 # Benchmarks
 # ----------------------------------------------------------------------------
