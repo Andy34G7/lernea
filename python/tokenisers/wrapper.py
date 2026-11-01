@@ -16,7 +16,10 @@ or set as an attribute (``pad_token``, ``pad_token_id``, ...), raises ``ValueErr
 would reuse that text token's id, so padding would insert real text and ``skip_special_tokens``
 would delete it. Pass another string (``pad_token="<|pad|>"``) or train the model with it in
 ``special_tokens``. Saving needs a model with a tokenizer.json export (``export_hf_json``).
-Needs transformers >= 5.2 (the v5 ``extra_special_tokens`` API; pyproject.toml).
+Needs transformers >= 5.2 (the v5 ``extra_special_tokens`` API; pyproject.toml). Parity with
+``AutoTokenizer`` on a saved wrapper whose model has a one-byte special token (e.g. "\\n") needs
+transformers >= 5.21.0 (it fails on 5.2-5.20.2), which requires Python >= 3.11: on Python 3.10 the
+wrapper works but that parity is not available.
 """
 
 from __future__ import annotations

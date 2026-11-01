@@ -10,8 +10,13 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT OR Apache-2.0" }
 dependencies = [
-    "transformers>=5.2.0",  # wrapper.py: the v5 special-token API; 5.0.0 fails its tests, 5.2.0 passes them
-    "torch>=2.0.0",
+    # wrapper.py needs the v5 special-token API (5.0.0 fails its tests, 5.2.0 passes them), but
+    # AutoTokenizer parity with one-byte special tokens ("\n") needs >=5.21.0 (it fails on 5.2-5.20.2;
+    # tests/e2e/test_bindings_hf_parity.py). 5.21.0 requires Python >=3.11, so on 3.10 the newest
+    # installable is 5.20.2 and that parity does not hold.
+    "transformers>=5.21.0; python_version >= '3.11'",
+    "transformers>=5.2.0; python_version < '3.11'",
+    "torch>=2.4",  # transformers 5.x
     "datasets>=2.18.0",
     "numpy>=1.24.0",
     "tqdm>=4.66.0",
