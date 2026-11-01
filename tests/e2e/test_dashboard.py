@@ -757,6 +757,25 @@ def test_radar_leaves_unmeasured_axes_out_and_min_max_normalises_the_rest(tmp_pa
             assert d["data"][i] == pytest.approx((ms[key][field] - min(vals)) / (max(vals) - min(vals)))
 
 
+@needs_node
+def test_swap_leader_card_takes_the_best_of_the_comparable_swap_runs(tmp_path) -> None:
+    """The GPT-2 swap card ranks the original, space-prefix and ablation runs together (same recipe and val
+    documents; not the lr 1.8e-3 run): unigram_lm_g2 from the ablation leads GPT-2 by less than 0.01 BPB at
+    one seed, a tie the card says is not resolved."""
+    import html as htmllib
+
+    data = server_mod.load_benchmark_data()
+    errors, html = _render(tmp_path, data)
+    assert errors == []
+    card = next(htmllib.unescape(_text(c)) for c in html["leaders"].split('<div class="kpi">') if ">GPT-2 swap<" in c)
+    assert "1.6817 BPB unigram_lm_g2" in card and "unigram_lm_g2: ablation · GPT-2 split @ 50 MB." in card
+    assert "Runner-up gpt2 1.6851 (+0.0033)" in card and "Runner-up gpt2: original · not our tokeniser." in card
+    assert "Tie at one seed: within noise, not resolved (margin 0.0033 BPB, below 0.01)." in card
+    assert "one seed per run, so the seed-to-seed spread is unmeasured" in card
+    assert "(original, space-prefix rerun, ablation)" in card and "1.8e-3" not in card
+    assert f"@{data['results']['swap_ablation']['data']['meta']['git_commit'][:7]} " in card  # the leader's run
+
+
 def _sp_root(tmp_path, sp):
     """The committed original swap run (with its steps CSV) and ``sp`` as the space-prefix rerun."""
     base = json.loads((REAL_RESULTS / "nanogpt_swap/nanogpt_swap.json").read_text())

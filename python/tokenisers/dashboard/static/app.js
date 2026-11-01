@@ -532,6 +532,37 @@ function seedMargin(models, r) {
   return z === null ? '' : `Lead over the runner-up: ${resolvedIn(z)}.`;
 }
 
+// GPT-2-small swap runs whose final BPB compares with the original's: the space-prefix and ablation sections'
+// comparability check (server.not_comparable: same recipe and val documents) must pass. The lr 1.8e-3 run changes
+// the recipe, so it is not one of them.
+const SWAP_RUNS = { swap: 'original', swap_space_prefix: 'space-prefix rerun', swap_ablation: 'ablation' };
+const SWAP_ARMS = [[/_sp300$/, 'space_prefix @ 300 MB'], [/_g2$/, 'GPT-2 split @ 50 MB'], [/_sp$/, 'space_prefix @ 50 MB']];
+const SWAP_TIE = 0.01; // BPB: a set tolerance, as no run has a second seed to measure the spread
+
+function comparableSwapModels() {
+  const out = {};
+  Object.entries(SWAP_RUNS).forEach(([key, run]) => {
+    const e = R(key);
+    if (!e.available || (key !== 'swap' && !(Array.isArray(e.not_comparable) && !e.not_comparable.length))) return;
+    Object.entries(e.data.models || {}).forEach(([k, m]) => {
+      const arm = m.spec?.kind !== 'tokenisers' ? 'not our tokeniser' : (SWAP_ARMS.find(([re]) => re.test(k)) || [null, 'whitespace @ 50 MB'])[1];
+      if (!(k in out) || m.final_bpb < out[k].final_bpb) out[k] = { ...m, set: key, where: `${run} · ${arm}` };
+    });
+  });
+  return out;
+}
+
+function swapCaveat(r, M) {
+  const runs = [...new Set(Object.values(M).map((m) => SWAP_RUNS[m.set]))].join(', ');
+  let out = `${r[0][0]}: ${M[r[0][0]].where}.`;
+  if (r[1]) {
+    const gap = r[1][1] - r[0][1];
+    out += ` Runner-up ${r[1][0]}: ${M[r[1][0]].where}.`;
+    if (gap < SWAP_TIE) out += ` Tie at one seed: within noise, not resolved (margin ${gap.toFixed(4)} BPB, below ${SWAP_TIE}).`;
+  }
+  return `${out} ${SWAP_TIE} BPB is a set tolerance: one seed per run, so the seed-to-seed spread is unmeasured. Early training; best over the comparable runs (${runs}).`;
+}
+
 function leaderSpecs() {
   const tp = R('throughput_local');
   const spreads = tp.available ? Object.values(tp.data.models?.['16384'] || {}).map((m) => spread(m.encode_mb_per_sec)).filter(isNum) : [];
@@ -540,10 +571,7 @@ function leaderSpecs() {
     { set: 'proxy_big', eyebrow: 'Proxy LM · big', unit: 'BPB', dir: -1, d: 3, tab: 'proxy', get: (m) => m.macro_val_bpb, what: 'Macro val bits per byte, mean of the seeds', caveat: (r, M) => seedMargin(M, r) },
     {
       set: 'swap', eyebrow: 'GPT-2 swap', unit: 'BPB', dir: -1, d: 4, tab: 'swap', get: (m) => m.final_bpb, what: 'Final val bits per byte of GPT-2 small',
-      caveat: (r, M) => {
-        const ours = r.find(([k]) => M[k].spec?.kind === 'tokenisers');
-        return `One seed per tokeniser, early training.${ours ? ` Best of ours: ${ours[0]} (${signed(ours[1] - r[0][1], 4)}).` : ''}`;
-      },
+      models: comparableSwapModels, runOf: (M, k) => M[k].set, caveat: swapCaveat,
     },
     { set: 'intrinsic_16384', eyebrow: 'Compression', unit: 'B/tok', dir: 1, d: 2, tab: 'intrinsic', get: (m) => m.bytes_per_token, what: 'Bytes per token on held-out text, V = 16,384', caveat: () => 'Compression is not LM quality; SuperBPE tokens can span words.' },
     { set: 'intrinsic_16384', eyebrow: 'Vocabulary use', unit: 'E₂.₅', dir: 1, d: 3, tab: 'intrinsic', get: (m) => m.renyi_e_2_5, what: 'Rényi efficiency α = 2.5, V = 16,384', caveat: () => 'How evenly tokens are used; not a quality score on its own.' },
@@ -576,7 +604,7 @@ function renderSummary() {
       <div class="kpi-note">${esc(s.what)} · ${s.dir === 1 ? 'higher' : 'lower'} is better</div>
       ${runner}
       <div class="kpi-ctx">${esc(s.caveat(r, models))}</div>
-      <div class="kpi-note">Run: ${esc(provenance(e.data.meta))}</div>
+      <div class="kpi-note">Run: ${esc(provenance((s.runOf ? R(s.runOf(models, k)) : e).data.meta))}</div>
       <button type="button" class="link-btn" onclick="switchTab('${s.tab}')">Details →</button>
     </div>`;
   });
