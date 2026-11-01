@@ -513,13 +513,17 @@ def main(argv: Optional[List[str]] = None) -> None:
             raise SystemExit("--resume with a different --steps would mix schedules")
         if held and cfg.get("trainer_args", {}).get(LR_OVERRIDE) != recipe_args(steps, eval_every, args.lr).get(LR_OVERRIDE):
             raise SystemExit("--resume with a different --lr would mix learning rates")
-    cfg.update(tokenizers=[s for s in cfg["tokenizers"] if s["name"] in names], train=train,
-               trainer_args=recipe_args(steps, eval_every, args.lr), mbs=args.mbs or DEFAULT_MBS[args.gpu],
+    cfg.update(train=train, trainer_args=recipe_args(steps, eval_every, args.lr), mbs=args.mbs or DEFAULT_MBS[args.gpu],
                mode="pilot" if args.pilot else "full", gpu=args.gpu,
                eval_docs=args.pilot_eval_docs if args.pilot else None)
+    # The job's config.json keeps every prepared tokenizer (a later --resume runs them all); the VM
+    # gets its own config.json with only this run's.
     (run_dir / "config.json").write_text(json.dumps(cfg, indent=1), encoding="utf-8")
-    files = [run_dir / "config.json", TRAINER, REPO / "python" / "tokenisers" / "benchmarks" / "throughput.py"]
-    if any(s["kind"] == "tokenisers" for s in cfg["tokenizers"]):
+    vm_cfg = dict(cfg, tokenizers=[s for s in cfg["tokenizers"] if s["name"] in names])
+    (run_dir / "vm").mkdir(exist_ok=True)
+    (run_dir / "vm" / "config.json").write_text(json.dumps(vm_cfg, indent=1), encoding="utf-8")
+    files = [run_dir / "vm" / "config.json", TRAINER, REPO / "python" / "tokenisers" / "benchmarks" / "throughput.py"]
+    if any(s["kind"] == "tokenisers" for s in vm_cfg["tokenizers"]):
         if start["git_dirty"] is not False:
             raise SystemExit("the VM builds the committed code (`git archive HEAD`): commit code changes first")
         subprocess.run(["git", "archive", "--format=tar.gz", "-o", str(run_dir / "src.tar.gz"), start["git_commit"]],
