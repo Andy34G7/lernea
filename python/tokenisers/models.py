@@ -15,7 +15,8 @@ and a ``UserWarning`` reports its size.
 
 ``pretokenizer`` (``train`` of every class except SuperBPE and ByteEntropy) is how text is split
 into segments that no token spans, for training and encoding alike: ``"whitespace"`` (default)
-isolates every Unicode whitespace run, so every space is its own token; ``"space_prefix"``
+puts every maximal Unicode whitespace run in a segment of its own, so no token mixes whitespace
+with other text (a run such as ``"    "`` or ``" \\n"`` can still be one token); ``"space_prefix"``
 (GPT-2-style) lets a word take the one U+0020 space before it (" the"), while other whitespace
 stays in whitespace-only segments; ``"gpt2"`` is GPT-2's exact regex pre-split (tiktoken's gpt2
 ``pat_str``): contractions, letter runs, digit runs and punctuation runs apart, each with the
@@ -24,7 +25,11 @@ config (a dict or JSON string, e.g. ``{"type": "Digits", "individual_digits": Tr
 ``tokenizers`` itself, limited to splitters that keep every character (``Split``, ``Punctuation``,
 ``Digits``, ``FixedLength``, ``ByteLevel`` without ``add_prefix_space``, ``Sequence``); anything
 else raises ``ValueError``. The exported ``tokenizer.json`` reproduces it, and ``from_pretrained``
-restores it. ``tokenisers._core.pretokenize(data, mode)`` returns the segments.
+restores it. ``train`` also raises ``ValueError`` for a config that ``tokenizer.json`` would load
+back as another pretokenizer with the same split, and names that one: a lone ``ByteLevel`` with
+``use_regex=True`` is ``"gpt2"``, ``Sequence[X, ByteLevel(use_regex=False)]`` is ``{"hf": X}``,
+and a lone ``ByteLevel(use_regex=False)`` splits nothing (whole text).
+``tokenisers._core.pretokenize(data, mode)`` returns the segments of any accepted config.
 """
 
 from __future__ import annotations
@@ -442,7 +447,7 @@ class UnigramTokenizer(_CoreTokenizer):
         probability proportional to P(s)^(1/temperature): temperature 1 (default) is the exact
         posterior, SentencePiece ``alpha`` = 1/temperature, 0 gives Viterbi. ``nbest_size``
         (SentencePiece convention): None or < 0 samples from all segmentations (FFBS), k > 1 from
-        the k best of each whitespace / non-whitespace segment, 0 or 1 is Viterbi.
+        the k best of each pretokenizer segment, 0 or 1 is Viterbi.
         """
         return self._require().encode(
             text, temperature=temperature, nbest_size=nbest_size, sample=sample, seed=seed

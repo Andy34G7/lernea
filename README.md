@@ -92,8 +92,10 @@ Face `pre_tokenizer` config (a dict or a JSON string) with `tokenizers` itself: 
 `WhitespaceSplit`, `BertPreTokenizer`, `CharDelimiterSplit`, `Metaspace`, `UnicodeScripts`, which drops
 the spaces a piece starts with) is a `ValueError` naming it. The export writes the config back
 unchanged (followed by the byte-level map when it has no `ByteLevel`) and `from_pretrained` restores
-it; `.pretokenizer` reports `{"hf": config}`. For example, Llama-style single digits before GPT-2's
-split:
+it; `.pretokenizer` reports `{"hf": config}`. Training rejects a config whose export is another
+pretokenizer's, with the same split, and names that one: a lone `ByteLevel(use_regex=true)` is `"gpt2"`,
+`Sequence[X, ByteLevel(use_regex=false)]` is `{"hf": X}`, and a lone `ByteLevel(use_regex=false)`
+splits nothing. For example, Llama-style single digits before GPT-2's split:
 
 ```python
 from tokenisers import BpeTokenizer

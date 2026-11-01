@@ -123,6 +123,21 @@ fn parse_pretokenizer(spec: Option<&Bound<'_, PyAny>>) -> PyResult<Pretokenizer>
     Pretokenizer::hf(config).map_err(value_err)
 }
 
+/// `parse_pretokenizer` for training. It also rejects an `Hf` config that the model's
+/// tokenizer.json would load back as another pretokenizer (the same split under another name, or
+/// whole text), so `from_pretrained` always restores the `pretokenizer` a model was trained with.
+fn parse_train_pretokenizer(spec: Option<&Bound<'_, PyAny>>) -> PyResult<Pretokenizer> {
+    let pretokenizer = parse_pretokenizer(spec)?;
+    let Pretokenizer::Hf(hf) = pretokenizer else { return Ok(pretokenizer) };
+    let reloaded = match HfTokenizerJson::reloaded_pretokenizer(pretokenizer).map_err(value_err)? {
+        Some(p) if p == pretokenizer => return Ok(pretokenizer),
+        Some(Pretokenizer::Hf(h)) => format!("as {{\"hf\": {}}}, the same split; pass that", h.config),
+        Some(p) => format!("as {:?}, the same split; pass that", p.name()),
+        None => "as whole-text encoding (no pretokenizer): it splits nothing".into(),
+    };
+    Err(value_err(format!("pretokenizer {{\"hf\": {}}}: its tokenizer.json export loads back {reloaded}", hf.config)))
+}
+
 /// The `pretokenizer` property: the mode name, or `{"hf": config}`.
 fn pretokenizer_py(py: Python<'_>, pretokenizer: Pretokenizer) -> PyResult<Bound<'_, PyAny>> {
     let Pretokenizer::Hf(hf) = pretokenizer else {
@@ -769,7 +784,7 @@ pub fn train_bpe(
     special_tokens: Option<Vec<String>>,
     pretokenizer: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyBpeModel> {
-    let pretokenizer = parse_pretokenizer(pretokenizer)?;
+    let pretokenizer = parse_train_pretokenizer(pretokenizer)?;
     check_param("alpha", alpha, false)?;
     check_param("beta", beta, true)?;
     check_param("penalty", penalty, false)?;
@@ -879,7 +894,7 @@ pub fn train_unigram(
     shrinking_factor: f64,
     pretokenizer: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyUnigramModel> {
-    let pretokenizer = parse_pretokenizer(pretokenizer)?;
+    let pretokenizer = parse_train_pretokenizer(pretokenizer)?;
     if vocab_size < BASE_VOCAB_SIZE {
         return Err(PyValueError::new_err(format!(
             "vocab_size must be at least {BASE_VOCAB_SIZE}"
@@ -973,7 +988,7 @@ pub fn train_morpheme_guided(
     special_tokens: Option<Vec<String>>,
     pretokenizer: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyBpeModel> {
-    let pretokenizer = parse_pretokenizer(pretokenizer)?;
+    let pretokenizer = parse_train_pretokenizer(pretokenizer)?;
     let specials = special_tokens.unwrap_or_default();
     let target = merge_target(vocab_size, &specials)?;
     if !lambda_weight.is_finite() || lambda_weight < 0.0 {

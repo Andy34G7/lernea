@@ -259,21 +259,41 @@ def test_a_foreign_lossless_split_loads_as_hf(tmp_path):
 # ----------------------------------------------------------------------------
 
 def test_hf_byte_level_regex_equals_the_native_gpt2_mode():
+    # The split only: train rejects this config, whose export is the gpt2 mode's (see below).
     config = {"hf": byte_level()}
     for t in TEXTS + CORPUS + RANDOM + fineweb_sample(5):
         assert _core.pretokenize(t.encode(), config) == _core.pretokenize(t.encode(), "gpt2"), t[:200]
     for raw in GOLDEN_PROBES + [b"it\xc3's \xff\xfe!! \xe3\x80 x\n\x80 2\x80"]:
         assert _core.pretokenize(raw, config) == _core.pretokenize(raw, "gpt2"), raw
-    corpus = _corpus()
+
+
+def test_a_config_saved_as_another_pretokenizer_is_rejected_at_train(tmp_path):
+    """A config whose tokenizer.json export is another pretokenizer's (a named mode's, another hf
+    config's, or whole text) would reload with a different ``pretokenizer`` (a Unigram model would
+    not reload at all), so train names the equivalent; that one trains and round-trips."""
     with _quiet():
-        pairs = [(cls.train(corpus, 600, pretokenizer="gpt2"), cls.train(corpus, 600, pretokenizer=config))
-                 for cls in (tokenisers.BpeTokenizer, tokenisers.WpBpePpigTokenizer, tokenisers.MdlTokenizer,
-                             tokenisers.UnigramTokenizer)]
-    for g2, hf in pairs:
-        assert (g2.pretokenizer, hf.pretokenizer) == ("gpt2", config)
-        assert hf.get_vocab() == g2.get_vocab(), type(g2).__name__
-        for t in TEXTS + RANDOM[:500] + fineweb_sample(100):
-            assert hf.encode(t) == g2.encode(t), (type(g2).__name__, t[:80])
+        tokenisers.BpeTokenizer.train(CORPUS, 300).save(str(tmp_path / "ws"))
+    ws_export = json.loads((tmp_path / "ws" / "tokenizer.json").read_text())["pre_tokenizer"]
+    cases = [  # (config, error text, what to pass instead)
+        (byte_level(False), "as whole-text encoding", None),
+        (byte_level(False, trim_offsets=True), "as whole-text encoding", None),
+        (byte_level(), 'as "gpt2"', "gpt2"),
+        (seq(DIGITS, byte_level(False)), 'as {"hf": ', {"hf": DIGITS}),
+        (ws_export, 'as "whitespace"', "whitespace"),  # a whitespace-mode export's own pre_tokenizer
+    ]
+    for i, (config, why, instead) in enumerate(cases):
+        assert b"".join(_core.pretokenize(b"ab 12 cd", {"hf": config})) == b"ab 12 cd"
+        for train in (lambda p: tokenisers.BpeTokenizer.train(CORPUS, 300, pretokenizer=p),
+                      lambda p: tokenisers.UnigramTokenizer.train(CORPUS, 300, pretokenizer=p),
+                      lambda p: tokenisers.MorphemeGuidedTokenizer.train(
+                          CORPUS, 300, morpheme_lexicon={"jumps": ["jump", "s"]}, pretokenizer=p)):
+            with pytest.raises(ValueError, match=f"tokenizer.json export loads back {re.escape(why)}"):
+                train({"hf": config})
+            if instead is not None:
+                with _quiet():
+                    tok = train(instead)
+                tok.save(str(tmp_path / str(i)))
+                assert type(tok).from_pretrained(str(tmp_path / str(i))).pretokenizer == instead
 
 
 # ----------------------------------------------------------------------------
