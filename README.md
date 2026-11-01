@@ -752,7 +752,20 @@ uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap-sp --gpu
 ```
 
 <!-- BEGIN GENERATED: nanogpt_swap_sp -->
-_The space-prefix retrain has not been run yet: no `benchmarks/results/nanogpt_swap_sp/nanogpt_swap.json` is committed, so there is nothing to compare._
+- space-prefix run: NVIDIA A100-SXM4-40GB, 40960 MiB, 580.82.07, commit `2df09a7847`, generated 2026-11-01T10:53:38Z; whitespace run: NVIDIA A100-SXM4-40GB, 40960 MiB, 580.82.07
+- same recipe, val documents and tokenizer training text as the whitespace run
+
+| Variant | Val B/token whitespace | Val B/token space_prefix | Final BPB whitespace | Final BPB space_prefix | Change |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| `bpe_frequency` | 2.750 | 4.831 | 2.0259 | 1.8000 | -0.2259 |
+| `wp_bpe_pig` | 2.733 | 4.769 | 2.0077 | 1.7749 | -0.2328 |
+| `wp_bpe_ppig` | 2.736 | 4.777 | 1.9561 | 1.7552 | -0.2009 |
+| `wp_bpe_npmi` | 2.702 | 4.658 | 1.9835 | 1.7436 | -0.2399 |
+| `unigram_lm` | 2.725 | 4.692 | 2.0239 | 1.7088 | -0.3151 |
+| `length_penalized` | 2.749 | 4.822 | 2.0393 | 1.9008 | -0.1385 |
+| `morpheme_bpe` | 2.718 | 4.710 | 1.9695 | 1.7742 | -0.1953 |
+| `mdl_bits` | 2.718 | 4.689 | 1.9684 | 1.7067 | -0.2617 |
+| `gpt2` (reference) | 4.436 | | 1.6851 | | |
 <!-- END GENERATED: nanogpt_swap_sp -->
 
 ### Known limitations

@@ -1,0 +1,1080 @@
+{
+  "meta": {
+    "benchmark": "nanogpt_swap",
+    "created_utc": "2026-11-01T10:53:38Z",
+    "command": [
+      "python",
+      "-m",
+      "tokenisers.benchmarks.nanogpt_swap",
+      "--job-dir",
+      "/home/andey/.cache/tokenisers/nanogpt-swap-job-sp",
+      "--gpu",
+      "A100",
+      "--steps",
+      "600",
+      "--eval-every",
+      "100",
+      "--timeout",
+      "43200",
+      "--output-dir",
+      "benchmarks/results/nanogpt_swap_sp"
+    ],
+    "tokenisers_version": "0.1.0",
+    "git_commit": "2df09a78470d48e0db7eb44fe475bd1c57a0c95b",
+    "git_dirty": false,
+    "native_extension": {
+      "file": "_core.cpython-313-x86_64-linux-gnu.so",
+      "sha256": "4ea467e1ff4f9e45d7ec28f93f489dbf342c52d2e69b430ff13efe68a7a340aa",
+      "built_utc": "2026-11-01T06:18:58Z",
+      "stale_sources": []
+    },
+    "mode": "full",
+    "requested_gpu": "A100",
+    "backend": {
+      "gpu": "NVIDIA A100-SXM4-40GB, 40960 MiB, 580.82.07",
+      "torch": "2.11.0+cu130",
+      "python": "3.13.16",
+      "platform": "Linux-6.6.159+-x86_64-with-glibc2.39",
+      "cpu_count": 12,
+      "kind": "colab",
+      "requested_gpu": "A100",
+      "session": "tokenisers-swap_job-55b11b60"
+    },
+    "timings": {
+      "setup": {
+        "pip_seconds": 4.7,
+        "build": {
+          "wheel": "tokenisers-0.1.0-cp313-cp313-manylinux_2_34_x86_64.whl",
+          "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+          "seconds": 40.4
+        }
+      },
+      "download": {
+        "fineweb_val_000000.bin": 1.8,
+        "fineweb_train_000001.bin": 1.3,
+        "fineweb_train_000002.bin": 2.2,
+        "fineweb_train_000003.bin": 2.6,
+        "fineweb_train_000004.bin": 1.8
+      },
+      "source_seconds": 15.0,
+      "decode": {
+        "val_decode": 3.1,
+        "train_decode": 40.8
+      }
+    },
+    "data": {
+      "val_docs": 14982,
+      "val_bytes": 46513886,
+      "train_docs_decoded": 579580,
+      "train_bytes_decoded": 1780808610,
+      "train_docs_dropped_as_val": 0,
+      "shards": [
+        "fineweb_val_000000.bin",
+        "fineweb_train_000001.bin",
+        "fineweb_train_000002.bin",
+        "fineweb_train_000003.bin",
+        "fineweb_train_000004.bin"
+      ]
+    },
+    "recipe": {
+      "upstream": "karpathy/llm.c@f1e2ace651495b74ae22d45d1723443fd00ecd3a",
+      "trainer": "vendor/llmc/train_gpt2_swap.py",
+      "args": {
+        "val_loss_every": "100",
+        "sample_every": "0",
+        "write_tensors": "0",
+        "model": "d12",
+        "sequence_length": "1024",
+        "total_batch_size": "524288",
+        "dtype": "bfloat16",
+        "compile": "1",
+        "tensorcores": "1",
+        "flash": "1",
+        "num_iterations": "600",
+        "weight_decay": "0.1",
+        "zero_stage": "1",
+        "learning_rate": "0.0006",
+        "warmup_iters": "22",
+        "learning_rate_decay_frac": "0.0",
+        "overfit_single_batch": "0"
+      },
+      "mbs_requested": 32
+    },
+    "target": {
+      "nats_per_gpt2_token": 3.28,
+      "bpb": null
+    },
+    "prepared": {
+      "command": [
+        "python",
+        "-m",
+        "tokenisers.benchmarks.nanogpt_swap",
+        "--job-dir",
+        "/home/andey/.cache/tokenisers/nanogpt-swap-job-sp",
+        "--prepare-only",
+        "--tokenizers",
+        "bpe_frequency_sp",
+        "wp_bpe_pig_sp",
+        "wp_bpe_ppig_sp",
+        "wp_bpe_npmi_sp",
+        "unigram_lm_sp",
+        "length_penalized_sp",
+        "morpheme_bpe_sp",
+        "mdl_bits_sp"
+      ],
+      "git_commit": "2df09a78470d48e0db7eb44fe475bd1c57a0c95b",
+      "git_dirty": false,
+      "native_extension": {
+        "file": "_core.cpython-313-x86_64-linux-gnu.so",
+        "sha256": "4ea467e1ff4f9e45d7ec28f93f489dbf342c52d2e69b430ff13efe68a7a340aa",
+        "built_utc": "2026-11-01T06:18:58Z",
+        "stale_sources": []
+      },
+      "created_utc": "2026-11-01T06:20:45Z",
+      "val_docs": 14982,
+      "val_bytes": 46513886,
+      "train_docs_dropped_as_val": 0,
+      "variants": {
+        "bpe_frequency_sp": {
+          "class": "BpeTokenizer",
+          "scorer": "frequency",
+          "min_frequency": 1,
+          "pretokenizer": "space_prefix",
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 2.36,
+          "warnings": []
+        },
+        "wp_bpe_pig_sp": {
+          "class": "BpeTokenizer",
+          "scorer": "wp-bpe-pig",
+          "min_frequency": 1,
+          "pretokenizer": "space_prefix",
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 13.53,
+          "warnings": []
+        },
+        "wp_bpe_ppig_sp": {
+          "class": "BpeTokenizer",
+          "scorer": "wp-bpe-ppig",
+          "min_frequency": 2,
+          "penalty": 0.35,
+          "pretokenizer": "space_prefix",
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 11.42,
+          "warnings": []
+        },
+        "wp_bpe_npmi_sp": {
+          "class": "BpeTokenizer",
+          "scorer": "wp-bpe-npmi",
+          "min_frequency": 2,
+          "alpha": 0.5,
+          "pretokenizer": "space_prefix",
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 9.9,
+          "warnings": []
+        },
+        "unigram_lm_sp": {
+          "class": "UnigramTokenizer",
+          "num_iterations": 10,
+          "shrinking_factor": 0.75,
+          "pretokenizer": "space_prefix",
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 13.71,
+          "warnings": []
+        },
+        "length_penalized_sp": {
+          "class": "BpeTokenizer",
+          "scorer": "length_penalized",
+          "min_frequency": 1,
+          "beta": 0.5,
+          "pretokenizer": "space_prefix",
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 2.63,
+          "warnings": []
+        },
+        "morpheme_bpe_sp": {
+          "class": "MorphemeBpeTokenizer",
+          "scorer": "frequency",
+          "min_frequency": 1,
+          "lambda_weight": 2.0,
+          "pretokenizer": "space_prefix",
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 2.82,
+          "warnings": []
+        },
+        "mdl_bits_sp": {
+          "class": "BpeTokenizer",
+          "scorer": "mdl",
+          "min_frequency": 2,
+          "penalty": 24.0,
+          "pretokenizer": "space_prefix",
+          "requested_vocab_size": 50256,
+          "vocab_size": 50256,
+          "train_seconds": 11.33,
+          "warnings": []
+        }
+      },
+      "duplicates": {},
+      "morphology": {
+        "gold_source": "SIGMORPHON 2022 test split, surface entries (eng, fra, hun, rus, spa)",
+        "gold": [
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "eng",
+            "split": "test",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/eng.word.test.gold.tsv",
+            "sha256": "fe2e2ad0a9fddb3dc2ed4a2edb62641826fb80d8762f0db870f82f71ebb04c46"
+          },
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "fra",
+            "split": "test",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/fra.word.test.gold.tsv",
+            "sha256": "4db5cb53f54862dc30de6721abfd08ef191ca2ca5d2cf6ea536b7786f0fb6da2"
+          },
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "hun",
+            "split": "test",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/hun.word.test.gold.tsv",
+            "sha256": "58b0c2e8b7ceae36df97af72b864b1ffd8efad7ffe2e93ceed819128dc948a28"
+          },
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "rus",
+            "split": "test",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/rus.word.test.gold.tsv",
+            "sha256": "778bab661d1a8fd75dbd6b9a75823d99fac80758a2985b08cbcb1c643fcd43f4"
+          },
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "spa",
+            "split": "test",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/spa.word.test.gold.tsv",
+            "sha256": "bccf8150c7e9f513554fd5ad7061166b2bdab07220aaaa548b1ed01b9bd7e930"
+          }
+        ],
+        "lexicon": [
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "eng",
+            "split": "train",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/eng.word.train.tsv",
+            "sha256": "c8affc34852fd83dd8ab8f9ada076b6e66db9e294fc1970555515ced730d2cc1"
+          },
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "fra",
+            "split": "train",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/fra.word.train.tsv",
+            "sha256": "2b08ae6602c5125daae6a71344a007312a9c5f2686ab9f39c2fc622f3da33812"
+          },
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "hun",
+            "split": "train",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/hun.word.train.tsv",
+            "sha256": "853a13765bbef162b71c7d10f9bf5de318a6c2d35fc208f33d872cc060d8ffa2"
+          },
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "rus",
+            "split": "train",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/rus.word.train.tsv",
+            "sha256": "def10b71b7d2852c4c54f9fd3d362e28c267ca85d30ec384a329b007a04b0fe3"
+          },
+          {
+            "dataset": "SIGMORPHON 2022 SegmentationST, word level",
+            "lang": "spa",
+            "split": "train",
+            "commit": "ac161e1107e423577e922b05f8c43c6ebad6722a",
+            "url": "https://raw.githubusercontent.com/sigmorphon/2022SegmentationST/ac161e1107e423577e922b05f8c43c6ebad6722a/data/spa.word.train.tsv",
+            "sha256": "593cbe11792fbc2cc421c6f3b888e777a1ea4dc8f5f28d5c459a422603dbf7a8"
+          }
+        ],
+        "gold_entries": 126622,
+        "lexicon_entries": 36214,
+        "lexicon_words_dropped_as_gold": 854
+      },
+      "tokenmonster_why": "every prebuilt englishcode vocabulary NFD-normalizes its input (lossy on 1,053 of 14,982 val documents); capcode also folds U+0130 to I (2 documents). Used: the nocapcode vocabulary of the same size and mode, normalization flag cleared (same tokens and ids), lossless on all val documents"
+    },
+    "tokenizer_text": {
+      "docs": 16157,
+      "bytes": 49999797,
+      "docs_sha256": "5f91f00fe65030c9358beb8c57587a897aab3bae7fec66969bc1bb3bd08a588b",
+      "shard": "fineweb_train_000001.bin"
+    },
+    "source": {
+      "repo": "kjj0/fineweb10B-gpt2",
+      "val_shard": "fineweb_val_000000.bin",
+      "val_tokens": 10485760,
+      "train_shards": [
+        "fineweb_train_000001.bin",
+        "fineweb_train_000002.bin",
+        "fineweb_train_000003.bin",
+        "fineweb_train_000004.bin",
+        "fineweb_train_000005.bin",
+        "fineweb_train_000006.bin",
+        "fineweb_train_000007.bin",
+        "fineweb_train_000008.bin",
+        "fineweb_train_000009.bin",
+        "fineweb_train_000010.bin",
+        "fineweb_train_000011.bin",
+        "fineweb_train_000012.bin",
+        "fineweb_train_000013.bin",
+        "fineweb_train_000014.bin",
+        "fineweb_train_000015.bin",
+        "fineweb_train_000016.bin",
+        "fineweb_train_000017.bin",
+        "fineweb_train_000018.bin",
+        "fineweb_train_000019.bin",
+        "fineweb_train_000020.bin",
+        "fineweb_train_000021.bin",
+        "fineweb_train_000022.bin",
+        "fineweb_train_000023.bin",
+        "fineweb_train_000024.bin",
+        "fineweb_train_000025.bin",
+        "fineweb_train_000026.bin",
+        "fineweb_train_000027.bin",
+        "fineweb_train_000028.bin",
+        "fineweb_train_000029.bin",
+        "fineweb_train_000030.bin",
+        "fineweb_train_000031.bin",
+        "fineweb_train_000032.bin",
+        "fineweb_train_000033.bin",
+        "fineweb_train_000034.bin",
+        "fineweb_train_000035.bin",
+        "fineweb_train_000036.bin",
+        "fineweb_train_000037.bin",
+        "fineweb_train_000038.bin",
+        "fineweb_train_000039.bin",
+        "fineweb_train_000040.bin",
+        "fineweb_train_000041.bin",
+        "fineweb_train_000042.bin",
+        "fineweb_train_000043.bin",
+        "fineweb_train_000044.bin",
+        "fineweb_train_000045.bin",
+        "fineweb_train_000046.bin",
+        "fineweb_train_000047.bin",
+        "fineweb_train_000048.bin",
+        "fineweb_train_000049.bin",
+        "fineweb_train_000050.bin",
+        "fineweb_train_000051.bin",
+        "fineweb_train_000052.bin",
+        "fineweb_train_000053.bin",
+        "fineweb_train_000054.bin",
+        "fineweb_train_000055.bin",
+        "fineweb_train_000056.bin",
+        "fineweb_train_000057.bin",
+        "fineweb_train_000058.bin",
+        "fineweb_train_000059.bin",
+        "fineweb_train_000060.bin",
+        "fineweb_train_000061.bin",
+        "fineweb_train_000062.bin",
+        "fineweb_train_000063.bin",
+        "fineweb_train_000064.bin",
+        "fineweb_train_000065.bin",
+        "fineweb_train_000066.bin",
+        "fineweb_train_000067.bin",
+        "fineweb_train_000068.bin",
+        "fineweb_train_000069.bin",
+        "fineweb_train_000070.bin",
+        "fineweb_train_000071.bin",
+        "fineweb_train_000072.bin",
+        "fineweb_train_000073.bin",
+        "fineweb_train_000074.bin",
+        "fineweb_train_000075.bin",
+        "fineweb_train_000076.bin",
+        "fineweb_train_000077.bin",
+        "fineweb_train_000078.bin",
+        "fineweb_train_000079.bin",
+        "fineweb_train_000080.bin",
+        "fineweb_train_000081.bin",
+        "fineweb_train_000082.bin",
+        "fineweb_train_000083.bin",
+        "fineweb_train_000084.bin",
+        "fineweb_train_000085.bin",
+        "fineweb_train_000086.bin",
+        "fineweb_train_000087.bin",
+        "fineweb_train_000088.bin",
+        "fineweb_train_000089.bin",
+        "fineweb_train_000090.bin",
+        "fineweb_train_000091.bin",
+        "fineweb_train_000092.bin",
+        "fineweb_train_000093.bin",
+        "fineweb_train_000094.bin",
+        "fineweb_train_000095.bin",
+        "fineweb_train_000096.bin",
+        "fineweb_train_000097.bin",
+        "fineweb_train_000098.bin",
+        "fineweb_train_000099.bin",
+        "fineweb_train_000100.bin",
+        "fineweb_train_000101.bin",
+        "fineweb_train_000102.bin",
+        "fineweb_train_000103.bin"
+      ],
+      "tokenizer": {
+        "kind": "tiktoken",
+        "encoding": "gpt2"
+      }
+    }
+  },
+  "models": {
+    "bpe_frequency_sp": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 4.830935636977468,
+      "val_targets": 9628339,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 33.55,
+      "spec": {
+        "name": "bpe_frequency_sp",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/bpe_frequency_sp",
+        "pretokenizer": "space_prefix",
+        "ids_sha256": "1ab855598ba550709b1a83998ec5be2ea622729919b636c01766360c87ab3943",
+        "ids_docs": 200
+      },
+      "curve": [
+        [
+          0,
+          3.2668550180987688,
+          10.939225463787164
+        ],
+        [
+          100,
+          2.1726018752295904,
+          7.275064741016532
+        ],
+        [
+          200,
+          2.015794214218945,
+          6.74998653927777
+        ],
+        [
+          300,
+          1.9170417450386144,
+          6.419309016251963
+        ],
+        [
+          400,
+          1.849007424638983,
+          6.1914927323936615
+        ],
+        [
+          500,
+          1.809059360428211,
+          6.057724665300863
+        ],
+        [
+          600,
+          1.8000375740124799,
+          6.027514767665047
+        ]
+      ],
+      "final_bpb": 1.8000375740124799,
+      "final_nats_per_token": 6.027514767665047,
+      "reached_target_step": null,
+      "train_bytes_per_token": 4.850556895393931,
+      "train_tokens": 318520591,
+      "train_docs": 503125,
+      "params": 124475904,
+      "mbs": 32,
+      "grad_accum_steps": 16,
+      "ms_per_step": 2650.3255367279053,
+      "tokens_per_s": 197820.2272643407,
+      "eval_seconds": [
+        64.7,
+        36.2,
+        36.2,
+        36.2,
+        36.2,
+        36.2,
+        36.1
+      ],
+      "eval_targets": 9628339,
+      "peak_memory_bytes": 18502883328,
+      "trainer_seconds": 1997.2,
+      "wall_seconds": 2108.4,
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "torch": "2.11.0+cu130"
+    },
+    "wp_bpe_pig_sp": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 4.7687812101727,
+      "val_targets": 9753831,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 38.14,
+      "spec": {
+        "name": "wp_bpe_pig_sp",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/wp_bpe_pig_sp",
+        "pretokenizer": "space_prefix",
+        "ids_sha256": "07ae0550c7a71a3c01aa0ff75822113ef3489f5c2985688c77a62bc667c05107",
+        "ids_docs": 200
+      },
+      "curve": [
+        [
+          0,
+          3.3204348698047332,
+          10.975588719685451
+        ],
+        [
+          100,
+          2.120740555254828,
+          7.010038452283563
+        ],
+        [
+          200,
+          1.9852612861241765,
+          6.562216165045311
+        ],
+        [
+          300,
+          1.8905184967318465,
+          6.249046977484302
+        ],
+        [
+          400,
+          1.824219729601044,
+          6.02989857398236
+        ],
+        [
+          500,
+          1.7840781202196767,
+          5.8972117987883435
+        ],
+        [
+          600,
+          1.7748944279284662,
+          5.866855404680725
+        ]
+      ],
+      "final_bpb": 1.7748944279284662,
+      "final_nats_per_token": 5.866855404680725,
+      "reached_target_step": null,
+      "train_bytes_per_token": 4.788464741909301,
+      "train_tokens": 318076767,
+      "train_docs": 496000,
+      "params": 124475904,
+      "mbs": 32,
+      "grad_accum_steps": 16,
+      "ms_per_step": 2648.065686225891,
+      "tokens_per_s": 197989.04639228652,
+      "eval_seconds": [
+        44.1,
+        36.6,
+        36.7,
+        36.6,
+        36.6,
+        36.6,
+        36.6
+      ],
+      "eval_targets": 9753831,
+      "peak_memory_bytes": 18502883328,
+      "trainer_seconds": 1876.0,
+      "wall_seconds": 1950.0,
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "torch": "2.11.0+cu130"
+    },
+    "wp_bpe_ppig_sp": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 4.777010112632919,
+      "val_targets": 9737029,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 33.98,
+      "spec": {
+        "name": "wp_bpe_ppig_sp",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/wp_bpe_ppig_sp",
+        "pretokenizer": "space_prefix",
+        "ids_sha256": "508ee6ffccc18744c0146b93df049173bd0b3b8667caa8892e22e3e96715baf8",
+        "ids_docs": 200
+      },
+      "curve": [
+        [
+          0,
+          3.3102272935668244,
+          10.960728919355354
+        ],
+        [
+          100,
+          2.1299480697160185,
+          7.052622473940758
+        ],
+        [
+          200,
+          1.981653164586848,
+          6.561592671122917
+        ],
+        [
+          300,
+          1.8837953966231606,
+          6.237568858804151
+        ],
+        [
+          400,
+          1.8092023324448332,
+          5.990578461101959
+        ],
+        [
+          500,
+          1.764659843798625,
+          5.84309066037197
+        ],
+        [
+          600,
+          1.755173055319108,
+          5.8116782806114236
+        ]
+      ],
+      "final_bpb": 1.755173055319108,
+      "final_nats_per_token": 5.8116782806114236,
+      "reached_target_step": null,
+      "train_bytes_per_token": 4.796162219608089,
+      "train_tokens": 318844612,
+      "train_docs": 498000,
+      "params": 124475904,
+      "mbs": 32,
+      "grad_accum_steps": 16,
+      "ms_per_step": 2647.0563411712646,
+      "tokens_per_s": 198064.54129647047,
+      "eval_seconds": [
+        43.9,
+        36.6,
+        36.7,
+        36.6,
+        36.6,
+        36.6,
+        36.6
+      ],
+      "eval_targets": 9737029,
+      "peak_memory_bytes": 18502883328,
+      "trainer_seconds": 1873.6,
+      "wall_seconds": 1947.6,
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "torch": "2.11.0+cu130"
+    },
+    "wp_bpe_npmi_sp": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 4.657530485451164,
+      "val_targets": 9986813,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 35.23,
+      "spec": {
+        "name": "wp_bpe_npmi_sp",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/wp_bpe_npmi_sp",
+        "pretokenizer": "space_prefix",
+        "ids_sha256": "00cc99906be14c781fc3ac996d99c74eecbc6e59c4ec636bf4d25e752db70bd1",
+        "ids_docs": 200
+      },
+      "curve": [
+        [
+          0,
+          3.404914592582163,
+          10.99227006806458
+        ],
+        [
+          100,
+          2.1033356223938378,
+          6.790312231473644
+        ],
+        [
+          200,
+          1.9688016264763828,
+          6.355988850886565
+        ],
+        [
+          300,
+          1.8694719746239639,
+          6.035317559657321
+        ],
+        [
+          400,
+          1.7945424363834797,
+          5.793418475842079
+        ],
+        [
+          500,
+          1.7528947213846235,
+          5.658964903355249
+        ],
+        [
+          600,
+          1.7435816576672751,
+          5.628899035692897
+        ]
+      ],
+      "final_bpb": 1.7435816576672751,
+      "final_nats_per_token": 5.628899035692897,
+      "reached_target_step": null,
+      "train_bytes_per_token": 4.676201592384608,
+      "train_tokens": 317887147,
+      "train_docs": 484000,
+      "params": 124475904,
+      "mbs": 32,
+      "grad_accum_steps": 16,
+      "ms_per_step": 2649.249315261841,
+      "tokens_per_s": 197900.58903843918,
+      "eval_seconds": [
+        43.5,
+        37.5,
+        37.5,
+        37.5,
+        37.5,
+        37.5,
+        37.5
+      ],
+      "eval_targets": 9986813,
+      "peak_memory_bytes": 18502883328,
+      "trainer_seconds": 1875.9,
+      "wall_seconds": 1949.8,
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "torch": "2.11.0+cu130"
+    },
+    "unigram_lm_sp": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 4.691738962600049,
+      "val_targets": 9913997,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 23.46,
+      "spec": {
+        "name": "unigram_lm_sp",
+        "kind": "tokenisers",
+        "class": "UnigramTokenizer",
+        "path": "tokenizers/unigram_lm_sp",
+        "pretokenizer": "space_prefix",
+        "ids_sha256": "425e651df01a71253d63ade1334cac5a31b4dc2b63a2cbc0646200f0160b64be",
+        "ids_docs": 200
+      },
+      "curve": [
+        [
+          0,
+          3.380426306275474,
+          10.993368218399159
+        ],
+        [
+          100,
+          2.1174066583942537,
+          6.885945426647989
+        ],
+        [
+          200,
+          1.957611455910602,
+          6.366280940196889
+        ],
+        [
+          300,
+          1.8437011359292679,
+          5.995837103244796
+        ],
+        [
+          400,
+          1.7609565949616337,
+          5.726746425175304
+        ],
+        [
+          500,
+          1.718162236578834,
+          5.587576362955964
+        ],
+        [
+          600,
+          1.7087875945703443,
+          5.557089411850512
+        ]
+      ],
+      "final_bpb": 1.7087875945703443,
+      "final_nats_per_token": 5.557089411850512,
+      "reached_target_step": null,
+      "train_bytes_per_token": 4.708598892322918,
+      "train_tokens": 318254305,
+      "train_docs": 488000,
+      "params": 124475904,
+      "mbs": 32,
+      "grad_accum_steps": 16,
+      "ms_per_step": 2646.796703338623,
+      "tokens_per_s": 198083.97046084888,
+      "eval_seconds": [
+        43.2,
+        37.2,
+        37.3,
+        37.2,
+        37.2,
+        37.2,
+        37.2
+      ],
+      "eval_targets": 9913997,
+      "peak_memory_bytes": 18502883328,
+      "trainer_seconds": 1872.6,
+      "wall_seconds": 1963.7,
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "torch": "2.11.0+cu130"
+    },
+    "length_penalized_sp": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 4.821679720015566,
+      "val_targets": 9646822,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 36.02,
+      "spec": {
+        "name": "length_penalized_sp",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/length_penalized_sp",
+        "pretokenizer": "space_prefix",
+        "ids_sha256": "fdff8bbd52c82a820606cb6f5b32b349f1643a6af31abdd678687d27fd11093d",
+        "ids_docs": 200
+      },
+      "curve": [
+        [
+          0,
+          3.2837551361319126,
+          10.974748714480953
+        ],
+        [
+          100,
+          2.195524121954159,
+          7.337735164812358
+        ],
+        [
+          200,
+          2.064579990041695,
+          6.900102368273228
+        ],
+        [
+          300,
+          1.987784148920925,
+          6.643440399375497
+        ],
+        [
+          400,
+          1.9366149235276238,
+          6.472426006606975
+        ],
+        [
+          500,
+          1.9081006818900341,
+          6.377127598600475
+        ],
+        [
+          600,
+          1.9007690194923295,
+          6.3526242025984825
+        ]
+      ],
+      "final_bpb": 1.9007690194923295,
+      "final_nats_per_token": 6.3526242025984825,
+      "reached_target_step": null,
+      "train_bytes_per_token": 4.840648610112306,
+      "train_tokens": 318469472,
+      "train_docs": 502000,
+      "params": 124475904,
+      "mbs": 32,
+      "grad_accum_steps": 16,
+      "ms_per_step": 2648.2070684432983,
+      "tokens_per_s": 197978.47617263306,
+      "eval_seconds": [
+        42.9,
+        36.3,
+        36.3,
+        36.3,
+        36.3,
+        36.3,
+        36.3
+      ],
+      "eval_targets": 9646822,
+      "peak_memory_bytes": 18502883328,
+      "trainer_seconds": 1869.0,
+      "wall_seconds": 1944.2,
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "torch": "2.11.0+cu130"
+    },
+    "morpheme_bpe_sp": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 4.709774258550979,
+      "val_targets": 9876033,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 34.58,
+      "spec": {
+        "name": "morpheme_bpe_sp",
+        "kind": "tokenisers",
+        "class": "MorphemeGuidedTokenizer",
+        "path": "tokenizers/morpheme_bpe_sp",
+        "pretokenizer": "space_prefix",
+        "ids_sha256": "7800df446da9d710d1b52aeb24657eff841df87fe07d905daa71ba8d80ac7136",
+        "ids_docs": 200
+      },
+      "curve": [
+        [
+          0,
+          3.349188328279973,
+          10.933648850593393
+        ],
+        [
+          100,
+          2.162926954912497,
+          7.061019416200352
+        ],
+        [
+          200,
+          2.0095610039466894,
+          6.560346032342409
+        ],
+        [
+          300,
+          1.9039611789562216,
+          6.2156083550428916
+        ],
+        [
+          400,
+          1.8277590138941213,
+          5.966841300825952
+        ],
+        [
+          500,
+          1.7840033564168334,
+          5.823998036371726
+        ],
+        [
+          600,
+          1.7742465204042959,
+          5.792146193955717
+        ]
+      ],
+      "final_bpb": 1.7742465204042959,
+      "final_nats_per_token": 5.792146193955717,
+      "reached_target_step": null,
+      "train_bytes_per_token": 4.728223444803962,
+      "train_tokens": 318159504,
+      "train_docs": 490000,
+      "params": 124475904,
+      "mbs": 32,
+      "grad_accum_steps": 16,
+      "ms_per_step": 2648.3471393585205,
+      "tokens_per_s": 197968.00510336136,
+      "eval_seconds": [
+        43.7,
+        37.2,
+        37.2,
+        37.1,
+        37.1,
+        37.1,
+        37.1
+      ],
+      "eval_targets": 9876033,
+      "peak_memory_bytes": 18502883328,
+      "trainer_seconds": 1872.6,
+      "wall_seconds": 1947.4,
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "torch": "2.11.0+cu130"
+    },
+    "mdl_bits_sp": {
+      "vocab_size": 50257,
+      "padded_vocab_size": 50304,
+      "val_bytes_per_token": 4.688680016511323,
+      "val_targets": 9920465,
+      "val_docs_sha256": "6dc58a873fe41547479f0542484ae07e7ea17b97cf006905add7eceef94f1095",
+      "encode_mb_per_s": 34.79,
+      "spec": {
+        "name": "mdl_bits_sp",
+        "kind": "tokenisers",
+        "class": "BpeTokenizer",
+        "path": "tokenizers/mdl_bits_sp",
+        "pretokenizer": "space_prefix",
+        "ids_sha256": "cbf3e5146149f18d3b5ca3564e2ab4c318ed4591d0a6ce3dc58935895e9a2742",
+        "ids_docs": 200
+      },
+      "curve": [
+        [
+          0,
+          3.382013083083887,
+          10.991357638870342
+        ],
+        [
+          100,
+          2.094026849072078,
+          6.805472787396986
+        ],
+        [
+          200,
+          1.9544969527564948,
+          6.352008251913689
+        ],
+        [
+          300,
+          1.8438152370535272,
+          5.992298726406536
+        ],
+        [
+          400,
+          1.7601167433467009,
+          5.7202831973218276
+        ],
+        [
+          500,
+          1.7163866908078165,
+          5.5781629171178295
+        ],
+        [
+          600,
+          1.7066549516760015,
+          5.5465352969347546
+        ]
+      ],
+      "final_bpb": 1.7066549516760015,
+      "final_nats_per_token": 5.5465352969347546,
+      "reached_target_step": null,
+      "train_bytes_per_token": 4.7071819203126575,
+      "train_tokens": 318350107,
+      "train_docs": 488000,
+      "params": 124475904,
+      "mbs": 32,
+      "grad_accum_steps": 16,
+      "ms_per_step": 2648.1854915618896,
+      "tokens_per_s": 197980.0892613368,
+      "eval_seconds": [
+        43.1,
+        37.3,
+        37.3,
+        37.3,
+        37.3,
+        37.2,
+        37.3
+      ],
+      "eval_targets": 9920465,
+      "peak_memory_bytes": 18502883328,
+      "trainer_seconds": 1870.2,
+      "wall_seconds": 1944.8,
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "torch": "2.11.0+cu130"
+    }
+  }
+}
