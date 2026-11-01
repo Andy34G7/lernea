@@ -18,8 +18,9 @@ import sys
 from typing import List, Optional
 
 from tokenisers.benchmarks.report import (ABLATION_SWAP, SPACE_PREFIX_SWAP, render_colab, render_colab_compare,
-                                          render_flores, render_intrinsic, render_nanogpt_swap, render_nanogpt_swap_ablation,
-                                          render_nanogpt_swap_space_prefix, render_throughput, render_tokka)
+                                          render_flores, render_intrinsic, render_nanogpt_swap,
+                                          render_nanogpt_swap_ablation, render_nanogpt_swap_space_prefix,
+                                          render_throughput, render_tokka)
 
 ROOT = Path(__file__).resolve().parents[1]
 COLAB, COLAB_BIG = ("benchmarks/results/colab/extrinsic_bpb_results.json",
