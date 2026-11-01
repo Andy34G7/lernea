@@ -182,3 +182,15 @@ def test_saving_a_model_without_a_tokenizer_json_export_raises_clearly(tmp_path)
     assert wrapper("Hello world")["input_ids"] == tok.encode("Hello world")
     with pytest.raises(NotImplementedError, match="ByteEntropyTokenizer has no tokenizer.json export"):
         wrapper.save_pretrained(str(tmp_path))
+
+
+def test_declared_transformers_floor_has_the_api_the_wrapper_uses():
+    """wrapper.py calls the v5-only add_special_tokens(..., replace_extra_special_tokens=False): on
+    transformers 4.57 wrapping a model with its own special tokens raised TypeError, and 5.0.0 fails
+    this file. pyproject.toml must not admit those versions."""
+    import re
+    from pathlib import Path
+
+    pyproject = (Path(__file__).parents[2] / "pyproject.toml").read_text(encoding="utf-8")
+    floor = re.search(r'"transformers>=([\d.]+)"', pyproject).group(1)
+    assert tuple(map(int, floor.split("."))) >= (5, 2, 0)

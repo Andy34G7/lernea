@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT OR Apache-2.0" }
 dependencies = [
-    "transformers>=4.40.0",
+    "transformers>=5.2.0",  # wrapper.py: the v5 special-token API; 5.0.0 fails its tests, 5.2.0 passes them
     "torch>=2.0.0",
     "datasets>=2.18.0",
     "numpy>=1.24.0",
