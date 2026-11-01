@@ -18,7 +18,7 @@ import sys
 from typing import List, Optional
 
 from tokenisers.benchmarks.report import (ABLATION_SWAP, SPACE_PREFIX_SWAP, render_colab, render_colab_compare,
-                                          render_intrinsic, render_nanogpt_swap, render_nanogpt_swap_ablation,
+                                          render_flores, render_intrinsic, render_nanogpt_swap, render_nanogpt_swap_ablation,
                                           render_nanogpt_swap_space_prefix, render_throughput, render_tokka)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +54,8 @@ SECTIONS["nanogpt_swap_ablation"] = (("benchmarks/results/nanogpt_swap/nanogpt_s
                                       ABLATION_SWAP), render_nanogpt_swap_ablation,
                                      "tokenisers.benchmarks.nanogpt_swap --job-dir DIR --gpu A100 "
                                      "--output-dir benchmarks/results/nanogpt_swap_ablation")
+SECTIONS["flores"] = ("benchmarks/results/flores/flores.json", render_flores,
+                      "tokenisers.benchmarks.flores --skip-memory-check")
 
 
 def render_readme(text: str, root: Path = ROOT) -> str:

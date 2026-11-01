@@ -6,7 +6,7 @@ Submodules load on first use, so the tokka and intrinsic suites do not import to
 
 import importlib
 
-__all__ = ["tokka", "intrinsic", "colab", "throughput", "common", "report"]
+__all__ = ["tokka", "intrinsic", "colab", "throughput", "flores", "common", "report"]
 
 
 def __getattr__(name):

@@ -8,6 +8,7 @@ byte-identical to another (``meta["duplicates"]``) share one row.
 
 from __future__ import annotations
 
+from collections import Counter
 import math
 from pathlib import Path
 import statistics
@@ -524,6 +525,160 @@ def render_nanogpt_swap_ablation(base: Dict[str, Any], sp: Optional[Dict[str, An
     return "\n".join(lines)
 
 
+_TIERS = {"intrinsic": "intrinsic tier (30% multilingual mix)", "swap": "GPT-2-swap tier (English FineWeb)"}
+
+
+def _cap(s: str) -> str:
+    return s[:1].upper() + s[1:]
+
+
+def _flores_findings(doc: Dict[str, Any], tiers: Dict[str, Dict[str, Any]]) -> List[str]:
+    """Findings under the FLORES+ tables; every number comes from the JSON."""
+    meta = doc["meta"]
+    in_mix = list(meta["languages"]["in_mix"].values())
+    latin = [lang for lang in in_mix if lang.endswith("_Latn")]
+    other = [lang for lang in in_mix if lang not in latin]
+    eng = meta["languages"]["english"]
+    lines = ["", "Findings:", ""]
+    for g, label in (("in_mix", "in-mix"), ("out_of_mix", "out-of-mix")):
+        rng = {t: sorted(m["aggregates"][g]["mean_premium"] for m in ms.values()) for t, ms in tiers.items()}
+        line = f"- Mean {label} premium: " + "; ".join(f"{_TIERS[t]} {v[0]:.2f}-{v[-1]:.2f} (median "
+                                                       f"{statistics.median(v):.2f})" for t, v in rng.items())
+        if len(rng) == 2:
+            below = sum(x < rng["swap"][0] for x in rng["intrinsic"])
+            line += (f". {below} of {len(rng['intrinsic'])} intrinsic-tier tokenizers are below the lowest "
+                     "swap-tier tokenizer")
+        lines.append(line + ".")
+    def cost(ms: Dict[str, Any], members: List[str]) -> float:
+        return statistics.median(statistics.fmean(m["languages"][lang]["tokens_per_sentence"] for lang in members)
+                                 for m in ms.values())
+
+    groups = {"in-mix": in_mix, "out-of-mix": meta["languages"]["out_of_mix"]}
+    lines.append("- Absolute cost, mean tokens per sentence over the group's languages (English plays no part), "
+                 "median over each tier: " + "; ".join(
+                     f"{label} " + " vs ".join(f"{t} tier {cost(ms, members):.1f}" for t, ms in tiers.items())
+                     for label, members in groups.items()) + ".")
+    if latin and other:
+        def mean_over(ms: Dict[str, Any], langs: List[str]) -> float:
+            return statistics.fmean(m["languages"][lang]["premium"] for m in ms.values() for lang in langs)
+
+        lines.append("- Latin vs non-Latin in-mix languages (premium averaged over the tier's tokenizers): " + "; ".join(
+            f"{_TIERS[t]} {mean_over(ms, latin):.2f} on {', '.join(latin)} vs {mean_over(ms, other):.2f} on "
+            f"{', '.join(other)}" for t, ms in tiers.items()) + ".")
+    for t, ms in tiers.items():
+        p, lang, n = max((m["languages"][lang]["premium"], lang, n) for n, m in ms.items() for lang in m["languages"])
+        worst = "; ".join(f"worst {label} language " + ", ".join(
+            f"{w} for {c}" for w, c in Counter(m["aggregates"][g]["worst_language"] for m in ms.values()).most_common())
+            for g, label in (("in_mix", "in-mix"), ("out_of_mix", "out-of-mix")))
+        fb = [m["aggregates"]["out_of_mix"]["byte_fallback_rate"] for m in ms.values()]
+        best = min(ms, key=lambda k: (ms[k]["aggregates"]["in_mix"]["mean_premium"], k))
+        en = statistics.median(m["languages"][eng]["tokens_per_sentence"] for m in ms.values())
+        lines.append(f"- {_cap(_TIERS[t])}, {len(ms)} tokenizers: highest premium {p:.2f} (`{n}` on {lang}); {worst}; "
+                     f"byte-fallback tokens are {100 * min(fb):.1f}-{100 * max(fb):.1f}% of out-of-mix tokens. Its "
+                     f"lowest in-mix premium, `{best}` ({ms[best]['aggregates']['in_mix']['mean_premium']:.2f}), comes "
+                     f"with {ms[best]['languages'][eng]['tokens_per_sentence']:.1f} tokens per English sentence against "
+                     f"the tier's median {en:.1f}: the premium is relative to each tokenizer's own English cost.")
+    raw = {lang: t["bytes"] / meta["text"][eng]["bytes"] for lang, t in meta["text"].items()}
+    near = {n: m for ms in tiers.values() for n, m in ms.items() if m["languages"][eng]["bytes_per_token"] < 1.5}
+    if near:
+        gap = statistics.fmean(abs(m["languages"][lang]["premium"] - raw[lang]) for m in near.values()
+                               for lang in m["languages"] if lang != eng)
+        lines.append(f"- {len(near)} tokenizers encode English at under 1.5 bytes per token, close to raw bytes ("
+                     + ", ".join(f"`{n}`" for n in near) + f"): their premium is on average {gap:.2f} from the UTF-8 "
+                     "byte ratio (column \"UTF-8 bytes\"), so it reflects the script's byte length, not fair "
+                     "compression.")
+    return lines
+
+
+def render_flores(doc: Dict[str, Any]) -> str:
+    """FLORES+ tokenization premium: per-tokenizer aggregates per tier, premium by language for the
+    best and worst tokenizer of each tier (and GPT-2), and findings."""
+    meta, models = doc["meta"], doc["models"]
+    fl, langs = meta["flores"], meta["languages"]
+    eng = langs["english"]
+    tiers = {t: {n: m for n, m in models.items() if m["tier"] == t} for t in _TIERS}
+    tiers = {t: ms for t, ms in tiers.items() if ms}
+    commit = (meta.get("git_commit") or "unknown")[:10] + (" (dirty)" if meta.get("git_dirty") else "")
+    mapping = ", ".join(k if k == v else f"{k} -> {v}" for k, v in langs["in_mix"].items())
+    head = [
+        f"- FLORES+ `{fl['repo']}` at `{(fl['revision'] or 'a local copy')[:12]}` ({fl['license']}), {fl['split']} "
+        f"split only: {fl['sentences']:,} parallel sentences per language, each encoded on its own with no "
+        "separator; never used for training",
+        f"- in-mix: the {len(langs['in_mix'])} FineWeb-2 languages of the data pipeline's training mix (FineWeb-2 "
+        f"config -> FLORES+ file): {mapping}; out-of-mix (in no tokenizer's training mix): "
+        + ", ".join(langs["out_of_mix"]),
+    ]
+    intr = meta.get("intrinsic")
+    if intr:
+        checks = [m["training"]["reproduces_committed"] for m in tiers.get("intrinsic", {}).values()]
+        ds = intr["dataset"]
+        head.append(
+            f"- intrinsic tier: {len(intr['variants'])} variants x V = "
+            + " / ".join(f"{v:,}" for v in intr["vocab_sizes"])
+            + f", retrained as the committed intrinsic results ({'SYNTHETIC' if ds['synthetic'] else 'real'} "
+            f"dataset `{ds['root']}`, {_mb(ds['train_bytes'])} train split); "
+            + (f"{sum(c is True for c in checks)} of {len(checks)} reproduce the committed test-split bytes/token "
+               "exactly" if any(c is not None for c in checks) else "no committed leaderboard to check against"))
+    if meta.get("swap_jobs"):
+        head.append("- swap tier: the GPT-2-swap tokenizers (English FineWeb text, about 50k tokens) from the "
+                    "prepared jobs " + ", ".join(f"`{j}`" for j in meta["swap_jobs"]))
+    head += [
+        f"- premium = tokens(language) / tokens(English) on the same sentences; σ ln = standard deviation of "
+        f"ln(premium) over the group's languages; <= {meta['parity_threshold']} = share of them with premium "
+        f"<= {meta['parity_threshold']}; byte fallback = share of tokens that are one byte >= 0x80, a piece of a "
+        "multi-byte character",
+        f"- commit `{commit}`; generated {meta['created_utc']}; per-language tokens, bytes/token, characters/token "
+        "and one-byte shares of every tokenizer are in `flores_by_language.csv`",
+        "",
+        "How to read: premium 1.0 is parity with English; 2.0 means the same content costs twice the tokens (so half "
+        "the context and twice the price). Bytes or characters per token are not comparable across scripts: UTF-8 "
+        "spends 1 byte on a Latin letter, 2 on Cyrillic, Greek, Hebrew or Arabic, 3 on Devanagari, Han, Kana, "
+        "Hangul or Thai, so a script's bytes per token can rise while its text still costs more tokens. The premium "
+        "counts tokens for the same parallel sentences, which is comparable.",
+    ]
+
+    def cell(a: Dict[str, Any]) -> str:
+        return (f"{a['mean_premium']:.2f} | {a['max_premium']:.2f} {a['worst_language']} | {a['std_log_premium']:.2f} "
+                f"| {100 * a['share_premium_le_1_5']:.0f}%")
+
+    lines = list(head)
+    for t, ms in tiers.items():
+        lines += ["", f"{_cap(_TIERS[t])}, sorted by mean in-mix premium:", "",
+                  "| Tokenizer | \\|V\\| | EN tokens/sentence | In-mix mean | In-mix max | In-mix σ ln | In-mix <= 1.5 "
+                  "| Out-of-mix mean | Out-of-mix max | Out-of-mix σ ln | Out-of-mix <= 1.5 | Out-of-mix byte fallback |",
+                  "| :--- |" + " ---: |" * 11]
+        rows = sorted(ms.items(), key=lambda kv: (kv[1]["aggregates"]["in_mix"]["mean_premium"], kv[0]))
+        for n, m in rows:
+            a = m["aggregates"]
+            lines.append(f"| `{n}` | {m['vocab_size']:,} | {m['languages'][eng]['tokens_per_sentence']:.1f} | "
+                         f"{cell(a['in_mix'])} | {cell(a['out_of_mix'])} | "
+                         f"{100 * a['out_of_mix']['byte_fallback_rate']:.1f}% |")
+
+    picks: List[str] = []
+    for ms in tiers.values():
+        order = sorted(ms, key=lambda n: (ms[n]["aggregates"]["in_mix"]["mean_premium"], n))
+        picks += [order[0], order[-1]]
+    if "gpt2" in models:
+        picks.append("gpt2")
+    picks = list(dict.fromkeys(picks))
+    text = meta["text"]
+    lines += ["", "Premium by language: the lowest and highest mean in-mix premium of each tier"
+              + (" and GPT-2" if "gpt2" in models else "") + "; \"UTF-8 bytes\" is the byte ratio, the premium of "
+              "a tokenizer with one token per byte. The English row gives tokens (bytes) per sentence.", "",
+              "| Language | Group | UTF-8 bytes | " + " | ".join(f"`{n}`" for n in picks) + " |",
+              "| :--- | :--- |" + " ---: |" * (1 + len(picks))]
+    for lang in text:
+        group = "reference" if lang == eng else "in-mix" if lang in langs["in_mix"].values() else "out-of-mix"
+        if lang == eng:
+            vals = [f"{models[n]['languages'][lang]['tokens_per_sentence']:.1f}" for n in picks]
+            raw = f"({text[lang]['bytes'] / text[lang]['sentences']:.1f})"
+        else:
+            vals = [f"{models[n]['languages'][lang]['premium']:.2f}" for n in picks]
+            raw = f"{text[lang]['bytes'] / text[eng]['bytes']:.2f}"
+        lines.append(f"| {lang} | {group} | {raw} | " + " | ".join(vals) + " |")
+    return "\n".join(lines + _flores_findings(doc, tiers))
+
+
 __all__ = ["render_tokka", "render_intrinsic", "render_colab", "render_colab_compare", "colab_compare_stats",
            "render_throughput", "render_nanogpt_swap", "render_nanogpt_swap_space_prefix",
-           "render_nanogpt_swap_ablation"]
+           "render_nanogpt_swap_ablation", "render_flores"]
