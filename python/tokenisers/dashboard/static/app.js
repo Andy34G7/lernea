@@ -536,7 +536,19 @@ function seedMargin(models, r) {
 // comparability check (server.not_comparable: same recipe and val documents) must pass. The lr 1.8e-3 run changes
 // the recipe, so it is not one of them.
 const SWAP_RUNS = { swap: 'original', swap_space_prefix: 'space-prefix rerun', swap_ablation: 'ablation' };
-const SWAP_ARMS = [[/_sp300$/, 'space_prefix @ 300 MB'], [/_g2$/, 'GPT-2 split @ 50 MB'], [/_sp$/, 'space_prefix @ 50 MB']];
+// Fallback arm (pretokenizer, tokenizer-training MB) from a run name's suffix, for specs that record neither
+const SWAP_ARMS = [[/_sp300$/, 'space_prefix', 300], [/_g2$/, 'gpt2', 50], [/_sp$/, 'space_prefix', 50]];
+const PRETOKENIZER_LABEL = { gpt2: 'GPT-2 split' };
+
+// The arm of one of our tokenisers: the spec's recorded pretokenizer and tokenizer_text.bytes, else the name's suffix
+function swapArm(k, spec) {
+  if (spec?.kind !== 'tokenisers') return 'not our tokeniser';
+  const [, pre, mbs] = SWAP_ARMS.find(([re]) => re.test(k)) || [null, 'whitespace', 50];
+  const p = spec.pretokenizer || pre;
+  const bytes = spec.tokenizer_text?.bytes;
+  return `${PRETOKENIZER_LABEL[p] || p} @ ${Number.isFinite(bytes) ? Math.round(bytes / 1e6) : mbs} MB`;
+}
+
 const SWAP_TIE = 0.01; // BPB: a set tolerance, as no run has a second seed to measure the spread
 
 function comparableSwapModels() {
@@ -545,8 +557,8 @@ function comparableSwapModels() {
     const e = R(key);
     if (!e.available || (key !== 'swap' && !(Array.isArray(e.not_comparable) && !e.not_comparable.length))) return;
     Object.entries(e.data.models || {}).forEach(([k, m]) => {
-      const arm = m.spec?.kind !== 'tokenisers' ? 'not our tokeniser' : (SWAP_ARMS.find(([re]) => re.test(k)) || [null, 'whitespace @ 50 MB'])[1];
-      if (!(k in out) || m.final_bpb < out[k].final_bpb) out[k] = { ...m, set: key, where: `${run} · ${arm}` };
+      if (!Number.isFinite(m.final_bpb)) return; // an unmeasured run (null, NaN, text) never replaces a measured one
+      if (!(k in out) || m.final_bpb < out[k].final_bpb) out[k] = { ...m, set: key, where: `${run} · ${swapArm(k, m.spec)}` };
     });
   });
   return out;
@@ -558,7 +570,7 @@ function swapCaveat(r, M) {
   if (r[1]) {
     const gap = r[1][1] - r[0][1];
     out += ` Runner-up ${r[1][0]}: ${M[r[1][0]].where}.`;
-    if (gap < SWAP_TIE) out += ` Tie at one seed: within noise, not resolved (margin ${gap.toFixed(4)} BPB, below ${SWAP_TIE}).`;
+    if (gap < SWAP_TIE) out += ` Tie at one seed: margin ${gap.toFixed(4)} BPB is below the ${SWAP_TIE} tolerance; seed spread unmeasured, so not resolved.`;
   }
   return `${out} ${SWAP_TIE} BPB is a set tolerance: one seed per run, so the seed-to-seed spread is unmeasured. Early training; best over the comparable runs (${runs}).`;
 }

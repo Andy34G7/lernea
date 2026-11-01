@@ -770,10 +770,58 @@ def test_swap_leader_card_takes_the_best_of_the_comparable_swap_runs(tmp_path) -
     card = next(htmllib.unescape(_text(c)) for c in html["leaders"].split('<div class="kpi">') if ">GPT-2 swap<" in c)
     assert "1.6817 BPB unigram_lm_g2" in card and "unigram_lm_g2: ablation · GPT-2 split @ 50 MB." in card
     assert "Runner-up gpt2 1.6851 (+0.0033)" in card and "Runner-up gpt2: original · not our tokeniser." in card
-    assert "Tie at one seed: within noise, not resolved (margin 0.0033 BPB, below 0.01)." in card
+    assert "Tie at one seed: margin 0.0033 BPB is below the 0.01 tolerance; seed spread unmeasured, so not resolved." in card
+    assert "within noise" not in card
     assert "one seed per run, so the seed-to-seed spread is unmeasured" in card
     assert "(original, space-prefix rerun, ablation)" in card and "1.8e-3" not in card
     assert f"@{data['results']['swap_ablation']['data']['meta']['git_commit'][:7]} " in card  # the leader's run
+
+
+def _swap_card(tmp_path, mutate):
+    """The GPT-2 swap leader card's text on the committed results after ``mutate(results)``."""
+    import copy
+    import html as htmllib
+
+    data = copy.deepcopy(server_mod.load_benchmark_data())
+    mutate(data["results"])
+    errors, html = _render(tmp_path, data)
+    assert errors == []
+    return next(htmllib.unescape(_text(c)) for c in html["leaders"].split('<div class="kpi">') if ">GPT-2 swap<" in c)
+
+
+@needs_node
+def test_swap_card_leaves_out_a_run_that_is_not_comparable(tmp_path) -> None:
+    """A swap run whose not_comparable is non-empty (another recipe or val documents) is not ranked: with
+    the ablation flagged, its unigram_lm_g2 no longer leads and the run is not named."""
+    card = _swap_card(tmp_path, lambda r: r["swap_ablation"].update(not_comparable=["different recipe"]))
+    assert "GPT-2 swap 1.6851 BPB" in card and "gpt2: original · not our tokeniser." in card
+    assert "unigram_lm_g2" not in card and "(original, space-prefix rerun)" in card and "ablation" not in card
+    card = _swap_card(tmp_path, lambda r: r["swap_space_prefix"].update(not_comparable=["different recipe"]))
+    assert "(original, ablation)" in card and "space-prefix rerun" not in card
+
+
+@needs_node
+def test_swap_card_ignores_a_run_with_no_measured_bpb(tmp_path) -> None:
+    """A later run's null (or text) final_bpb used to replace the original's measured GPT-2 value, because
+    null < 1.68 in JavaScript, dropping gpt2 from the ranking."""
+    for unmeasured in (None, "0.5"):
+        def mutate(r, v=unmeasured):
+            r["swap_ablation"]["data"]["models"]["gpt2"] = {"final_bpb": v, "spec": {"kind": "tiktoken"}}
+        card = _swap_card(tmp_path, mutate)
+        assert "Runner-up gpt2 1.6851 (+0.0033)" in card and "gpt2: original · not our tokeniser." in card, unmeasured
+
+
+@needs_node
+def test_swap_card_arm_comes_from_the_recorded_spec(tmp_path) -> None:
+    """The arm label reads the spec's pretokenizer and tokenizer_text.bytes; the name's suffix is only the
+    fallback. A name ending _g2 whose spec records space_prefix and 300 MB is labelled by the spec."""
+    def mutate(r):
+        spec = r["swap_ablation"]["data"]["models"]["unigram_lm_g2"]["spec"]
+        spec["pretokenizer"], spec["tokenizer_text"]["bytes"] = "space_prefix", 299_998_439
+    card = _swap_card(tmp_path, mutate)
+    assert "unigram_lm_g2: ablation · space_prefix @ 300 MB." in card and "GPT-2 split" not in card
+    card = _swap_card(tmp_path, lambda r: r["swap_ablation"]["data"]["models"]["unigram_lm_g2"]["spec"].pop("pretokenizer"))
+    assert "unigram_lm_g2: ablation · GPT-2 split @ 50 MB." in card  # recorded bytes, name-derived pretokenizer
 
 
 def _sp_root(tmp_path, sp):
