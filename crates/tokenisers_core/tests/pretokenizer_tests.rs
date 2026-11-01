@@ -677,6 +677,9 @@ fn hf_rejects_every_component_that_is_not_a_lossless_splitter() {
         (seq(&[DIGITS(), seq(&[PUNCT(), json!({"type": "Whitespace"})])]), "Whitespace drops whitespace"),
         (seq(&[DIGITS(), json!({"type": "Metaspace"})]), "Metaspace replaces spaces"),
         (seq(&[bl.clone(), PUNCT(), bl]), "2 ByteLevels"),
+        // tokenizers panics on it ("chunk size must be non-zero"), so it must not reach the probe.
+        (json!({"type": "FixedLength", "length": 0}), "FixedLength with length 0"),
+        (seq(&[byte_level(false), json!({"type": "FixedLength", "length": 0})]), "FixedLength with length 0"),
         (json!({"type": "Bogus"}), "Bogus is not a known lossless splitter"),
         (json!({"type": "Digits"}), "missing field `individual_digits`"),
         (json!("Digits"), "HF pre-tokenizer"),
