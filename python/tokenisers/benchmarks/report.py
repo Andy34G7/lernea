@@ -336,7 +336,7 @@ def _swap_findings(doc: Dict[str, Any], models: Dict[str, Any]) -> List[str]:
     steps, batch = int(meta["recipe"]["args"]["num_iterations"]), int(meta["recipe"]["args"]["total_batch_size"])
     check = eq["train_minus_val_bpb"]
     worst = max(check, key=lambda c: abs(c[1]))
-    best, second = list(models)[:2]
+    best, second = (list(models) + [None])[:2]  # a --tokenizers gpt2 run finishes only gpt2
     more = {n: m for n, m in models.items() if n != "gpt2" and m["val_bytes_per_token"] > g["val_bytes_per_token"]}
     more_bpb = [m["final_bpb"] for m in more.values()]
     # Ours with the "whitespace" pre-tokenizer (the default: specs written before they recorded it), which
@@ -361,8 +361,8 @@ def _swap_findings(doc: Dict[str, Any], models: Dict[str, Any]) -> List[str]:
         "",
         f"- Lowest final BPB: `{best}` ({models[best]['final_bpb']:.4f})"
         + (", GPT-2's own tokenizer" if best == "gpt2" else "")
-        + f"; next `{second}` ({models[second]['final_bpb']:.4f}, +"
-        f"{models[second]['final_bpb'] - models[best]['final_bpb']:.4f}).",
+        + (f"; next `{second}` ({models[second]['final_bpb']:.4f}, +"
+           f"{models[second]['final_bpb'] - models[best]['final_bpb']:.4f})." if second else ", the only one finished."),
     ]
     if more:
         lines.append(

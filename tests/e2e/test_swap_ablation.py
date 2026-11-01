@@ -382,6 +382,13 @@ def test_swap_findings_call_only_whitespace_pretokenizers_whitespace_isolating(r
     assert "whitespace-isolating" not in render_nanogpt_swap(doc)
 
 
+def test_swap_report_renders_a_run_where_only_gpt2_finished(repo_root):
+    """A --tokenizers gpt2 baseline (or an lr sweep) finishes one tokenizer: the findings name it alone."""
+    doc = _committed(repo_root, "nanogpt_swap")
+    doc["models"] = {"gpt2": doc["models"]["gpt2"]}
+    assert "- Lowest final BPB: `gpt2`" in render_nanogpt_swap(doc)
+
+
 def test_swap_headers_name_the_commits_that_prepared_the_tokenizers(repo_root):
     """Tokenizers come from an earlier --prepare-only or --from-pool pools: their commit and dirty flag
     are in every swap header next to the run's own."""
