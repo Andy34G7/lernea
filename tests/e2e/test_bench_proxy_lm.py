@@ -7,6 +7,7 @@ import json
 import math
 from pathlib import Path
 import sys
+import time
 
 import numpy as np
 import pytest
@@ -354,6 +355,39 @@ def test_last_run_file_is_retried_before_the_session_stops(tmp_path):
     with pytest.raises(colab.ColabError, match="could not be downloaded: runs/b.json: .*Connection was lost"):
         orch.run_job(_job(tmp_path / "b"), poll_interval=0, max_poll_failures=3)
     assert orch.downloads.count("b.json") == 1 + 3
+
+
+class _BadNameVM(colab.ColabOrchestrator):
+    """A fake VM whose listing carries an unsafe name after a good one on every poll."""
+
+    def __init__(self) -> None:
+        super().__init__(colab_bin="unused")
+        self.calls, self.polls = [], 0
+
+    def _colab(self, *args, timeout=None):
+        self.calls.append(args[0])
+        if args[0] == "version":
+            return "Version: 99.0.0"
+        if args[0] == "download":
+            Path(args[4]).write_text("{}")
+        return ""
+
+    def _poll(self, name, control):
+        self.polls += 1
+        return {"state": "running", "runs": ["good.json", "../escaped.json", "late.json"]}
+
+
+def test_unsafe_file_name_from_the_vm_aborts_at_once_and_stops_the_session(tmp_path):
+    """A refused name used to be swallowed as one failed poll (reset by the next good poll), so the
+    paid session ran until the timeout. It aborts at once; the valid names are still downloaded."""
+    vm, job = _BadNameVM(), _job(tmp_path)
+    t0 = time.monotonic()
+    with pytest.raises(colab.ColabError, match="refusing the file name '../escaped.json'"):
+        vm.run_job(job, timeout=30, poll_interval=0.05, max_poll_failures=3)
+    assert time.monotonic() - t0 < 5 and vm.polls == 1
+    assert vm.calls[-1] == "stop"
+    assert sorted(p.name for p in (job / "runs").iterdir()) == ["good.json", "late.json"]
+    assert not (job / "escaped.json").exists() and not (tmp_path / "escaped.json").exists()
 
 
 def test_poll_failures_and_deadline_are_bounded(tmp_path, monkeypatch):

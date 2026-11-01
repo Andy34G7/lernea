@@ -184,9 +184,16 @@ class ColabOrchestrator:
         """Downloads finished per-run result files not yet held locally, so a dropped session loses
         only the runs in flight; returns {file: last error} of those still missing. During the polls
         one try each (the next poll retries); after the last poll ``attempts`` tries, ``delay`` s
-        apart, as nothing retries them once the session stops."""
+        apart, as nothing retries them once the session stops. A file name that is not plain (see
+        ``plain_name``) raises ColabError, after the valid names were downloaded."""
         failed: Dict[str, str] = {}
-        for f in map(plain_name, status.get("runs", [])):
+        refused: Optional[ColabError] = None
+        for f in status.get("runs", []):
+            try:
+                f = plain_name(f)
+            except ColabError as e:  # keep downloading the valid names: the paid runs are not lost
+                refused = refused or e
+                continue
             if not (local / f).exists():
                 local.mkdir(exist_ok=True)
                 try:
@@ -195,25 +202,29 @@ class ColabOrchestrator:
                     print(f"downloaded runs/{f}", flush=True)
                 except ColabError as e:
                     failed[f] = str(e)
+        if refused:
+            raise refused
         return failed
 
     def _wait(self, name: str, control: Path, timeout: float, poll_interval: float,
               max_poll_failures: int, runs_dir: Optional[Path] = None) -> Dict[str, Any]:
         """Launches the job (first poll) and polls until it is ok/error/died; raises ColabError
-        after ``max_poll_failures`` consecutive failed polls or when ``timeout`` seconds pass."""
+        after ``max_poll_failures`` consecutive failed polls or when ``timeout`` seconds pass, and at
+        once for an unsafe file name from the VM (that is not a transient failure to retry)."""
         deadline = time.monotonic() + timeout
         failures = 0
         last: Dict[str, Any] = {}
         while True:
             try:
                 last = self._poll(name, control)
-                failures = 0
-                if runs_dir is not None:
-                    self._sync_runs(name, last, runs_dir)
             except ColabError as e:
                 failures += 1
                 if failures >= max_poll_failures:
                     raise ColabError(f"{failures} consecutive job polls failed; last error: {e}") from e
+            else:
+                failures = 0
+                if runs_dir is not None:  # outside the poll's try: a refused name must abort, not count as a failed poll
+                    self._sync_runs(name, last, runs_dir)
             if last.get("state") in ("ok", "error", "died"):
                 return last
             if time.monotonic() >= deadline:
