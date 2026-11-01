@@ -394,6 +394,35 @@ impl HfTokenizerJson {
         Ok(hf)
     }
 
+    /// What a tokenizer.json exported with `pretokenizer` loads back as (see `pretokenizer`). For
+    /// an `Hf` config that is another export's own format this is not `pretokenizer` itself: a
+    /// bare `ByteLevel` reads as whole text (None), `ByteLevel` with GPT-2's regex as `Gpt2`, and
+    /// `Sequence[X, ByteLevel]` (X without one) as `Hf(X)`, each the same split.
+    pub fn reloaded_pretokenizer(pretokenizer: Pretokenizer) -> Result<Option<Pretokenizer>> {
+        // Through JSON, as a saved file is read: an `Hf` export is `Other` until parsed again.
+        let written = serde_json::to_value(pre_tokenizer(Some(pretokenizer)))?;
+        Self {
+            version: "1.0".into(),
+            truncation: None,
+            padding: None,
+            added_tokens: Vec::new(),
+            normalizer: None,
+            pre_tokenizer: serde_json::from_value(written)?,
+            post_processor: None,
+            decoder: DecoderConfig::ByteLevel {
+                add_prefix_space: false,
+                trim_offsets: false,
+                use_regex: false,
+            },
+            model: HfModelConfig::Unigram {
+                unk_id: None,
+                vocab: Vec::new(),
+                byte_fallback: false,
+            },
+        }
+        .pretokenizer()
+    }
+
     /// Exports the tokenizer configuration to a file or directory.
     pub fn export_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let path = path.as_ref();
