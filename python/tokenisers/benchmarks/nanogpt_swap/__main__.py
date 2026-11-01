@@ -292,7 +292,7 @@ def summarize(run: Dict[str, Any], target: Optional[float]) -> Dict[str, Any]:
     out = {"vocab_size": run["vocab_size"], "padded_vocab_size": run["padded_vocab_size"],
            "val_bytes_per_token": run["val"]["bytes_per_token"], "val_targets": run["val"]["targets"],
            "val_docs_sha256": run["val"]["docs_sha256"], "encode_mb_per_s": run["val"]["encode_mb_per_s"],
-           "spec": run["spec"]}
+           "spec": run["spec"], "launched": run.get("launched")}
     if not tr:
         return out
     curve = [[e["step"], e["val_bpb"], e["val_loss"]] for e in tr["evals"]]
@@ -523,6 +523,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             raise SystemExit("--resume with a different --lr would mix learning rates")
     cfg.update(train=train, trainer_args=recipe_args(steps, eval_every, args.lr), mbs=args.mbs or DEFAULT_MBS[args.gpu],
                mode="pilot" if args.pilot else "full", gpu=args.gpu,
+               launched={k: start[k] for k in ("git_commit", "git_dirty")},  # stamped on each run (--resume)
                eval_docs=args.pilot_eval_docs if args.pilot else None)
     # The job's config.json keeps every prepared tokenizer (a later --resume runs them all); the VM
     # gets its own config.json with only this run's.

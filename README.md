@@ -222,7 +222,7 @@ test fails if they differ from the committed JSON. The numbers previously shown 
 synthetic data, evaluated on training text, with a proxy LM that silently ran on a local CPU; they
 are kept, marked invalid, in [`benchmarks/results/legacy_smoke/`](benchmarks/results/legacy_smoke/).
 
-**Scale and setup.** All committed results come from one run of the suite at commit `603a983` on
+**Scale and setup.** Sections 1-4 come from one run of the suite at commit `603a983` on
 the default dataset (`python -m tokenisers.data --preset small`): a 52.5 MB train split (11,102
 documents: FineWeb-Edu English 50%, FineWeb-2 in 10 languages 30%, StarCoder code in 6 languages
 20%; no fallback source was needed) with held-out val (3.1 MB) and test (3.1 MB) splits. Tokka and
@@ -230,14 +230,19 @@ intrinsic results exist for V = 16,384 (sections 1 and 2) and V = 32,768 / 65,53
 the proxy LM (section 3) ran at V = 16,384 only, on a Colab T4 GPU with the default 10 MB byte
 budget and 3 seeds, and again with the big proxy LM (100 MB budget, 3 seeds) on a Colab L4: LMs
 trained at commit `6d260c2` on a job prepared from an uncommitted tree at `3186c1b` (section 3).
-Tokenizer training and every other step ran locally on an Intel Core Ultra 7 155H (22 threads, no
-GPU, 15 GB RAM shared with a desktop session). Runs whose arguments include
+In sections 1-5, tokenizer training and every other step ran locally on an Intel Core Ultra 7
+155H (22 threads, no GPU, 15 GB RAM shared with a desktop session). Runs whose arguments include
 `--skip-memory-check` started after the desktop's memory use had grown: the preflight estimate
 (4.2 GiB) exceeded the 3.0 GiB it then allowed, so they ran inside a hard 4 GiB cgroup limit
 (`systemd-run -p MemoryMax=4G`) instead, above the measured 2.9 GiB peak. Section 5 re-times the
-same tokenizers on a Colab CPU runtime and on one pinned laptop core. Each section's header
-lists the exact arguments, data sizes, backend and commit. Known limitations are listed after
-section 5.
+same tokenizers on a Colab CPU runtime and on one pinned laptop core. Sections 6 and 7 use other
+text and machines. The tokenizer swap (section 6) trains its tokenizers on FineWeb documents decoded
+from the speedrun's GPT-2 shards (`kjj0/fineweb10B-gpt2`), not on the default dataset: the first
+50 MB, locally, except the `_sp300` tokenizers, trained on the first 300 MB on a Colab L4. Its LMs
+trained on a Colab A100. FLORES+ (section 7) ran locally: it retrains its intrinsic tier on the
+default 52.5 MB split and loads its swap tier, `_sp300` included, from the swap's prepared jobs.
+Each section's header lists the exact arguments, data sizes, backend and commit. Known limitations
+are listed after section 7.
 
 ### 1. Tokka-Bench (natural languages + code, held-out test split)
 <!-- BEGIN GENERATED: tokka -->
@@ -868,7 +873,7 @@ per-step train loss and lr are in
 [note](benchmarks/results/nanogpt_swap_lr1p8e-3/README.md).
 
 <!-- BEGIN GENERATED: nanogpt_swap -->
-- NVIDIA A100-SXM4-40GB, 40960 MiB, 580.82.07, torch 2.11.0+cu130, Colab session `tokenisers-swap_job-4c6b4d48`; commit `ceb11bac38`; generated 2026-11-01T02:01:33Z
+- NVIDIA A100-SXM4-40GB, 40960 MiB, 580.82.07, torch 2.11.0+cu130, Colab session `tokenisers-swap_job-4c6b4d48`; commit `ceb11bac38`, tokenizers prepared at commit `a04d3c3ff3`; generated 2026-11-01T02:01:33Z
 - recipe: `karpathy/llm.c@f1e2ace651495b74ae22d45d1723443fd00ecd3a` scripts/pyrun_gpt2_124M.sh (GPT-2 124M, tied embeddings, AdamW lr 0.0006, wd 0.1, 524288 tokens/step, bf16, compiled) with 600 steps, warmup 22, val every 100 steps
 - val: 14982 FineWeb documents (46.5 MB, the speedrun's first 10,485,760 GPT-2 val tokens), the same bytes for every tokenizer; BPB = NLL bits over every val token (one separator per document included) / UTF-8 bytes
 - our tokenizers: trained on the first 16,157 train documents (50.0 MB) at 50,256 tokens + 1 separator; TokenMonster: every prebuilt englishcode vocabulary NFD-normalizes its input (lossy on 1,053 of 14,982 val documents); capcode also folds U+0130 to I (2 documents). Used: the nocapcode vocabulary of the same size and mode, normalization flag cleared (same tokens and ids), lossless on all val documents
@@ -1123,9 +1128,11 @@ Findings:
 
 ### Known limitations
 
-- **One scale, one split.** Everything uses one 52.5 MB train split built with split seed 0; the
-  100 / 200 MB presets were not run. Tokenizer training is deterministic, so only the proxy LM has
-  seeds (3 per tokenizer, mean ± sample sd).
+- **One scale, one split.** Sections 1-5 and the intrinsic tier of section 7 use one 52.5 MB train
+  split built with split seed 0; the 100 / 200 MB presets were not run. The tokenizer swap (section
+  6) trains its tokenizers on other text: the first 50 MB of FineWeb train documents (300 MB for
+  `_sp300`). Tokenizer training is deterministic, so only the LMs have seeds: 3 per tokenizer for
+  the proxy LM (mean ± sample sd), one per tokenizer for the swap (llm.c's fixed seed).
 - **PMI-ranked variants barely compress.** `wordpiece_pmi`, `wp_bpe_ft` and `wp_bpe_base` encode
   held-out text at ~1.01–1.03 bytes per token and use 282–1,050 of their 16,384 tokens on it (tokka
   "unique tokens used"): their scores rank rare pairs highest, so the vocabulary fills with long

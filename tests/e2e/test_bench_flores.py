@@ -187,3 +187,21 @@ def test_real_flores_devtest_download(tmp_path):
     assert len(texts["eng_Latn"]) == len(texts["kor_Hang"]) == 1012
     assert all(t.strip() for t in texts["kor_Hang"])
     assert files["eng_Latn"]["file"] == "devtest/eng_Latn.jsonl"
+
+
+def test_swap_jobs_record_and_flag_a_dirty_preparation(tmp_path, repo_root):
+    """A swap job (or a pool it was assembled from) prepared from uncommitted code is recorded as such
+    and named in the swap-tier line."""
+    from tokenisers.benchmarks.report import render_flores
+
+    job = tmp_path / "pool"
+    job.mkdir()
+    (job / "config.json").write_text(json.dumps({"tokenizers": [], "prepared": {
+        "git_commit": "a" * 40, "git_dirty": False, "pools": {"/p": {"git_commit": "b" * 40, "git_dirty": True}}}}))
+    assert fl.swap_tier([job], {}, {}, {}, print)["pool"]["prepared_git_dirty"] is True
+
+    doc = json.loads((repo_root / "benchmarks/results/flores/flores.json").read_text(encoding="utf-8"))
+    doc["meta"]["swap_jobs"]["nanogpt-swap-pool-sp300"]["prepared_git_dirty"] = True
+    line = next(x for x in render_flores(doc).splitlines() if x.startswith("- swap tier:"))
+    assert line.endswith("; prepared from a dirty tree (uncommitted changes: not reproducible from any commit): "
+                         "`nanogpt-swap-pool-sp300`")

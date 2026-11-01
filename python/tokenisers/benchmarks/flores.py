@@ -290,6 +290,9 @@ def swap_tier(jobs: Sequence[Path], flores: Dict[str, List[str]], text: Dict[str
             prepared = cfg.get("prepared") or {}
             out[job.name] = {"path": _home(job), "config_sha256": hashlib.sha256(cfg_raw).hexdigest(),
                              "prepared_git_commit": prepared.get("git_commit"),
+                             # the job or any --from-pool pool it was assembled from
+                             "prepared_git_dirty": any(p.get("git_dirty") for p in
+                                                       [prepared, *(prepared.get("pools") or {}).values()]),
                              "prepared_utc": prepared.get("created_utc"),
                              "tokenizer_text": {k: v for k, v in (cfg.get("tokenizer_text") or {}).items()
                                                 if k in ("docs", "bytes", "docs_sha256")}}

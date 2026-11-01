@@ -396,7 +396,7 @@ def test_swap_cli_runs_every_tokenizer_of_a_space_prefix_job(tmp_path, monkeypat
     from tokenisers.benchmarks.nanogpt_swap import __main__ as swap
 
     # Stop right after the run config is written: the VM build refuses a dirty tree.
-    monkeypatch.setattr(common, "start_provenance", lambda *a: {"git_dirty": True})
+    monkeypatch.setattr(common, "start_provenance", lambda *a: {"git_commit": None, "git_dirty": True})
     job = tmp_path / "j"
     (job / "runs").mkdir(parents=True)
     (job / "runs" / "bpe_frequency_sp.json").write_text("{}")
