@@ -250,7 +250,8 @@ def main(argv: List[str] | None = None) -> None:
     prep = cfg["prepared"]
     meta = run_metadata(
         args, ds, "proxy_lm_bpb", "val", prep["records"], prep["duplicates"], start=start,
-        backend=result["backend"], fallback=fallback, lm=lm, lm_architecture=result["architecture"],
+        backend=result["backend"], runs_by_hardware=result["runs_by_hardware"], fallback=fallback, lm=lm,
+        lm_architecture=result["architecture"],
         train=train_cfg, byte_budget=args.byte_budget,
         seeds=args.seeds, val_domains=list(DOMAINS), lm_train_docs=prep["lm_text"]["docs"], lm_text=prep["lm_text"],
         lm_seconds=result["seconds"], morphology=prep["morphology"], job_prepared=prep["provenance"],

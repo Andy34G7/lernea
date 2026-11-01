@@ -460,6 +460,27 @@ def test_cli_records_local_fallback_and_val_split(tmp_path, monkeypatch, cli_arg
                for d in meta["val_domains"]) == pytest.approx(val_bytes)
 
 
+def test_fallback_discloses_runs_reused_from_the_failed_colab_session(tmp_path, cli_args, require_tokenisers):
+    """A run file downloaded from a Colab session that later failed is reused by the local fallback
+    (not retrained), so the results must say which runs ran on which hardware, not just the local backend."""
+    from tokenisers.benchmarks.colab.__main__ import main
+
+    job = tmp_path / "job"
+    args = cli_args + ["--variants", "bpe_frequency", "--no-dropout-variant", "--job-dir", str(job)]
+    main(args + ["--prepare-only"])
+    run = lm._run_one(str(job), "bpe_frequency", 0, "cpu")  # stands in for a run downloaded from the VM
+    run["backend"] = {"device": "cuda", "gpu": "Tesla T4"}
+    (job / "runs" / "bpe_frequency__s0.json").write_text(json.dumps(run))
+    main(args + ["--resume", "--allow-local-fallback", "--colab-bin", str(tmp_path / "missing-colab")])
+    meta = json.loads((tmp_path / "out" / "extrinsic_bpb_results.json").read_text())["meta"]
+    assert meta["backend"]["kind"] == "local" and meta["fallback"]["from"] == "colab"
+    hw = meta["runs_by_hardware"]
+    assert hw.pop("GPU `Tesla T4`") == ["bpe_frequency__s0"]
+    assert list(hw.values()) == [["bpe_frequency__s1"]] and next(iter(hw)).startswith("CPU ")
+    md = (tmp_path / "out" / "extrinsic_bpb_leaderboard.md").read_text()
+    assert "1 on GPU `Tesla T4` (`bpe_frequency__s0`)" in md
+
+
 def test_dropout_variant_is_described_only_when_it_ran(tmp_path, cli_args, require_tokenisers):
     """meta.variants_extra describes bpe_dropout_p0.1; without that model in the results (here
     --no-dropout-variant) the provenance must not describe it."""

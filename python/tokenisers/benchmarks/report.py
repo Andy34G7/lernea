@@ -195,6 +195,13 @@ def render_colab(doc: Dict[str, Any]) -> str:
     head = [
         _summary(meta),
         f"- backend: {where}" + (f" — FALLBACK after Colab failed: {fb.get('error', '')}" if fb else ""),
+    ]
+    # backend is the last session only; run files from an earlier or failed session are reused as they are
+    hw = meta.get("runs_by_hardware") or {}
+    if hw:
+        head.append("- runs trained on: " + "; ".join(
+            f"{len(v)} on {k}" + (f" ({', '.join(f'`{r}`' for r in v)})" if len(hw) > 1 else "") for k, v in hw.items()))
+    head += [
         f"- proxy LM: {meta.get('lm_architecture', 'architecture not recorded')}; "
         f"{', '.join(f'{k}={v}' for k, v in meta.get('lm', {}).items())}",
         f"- fixed budget {meta.get('byte_budget', 0):,} UTF-8 bytes of LM training text per tokenizer, drawn "

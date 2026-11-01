@@ -344,6 +344,7 @@ def _run_one(job_dir: str, name: str, seed: int, device: Optional[str] = None) -
         for d in cfg["domains"]
     }
     run = {"seed": seed, "curve": curve, "val": val, "steps": curve[-1]["step"], "bf16": bf16,
+           "backend": backend_info(device),  # a resumed or fallback job mixes runs from several machines
            "bytes_consumed": trainer.bytes_consumed, "tokens_consumed": trainer.tokens_consumed,
            "epochs": trainer.epochs, "train_bytes_per_token": float(token_bytes[train_ids].sum()) / max(1, len(train_ids))}
     out = job / "runs" / f"{name}__s{seed}.json"
@@ -352,6 +353,15 @@ def _run_one(job_dir: str, name: str, seed: int, device: Optional[str] = None) -
     tmp.write_text(json.dumps(run))
     os.replace(tmp, out)  # atomic: a partially written run file never looks finished
     return run
+
+
+def _hardware(run: Dict[str, Any]) -> str:
+    """Where one run file was trained: GPU/CPU model and bf16 (older run files did not record it)."""
+    b = run.get("backend")
+    if not b:
+        return "hardware not recorded"
+    hw = f"GPU `{b.get('gpu')}`" if b.get("device") == "cuda" else f"CPU `{b.get('cpu', '?')}`"
+    return hw + (", bf16" if run.get("bf16") else "")
 
 
 def run_job(job_dir: str, device: Optional[str] = None, log=print) -> Dict[str, Any]:
@@ -391,8 +401,11 @@ def run_job(job_dir: str, device: Optional[str] = None, log=print) -> Dict[str, 
                 run = fut.result()
                 log(f"  {futs[fut][0]} seed={futs[fut][1]}: steps={run['steps']} "
                     f"({time.time() - t_start:.0f}s)")
+    runs_by_hardware: Dict[str, List[str]] = {}
     for name, tcfg in cfg["tokenizers"].items():
         runs = [json.loads((job / "runs" / f"{name}__s{s}.json").read_text()) for s in cfg["seeds"]]
+        for s, r in zip(cfg["seeds"], runs):
+            runs_by_hardware.setdefault(_hardware(r), []).append(f"{name}__s{s}")
         val_domains = {}
         for d in cfg["domains"]:
             mean, sd = _mean_sd([r["val"][d]["bpb"] for r in runs])
@@ -418,7 +431,7 @@ def run_job(job_dir: str, device: Optional[str] = None, log=print) -> Dict[str, 
             "curve": runs[0]["curve"],
         }
     result = {"backend": backend_info(device), "architecture": ARCHITECTURE,
-              "seconds": round(time.time() - t_start, 1), "models": models}
+              "seconds": round(time.time() - t_start, 1), "models": models, "runs_by_hardware": runs_by_hardware}
     (job / "result.json").write_text(json.dumps(result, indent=2))
     return result
 
