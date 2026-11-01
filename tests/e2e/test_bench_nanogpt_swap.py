@@ -82,6 +82,15 @@ def test_run_arguments_differ_from_llmc_only_in_allowed_fields():
     assert flags["--batch_size"] == "16" and flags["--input_bin"] == "/r/train.bin"
 
 
+def test_lr_override_changes_only_the_learning_rate():
+    """--lr is the one opt-in deviation: same recipe, peak lr replaced, and it reaches the trainer."""
+    base, ours = swap.recipe_args(600, 50), swap.recipe_args(600, 50, lr=1.8e-3)
+    assert {k for k in set(base) | set(ours) if base.get(k) != ours.get(k)} == {swap.LR_OVERRIDE}
+    assert ours["learning_rate"] == "0.0018" and base["learning_rate"] == "0.0006"
+    argv = job_mod.trainer_argv({"trainer_args": ours}, 16, Path("/r"))
+    assert dict(zip(argv[::2], argv[1::2]))["--learning_rate"] == "0.0018"
+
+
 def test_padded_vocabulary_takes_no_part_in_the_softmax():
     """The vocabulary is padded to a multiple of 128 for speed only: the padded logits are -inf, so
     the loss equals the unpadded model's."""

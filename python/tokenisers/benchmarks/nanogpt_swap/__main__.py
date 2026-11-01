@@ -73,6 +73,8 @@ DEFAULT_MBS = {"L4": 16, "A100": 32, "H100": 32}  # sequences per micro-batch; h
 # schedule length (warmup scaled with it), micro-batch, val cadence, data and log paths.
 ALLOWED_OVERRIDES = {"num_iterations", "warmup_iters", "batch_size", "val_loss_every", "input_bin",
                      "input_val_bin", "output_dir"}
+# Opt-in only (--lr): the same peak learning rate for every tokenizer; recorded in trainer_args.
+LR_OVERRIDE = "learning_rate"
 IDS_DOCS = 200  # documents whose ids are hashed at preparation and checked on the VM
 
 
@@ -86,13 +88,17 @@ def upstream_args() -> Dict[str, str]:
     return {k: v.strip('"') for k, v in re.findall(r"--(\w+) (\S+)", script_args)}
 
 
-def recipe_args(steps: int, eval_every: int) -> Dict[str, str]:
+def recipe_args(steps: int, eval_every: int, lr: Optional[float] = None) -> Dict[str, str]:
     """The llm.c run's arguments with the allowed changes: ``steps`` iterations, warmup scaled by the
     same fraction (700 of 18,865 -> 22 of 600), val every ``eval_every`` steps. Batch size and data
-    paths are set per run on the VM. Cosine decay to lr x learning_rate_decay_frac is unchanged."""
+    paths are set per run on the VM. Cosine decay to lr x learning_rate_decay_frac is unchanged.
+    ``lr`` is the one opt-in deviation (LR_OVERRIDE): a peak learning rate shared by every tokenizer,
+    e.g. 1.8e-3, the 3x AdamW lr of modded-nanogpt's early records; None keeps llm.c's 6e-4."""
     up = upstream_args()
     out = dict(up, num_iterations=str(steps), val_loss_every=str(eval_every),
                warmup_iters=str(max(1, round(int(up["warmup_iters"]) * steps / int(up["num_iterations"])))))
+    if lr is not None:
+        out[LR_OVERRIDE] = repr(float(lr))
     for k in ("batch_size", "input_bin", "input_val_bin", "output_dir"):
         del out[k]
     return out
@@ -326,6 +332,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument("--gpu", default="L4", help=f"Colab GPU: {', '.join(GPUS)} (bf16 needed; not T4)")
     parser.add_argument("--steps", type=int, default=600)
     parser.add_argument("--eval-every", type=int, default=50, help="Val BPB every N steps, and after the last")
+    parser.add_argument("--lr", type=float, default=None,
+                        help="Peak learning rate for every tokenizer (default: llm.c's 6e-4, unchanged)")
     parser.add_argument("--tokenizers", nargs="+", default=list(TOKENIZERS), choices=TOKENIZERS, metavar="NAME")
     parser.add_argument("--mbs", type=int, default=None,
                         help="Sequences per micro-batch (default by GPU; halved on the VM when out of memory). "
@@ -373,8 +381,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             raise SystemExit(f"{job / 'runs'} holds {len(held)} finished runs: pass --resume to keep them")
         if held and cfg.get("trainer_args", {}).get("num_iterations") not in (None, str(steps)):
             raise SystemExit("--resume with a different --steps would mix schedules")
+        if held and cfg.get("trainer_args", {}).get(LR_OVERRIDE) != recipe_args(steps, eval_every, args.lr).get(LR_OVERRIDE):
+            raise SystemExit("--resume with a different --lr would mix learning rates")
     cfg.update(tokenizers=[s for s in cfg["tokenizers"] if s["name"] in names], train=train,
-               trainer_args=recipe_args(steps, eval_every), mbs=args.mbs or DEFAULT_MBS[args.gpu],
+               trainer_args=recipe_args(steps, eval_every, args.lr), mbs=args.mbs or DEFAULT_MBS[args.gpu],
                mode="pilot" if args.pilot else "full", gpu=args.gpu,
                eval_docs=args.pilot_eval_docs if args.pilot else None)
     (run_dir / "config.json").write_text(json.dumps(cfg, indent=1), encoding="utf-8")
