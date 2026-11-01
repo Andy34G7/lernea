@@ -487,9 +487,9 @@
         <aside class="explain" aria-label="Benchmark levels">
           <dl>
             <dt>Compression &amp; intrinsic</dt><dd>How much text a token covers, how evenly the vocabulary is used, and whether token boundaries match morpheme and identifier boundaries. No model is trained. V = 16,384, 32,768 and 65,536.</dd>
-            <dt>Throughput</dt><dd>Encode and decode speed, measured three times on different machines.</dd>
+            <dt>Throughput</dt><dd>Encode and decode speed in three runs: the laptop suite, one pinned core of the same laptop, and a Colab CPU.</dd>
             <dt>Proxy LM</dt><dd>A small Transformer trained from scratch on the same number of bytes for every tokeniser; scored in bits per byte (BPB) on held-out text. Two sizes, 3 seeds each. V = 16,384.</dd>
-            <dt>GPT-2 swap</dt><dd>GPT-2 small (124M) trained with llm.c's recipe for 600 steps, once per tokeniser, including GPT-2's own tokeniser and TokenMonster. V ≈ 50k.</dd>
+            <dt>GPT-2 swap</dt><dd>GPT-2 small (124M) trained with llm.c's recipe for 600 steps, once per tokeniser, including GPT-2's own tokeniser and TokenMonster. V ≈ 50k, except one 32k TokenMonster vocabulary.</dd>
             <dt>FLORES+</dt><dd>How many more tokens the same sentences cost in 17 other languages than in English (the tokenisation premium), for the tokenisers of the intrinsic and the GPT-2-swap levels. No model is trained.</dd>
           </dl>
         </aside>
@@ -812,7 +812,7 @@
           <dt>Read</dt><dd><b>Final BPB ↓</b>. <b>GPT-2-equivalent steps ↑</b>: how many of GPT-2's own steps reach the same BPB (600 = as good as GPT-2 at the end).</dd>
           <dt>Caveats</dt><dd><ul>
             <li id="swap-caveat-regime">Early training, one seed per tokeniser.</li>
-            <li id="swap-caveat-space">Our tokenisers split spaces into their own tokens.</li>
+            <li id="swap-caveat-space">Our tokenisers keep every whitespace run as its own token.</li>
             <li>TokenMonster runs as its closest lossless variant (see provenance).</li>
           </ul></dd>
         </dl>
@@ -889,7 +889,7 @@
           <dt>Read</dt><dd><b>Premium ↓</b>: 1.0 is parity with English; 2.0 means the same content costs twice the tokens (half the context, twice the price). <b>In-mix</b> languages are in the intrinsic tokenisers' training mix; <b>out-of-mix</b> languages are in no tokeniser's training text.</dd>
           <dt>Caveats</dt><dd><ul>
             <li id="flores-caveat-english">The premium is relative to each tokeniser's own English cost: a tokeniser that spends many tokens on English gets a low premium without being cheap on the other language. Read it next to EN tokens per sentence.</li>
-            <li>The GPT-2-swap tokenisers learned their merges on English text only; their premium is no fault of the merge score.</li>
+            <li>The GPT-2-swap tokenisers learned their merges on English-centric text (English FineWeb, GPT-2's WebText, TokenMonster's English and code); their premium is no fault of the merge score.</li>
             <li>Bytes or characters per token are not comparable across scripts (UTF-8 spends 1 to 3 bytes per character); the premium is.</li>
           </ul></dd>
         </dl>

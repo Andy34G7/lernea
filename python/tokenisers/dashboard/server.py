@@ -351,6 +351,28 @@ def _train_bpb(csv_path: Path, models: Dict[str, Any]) -> Optional[Dict[str, Any
                     for n in names}}
 
 
+# The README's checks that a swap rerun is comparable with the whitespace run (report.render_nanogpt_swap_space_prefix
+# and render_nanogpt_swap_ablation): what of a run each one compares.
+COMPARABLE: Dict[str, Callable[[Dict[str, Any]], Any]] = {
+    "recipe": lambda d: d["meta"]["recipe"]["args"],
+    "val documents": lambda d: {m["val_docs_sha256"] for m in d["models"].values()},
+    "tokenizer training text": lambda d: d["meta"]["tokenizer_text"]["docs_sha256"],
+}
+
+
+def not_comparable(base: Dict[str, Any], run: Dict[str, Any], checks=tuple(COMPARABLE)) -> List[str]:
+    """The ``checks`` (COMPARABLE keys) on which ``run`` differs from the whitespace run ``base``. Fails closed: a
+    check that a file lacks the fields for counts too, so an older or partial file is not shown as comparable."""
+    out = []
+    for k in checks:
+        try:
+            if COMPARABLE[k](base) != COMPARABLE[k](run):
+                out.append(f"different {k}")
+        except (KeyError, TypeError, AttributeError):
+            out.append(f"{k} unknown (missing from a file)")
+    return out
+
+
 def sp_gpt2_equivalent(base: Dict[str, Any], sp: Dict[str, Any], csv_path: Path) -> Dict[str, Optional[int]]:
     """GPT-2-equivalent steps of a space-prefix rerun that has no GPT-2 run of its own, read off GPT-2's train
     curve in the original swap run (nanogpt_swap's gpt2_equivalent on GPT-2's column of that run's steps CSV).
@@ -358,8 +380,7 @@ def sp_gpt2_equivalent(base: Dict[str, Any], sp: Dict[str, Any], csv_path: Path)
     BPB measure the same training on the same text; else {}."""
     bm, sm = base.get("models", {}), sp.get("models", {})
     eq, g = base.get("gpt2_equivalent"), bm.get("gpt2")
-    same = (base["meta"]["recipe"]["args"] == sp["meta"]["recipe"]["args"]
-            and {m.get("val_docs_sha256") for m in bm.values()} == {m.get("val_docs_sha256") for m in sm.values()})
+    same = not not_comparable(base, sp, ("recipe", "val documents"))
     if "gpt2" in sm or not (eq and g and same and csv_path.is_file()):
         return {}
     from tokenisers.benchmarks.nanogpt_swap.__main__ import gpt2_equivalent
@@ -453,12 +474,15 @@ def load_benchmark_data() -> Dict[str, Any]:
         # The README's check that the rerun is comparable (recipe, val documents, tokenizer training text) first
         check = _report(render_nanogpt_swap_space_prefix, swap["data"], sp["data"])["provenance"]
         sp["provenance"] = check + sp["provenance"]
+        sp["not_comparable"] = not_comparable(swap["data"], sp["data"])
         sp["pairs"] = _derived(sp, "pairing with the original swap run", lambda: space_prefix_pairs(
             swap["data"], sp["data"], sp_gpt2_equivalent(swap["data"], sp["data"], steps_csv("swap"))))
     abl = results["swap_ablation"]
     if abl["available"] and swap["available"]:
         docs = (swap["data"], sp["data"] if sp["available"] else None, abl["data"])
+        # The 300 MB arm changes the tokenizer training text on purpose: recipe and val documents only
         abl.update(ablation=_derived(abl, "ablation arms", lambda: ablation_arms(*docs)),
+                   not_comparable=not_comparable(swap["data"], abl["data"], ("recipe", "val documents")),
                    **_report(render_nanogpt_swap_ablation, *docs))
 
     def doc(key: str) -> Dict[str, Any]:
