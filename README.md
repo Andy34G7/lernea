@@ -1,46 +1,39 @@
-# Modular Rust + Python Tokenizers Research & Benchmarking Platform
+# Tokenizers
 
-A high-performance **Rust (`PyO3` / `maturin`) + Python** research and benchmarking platform for designing, modifying, and evaluating subword and dynamic tokenization algorithms across:
-1. **Tokka-Bench** (multilingual natural languages + programming languages)
-2. **Extended Intrinsic Diagnostics** (Rényi efficiency $E_\alpha$, Morphological Boundary F1, Identifier Boundary F1, Vocabulary Utilization, and Systems Throughput in MB/s)
-3. **Extrinsic Proxy-LM Evaluation** (a small causal Transformer trained under a fixed UTF-8 byte budget, evaluated via **Validation Bits-Per-Byte [BPB]** across English, Multilingual, and Code splits locally or on Google Colab GPUs via `colab-cli`). The proxy LM is *not* a Llama/GPT block: it uses PyTorch `TransformerEncoderLayer`s (pre-LayerNorm, ReLU FFN, biases) with a causal mask, tied input/output embeddings and **no positional encoding of any kind** (NoPE: token order reaches the model only through the causal mask). Keep that in mind when comparing its BPB numbers with results from RoPE/SwiGLU models.
+Rust (PyO3/maturin) + Python research platform for subword tokenization algorithms. Trains, evaluates and compares 13+ tokenizer variants across compression, intrinsic quality, proxy-LM BPB, GPT-2 swap and cross-lingual parity (FLORES+).
 
----
-
-## Architecture & Repository Layout
+<details><summary>Repository layout</summary>
 
 ```text
 ├── Cargo.toml                      # Rust workspace manifest
 ├── pyproject.toml                  # Maturin + uv build & CLI configuration
 ├── crates/
-│   ├── tokenisers_core/            # Pure Rust core library (unit, integration & stress tests)
+│   ├── tokenisers_core/            # Pure Rust core library
 │   │   └── src/
 │   │       ├── arena.rs            # Doubly-linked symbol arena & inverted pair index
 │   │       ├── vocab.rs            # Byte-level lossless base alphabet & vocabulary mapping
-│   │       ├── scoring/            # Pluggable scorers: Frequency (BPE), WordPiece/PMI, MDL (ΔBits), Length-Penalized
-│   │       ├── engine/             # Unified bottom-up merge engine & Top-Down Unigram EM + Viterbi pruning
+│   │       ├── scoring/            # Pluggable scorers: Frequency, WordPiece/PMI, MDL, Length-Penalized
+│   │       ├── engine/             # Bottom-up merge engine & Top-Down Unigram EM + Viterbi pruning
 │   │       ├── curricula/          # Two-Stage SuperBPE & Morpheme-Guided boundary priors
-│   │       ├── inference/          # Greedy, BPE-Dropout, Unigram FFBS/k-best sampling, Byte-Entropy patching
-│   │       └── export/             # Canonical HuggingFace tokenizer.json serializer
-│   └── tokenisers_py/              # PyO3 C-extension bindings (`tokenisers._core`) with GIL release
+│   │       ├── inference/          # Greedy, BPE-Dropout, Unigram FFBS/k-best, Byte-Entropy patching
+│   │       └── export/             # HuggingFace tokenizer.json serializer
+│   └── tokenisers_py/              # PyO3 bindings with GIL release
 ├── python/tokenisers/
-│   ├── models.py                   # High-level Python API (BpeTokenizer, UnigramTokenizer, SuperBpeTokenizer, MorphemeBpeTokenizer, ByteEntropyTokenizer)
-│   ├── wrapper.py                  # DynamicResearchTokenizer (HuggingFace PreTrainedTokenizer subclass)
-│   ├── data/                       # Streaming & cached dataset pipeline (FineWeb-Edu, FineWeb-2, StarCoder, SIGMORPHON)
-│   ├── dashboard/                  # Artificial Analysis-style interactive Web UI & REST API server (`tokenisers-dashboard`)
-│   └── benchmarks/
-│       ├── tokka/                  # Tokka-Bench multilingual + code evaluation suite
-│       ├── intrinsic/              # Rényi efficiency, Morphological F1, Identifier F1, Throughput MB/s
-│       ├── flores.py               # FLORES+ cross-lingual tokenization premium / parity
-│       └── colab/                  # Extrinsic Proxy-LM fixed-byte-budget trainer & Colab GPU orchestrator
-├── vendor/tokka-bench/             # Vendored bgub/tokka-bench reference suite
-├── benchmarks/results/             # Generated JSON, CSV, and Markdown leaderboards
-└── tests/e2e/                      # Automated E2E & adversarial tests (Tiers 1–5 + WP-BPE + Dashboard)
+│   ├── models.py                   # Python API (BpeTokenizer, UnigramTokenizer, etc.)
+│   ├── wrapper.py                  # HuggingFace PreTrainedTokenizer subclass
+│   ├── data/                       # Dataset pipeline (FineWeb-Edu, FineWeb-2, StarCoder, SIGMORPHON)
+│   ├── dashboard/                  # Interactive web dashboard & REST API
+│   └── benchmarks/                 # Tokka-Bench, intrinsic, proxy-LM, FLORES+, throughput, GPT-2 swap
+├── vendor/tokka-bench/             # Vendored reference suite
+├── benchmarks/results/             # Generated JSON, CSV and Markdown leaderboards
+└── tests/e2e/                      # E2E & adversarial tests
 ```
+
+</details>
 
 ---
 
-## Implemented Tokenizer Algorithms & Modifications
+## Tokenizer Algorithms
 
 | Family | Variant | Objective / Mechanism |
 | :--- | :--- | :--- |
@@ -61,43 +54,9 @@ A high-performance **Rust (`PyO3` / `maturin`) + Python** research and benchmark
 | **Stochastic / Dynamic** | `unigram_sampling` | **Subword Regularization**: Forward-Filtering Backward-Sampling (FFBS) & $k$-best Viterbi lattice sampling |
 | **Stochastic / Dynamic** | `byte_entropy` | **Byte-Entropy Dynamic Patching**: places patch boundaries where Markov byte transition entropy exceeds threshold $\tau$ |
 
-A pair seen fewer than `min_frequency` times is never merged: 2 for `wordpiece_pmi`, `wp_bpe_ft`,
-`wp_bpe_scp`, `wp_bpe_npmi`, `wp_bpe_ppig` and `mdl_bits`, 1 for the other merge variants. Other
-defaults: $\alpha = 1$ (`wordpiece_pmi`), $d = 0.75$ (`wp_bpe_scp`), $\alpha = 0.5$
-(`wp_bpe_npmi`), $\eta = 0.35$ (`wp_bpe_ppig`), 24 bits per vocabulary entry (`mdl_bits`),
-$\beta = 0.5$ (`length_penalized`), and for `unigram_lm` 10 EM iterations per pruning round with
-shrinking factor 0.75. The benchmark suite trains with these values and $\lambda = 2$ for
-`morpheme_bpe`; each result file records every training parameter under `meta.variants` (files
-written before this was added, including the committed results from `603a983`, list only the scorer
-and non-default values; that commit used the defaults above).
+**Default parameters.** `min_frequency`: 2 for `wordpiece_pmi`, `wp_bpe_ft`, `wp_bpe_scp`, `wp_bpe_npmi`, `wp_bpe_ppig` and `mdl_bits`; 1 for others. $\alpha = 1$ (`wordpiece_pmi`), $d = 0.75$ (`wp_bpe_scp`), $\alpha = 0.5$ (`wp_bpe_npmi`), $\eta = 0.35$ (`wp_bpe_ppig`), 24 bits per entry (`mdl_bits`), $\beta = 0.5$ (`length_penalized`), 10 EM iterations with shrinking 0.75 (`unigram_lm`), $\lambda = 2$ (`morpheme_bpe`). Each result file records all training parameters under `meta.variants`.
 
-**Pre-tokenizer.** Every variant except `super_bpe` (and `byte_entropy`) splits text into segments
-that no token spans, the same way for training, encoding, Unigram's lattice and the exported
-`tokenizer.json` (a `Split` regex that Hugging Face reproduces exactly; `from_pretrained` restores
-the mode). `pretokenizer="whitespace"` (the default, used by every committed result) isolates each
-maximal run of Unicode whitespace in a segment of its own, so no token mixes whitespace with other
-text (a run such as `"    "` or `" \n"` can still be one token). `pretokenizer="space_prefix"`
-is GPT-2-style: a word takes the one U+0020 space right before it (`"a  b"` -> `a`, ` `, ` b`),
-while newlines, tabs, other Unicode spaces and all but the last space of a run stay in
-whitespace-only segments; unlike GPT-2's `\s+(?!\S)| ?\S+` it does not split letters, digits and
-punctuation apart. `pretokenizer="gpt2"` is GPT-2's exact pre-split: the matches of tiktoken's gpt2
-`pat_str` (`'(?:[sdmt]|ll|ve|re)| ?\p{L}++| ?\p{N}++| ?[^\s\p{L}\p{N}]++|\s++$|\s+(?!\S)|\s`, run with
-fancy-regex as tiktoken's Rust core does), so contractions, letter runs, digit runs and punctuation
-runs are separate segments, each with the space before it (`"it's 2024!"` -> `it`, `'s`, ` 2024`,
-`!`); its export is Hugging Face's own `ByteLevel(use_regex=true)`. On all 14,982 FineWeb val
-documents of the tokenizer swap the native split equals Hugging Face's and tiktoken's, and GPT-2's
-merges loaded natively give tiktoken's ids. `pretokenizer={"hf": config}` runs any lossless Hugging
-Face `pre_tokenizer` config (a dict or a JSON string) with `tokenizers` itself: `Split` and
-`Punctuation` (any behavior but `Removed`), `Digits`, `FixedLength`, one `ByteLevel` without
-`add_prefix_space`, and `Sequence`s of these; a component that drops or rewrites text (`Whitespace`,
-`WhitespaceSplit`, `BertPreTokenizer`, `CharDelimiterSplit`, `Metaspace`, `UnicodeScripts`, which drops
-the spaces a piece starts with) is a `ValueError` naming it, and so is a field the component does
-not have (`tokenizers` would ignore a misspelt `"behaviour"`). The export writes the config back
-unchanged (followed by the byte-level map when it has no `ByteLevel`) and `from_pretrained` restores
-it; `.pretokenizer` reports `{"hf": config}`. Training rejects a config whose export is another
-pretokenizer's, with the same split, and names that one: a lone `ByteLevel(use_regex=true)` is `"gpt2"`,
-`Sequence[X, ByteLevel(use_regex=false)]` is `{"hf": X}`, and a lone `ByteLevel(use_regex=false)`
-splits nothing. For example, Llama-style single digits before GPT-2's split:
+**Pre-tokenizer.** Four modes, applied identically for training, encoding and `tokenizer.json` export: `"whitespace"` (default: isolates whitespace runs), `"space_prefix"` (GPT-2-style word-leading space), `"gpt2"` (tiktoken's exact regex; exports as HF `ByteLevel(use_regex=true)`), and `{"hf": config}` (any lossless HF `pre_tokenizer` config: `Split`, `Punctuation`, `Digits`, `FixedLength`, `ByteLevel` without `add_prefix_space`, and `Sequence`s of these).
 
 ```python
 from tokenisers import BpeTokenizer
@@ -109,142 +68,42 @@ tok = BpeTokenizer.train(corpus, vocab_size=32000, pretokenizer={"hf": llama_dig
 tok.encode("abc 2024")  # segments "abc", " ", "2", "0", "2", "4": no token holds two digits
 ```
 
-Bytes that are not valid UTF-8 count as non-whitespace in every mode; in `gpt2` each invalid
-sequence is split exactly like one U+FFFD (a symbol), in `hf` each invalid byte like one U+0000.
-
 ---
 
-## Quickstart & CLI Usage
+## Quickstart
 
-### 1. Build & Run Tests
 ```bash
-# Install the dev tools (maturin, pytest); a plain `uv sync` removes them
+# 1. Build & test
 uv sync --extra dev
-
-# Run the native Rust test suite
 cargo test --workspace
-
-# Build the PyO3 extension in release mode & run the Python E2E suite
 uv run maturin develop --release
 uv run pytest tests/e2e/ -v
-```
 
-### 2. Launch Interactive Benchmark Dashboard (Artificial Analysis-Style Web UI)
-```bash
-# Starts local web server at http://127.0.0.1:8765 with interactive charts & live tokenization playground
+# 2. Dashboard (http://127.0.0.1:8765)
 uv run python -m tokenisers.dashboard --port 8765
-```
 
-### 3. Prepare Standardized Corpus
-```bash
-# Real corpus: FineWeb-Edu + FineWeb-2 (10 languages) + code, exact duplicates removed,
-# document-disjoint train/val/test, provenance in manifest.json (default 50 MiB train;
-# StarCoder needs a Hugging Face token, see Data access)
+# 3. Prepare corpus (FineWeb-Edu + FineWeb-2 + code, document-disjoint train/val/test)
 uv run python -m tokenisers.data --preset small --sigmorphon eng fra hun rus spa
-# Synthetic offline test corpus (labelled synthetic everywhere)
-uv run python -m tokenisers.data --preset smoke --offline
+uv run python -m tokenisers.data --preset smoke --offline  # synthetic offline corpus
+
+# 4. Run benchmarks
+uv run python -m tokenisers.benchmarks.tokka               # Tokka-Bench (test split)
+uv run python -m tokenisers.benchmarks.intrinsic            # Rényi, morph F1, throughput
+uv run python -m tokenisers.benchmarks.colab --gpu T4       # Proxy-LM BPB (Colab GPU)
+uv run python scripts/gen_readme_tables.py                  # Update tables below
 ```
 
-**Data access.** FineWeb-Edu, FineWeb-2 and SIGMORPHON 2022 are public. The code domain reads the
-gated `bigcode/starcoderdata`, which needs a Hugging Face token whose account has accepted the
-dataset's terms. Setting `HF_TOKEN` in the environment (optional) enables it; `huggingface_hub` also
-uses a token saved by `hf auth login`. Without a token that can read StarCoder, the code domain is
-read from the ungated `codeparrot/github-code-clean` instead, with the same six languages and
-per-language byte budgets, and the substitution is recorded under `fallbacks` in the dataset
-`manifest.json` and in every result JSON (`meta.dataset.fallbacks`). Whether a token is present is
-part of the dataset cache key, so adding one later builds a new dataset instead of reusing the
-fallback one. The committed results used StarCoder: `HF_TOKEN` was not set, but a saved login token
-with access was (manifest: `hf_token_present: true`, no fallbacks).
+**Data access.** The code domain reads the gated `bigcode/starcoderdata` (needs an HF token via `HF_TOKEN` or `hf auth login`). Without it, `codeparrot/github-code-clean` is used as fallback (recorded in `meta.dataset.fallbacks`).
 
-### 4. Run Benchmarks
-All three tiers read the prepared dataset (step 3): tokenizers train on its **train** split only;
-tokka and the intrinsic suite evaluate on the held-out **test** split. The proxy LM trains on
-documents of the same **train** split the tokenizers were trained on (shuffled, each used at most
-once; *not* held out from tokenizer training) and is scored on the held-out **val** split.
-Disjointness of train and evaluation documents is asserted at runtime. It holds at document level
-only: de-duplication drops exact (SHA-256) duplicate documents, not near-duplicates or shared
-boilerplate. In the default dataset 7 of 666 test and 5 of 687 val documents share a line of at
-least 200 characters with a train document. The default vocabulary is
-16,384 (`--vocab-size 32768` / `65536` for the larger sizes). Every result JSON carries a `meta`
-block with the dataset manifest, requested and actual vocabulary sizes, per-variant training
-parameters and warnings, seeds, hardware/backend and git commit. Variants that produce
-byte-identical tokenizers are detected and reported as one result.
+**Colab.** Needs `google-colab-cli` >= 0.7.5. The benchmark uploads jobs and polls them detached; `--resume` continues after drops.
 
-```bash
-# Tier 1: Tokka-Bench metrics (vendored tokka-bench definitions) per language of the test split.
-# The macro average only includes languages with >= 3 held-out documents and >= 10 KB
-# (--min-docs-per-lang / --min-bytes-per-lang); the others are reported and listed with their sizes.
-uv run python -m tokenisers.benchmarks.tokka
-
-# Tier 2: Rényi efficiency, utilisation, SIGMORPHON 2022 morph F1 (test split gold; morpheme_bpe
-# lexicon from the train split), identifier F1 (mined from held-out code), throughput (median of 5)
-uv run python -m tokenisers.benchmarks.intrinsic
-
-# Tier 3: proxy-LM bits per byte, fixed 10 MB train budget, 3 seeds (mean ± sd), on a Colab GPU.
-# A Colab failure stops the run unless --allow-local-fallback is given (the fallback is recorded);
-# --local runs on this machine. The backend actually used is recorded and shown with the table.
-uv run python -m tokenisers.benchmarks.colab --gpu T4
-
-# Copy the result JSON into the tables below
-uv run python scripts/gen_readme_tables.py
-```
-
-`--offline` runs everything on the synthetic test corpus (labelled synthetic in the output).
-
-**Colab.** Tier 3 on Colab needs the `colab` CLI (`google-colab-cli`) **>= 0.7.5**: 0.6.0's `exec`
-is broken. The run checks `colab version` before it starts a session; upgrade with
-`uv tool upgrade google-colab-cli`. The job is not one long `colab exec`: the benchmark uploads the
-job, starts it detached on the VM (output in `/content/job.log`) and polls it every
-`--poll-interval` seconds (default 60) with short `colab exec` calls. Polls that hang or lose the
-connection are retried, and so are the uploads and the final download of `result.json` (5
-consecutive failures of a step abort the run). `colab exec` exits 0 even when the remote
-code raises, so success is read from the `status.json` the job writes last. A remote exception
-fails the run with the remote traceback; so does a job that dies without a status (log tail
-shown) or runs past `--timeout`. The session is always stopped.
-
-**Memory.** Peak training memory grows with the train split and, for the merge-based variants,
-with the vocabulary size. Measured whole-process peaks at V = 65,536 on the 52.5 MB default train
-split: `super_bpe` 2.9 GiB, the largest plain BPE variant (`wp_bpe_pig`) 1.25 GiB, `unigram_lm`
-0.5 GiB (on 25 MB: 1.5 / 0.67 / 0.40 GiB). The CLIs estimate 600 MiB plus 75 bytes per text byte
-for `super_bpe` and 60 for every other variant, at least 20% above every measurement
-(`MEASURED_TRAIN_PEAKS` in `tests/e2e/test_bench_reporting.py`): ~4.2 GiB for the 50 MiB default
-with `super_bpe`, ~3.5 GiB without it. Before preparing the dataset they
-exit if that exceeds the memory the process may use: `MemAvailable` minus a reserve of max(2 GiB,
-15% of RAM) for the rest of the machine, or the free part of a cgroup / `systemd-run -p MemoryMax=`
-limit if that is smaller. The reserve applies inside a cgroup too, so a `MemoryMax=` scope never
-raises the allowance. Lower `--train-bytes` or drop the variant from `--variants`; or, if a
-`MemoryMax=` scope is the safety net, pass `--skip-memory-check` inside it.
+**Memory.** The CLI checks available memory before training (~4.2 GiB for 50 MiB with `super_bpe`). Use `--skip-memory-check` inside a `systemd-run -p MemoryMax=` scope if needed.
 
 ---
 
 ## Benchmark Results
 
-The tables below are generated from `benchmarks/results/*/` by `scripts/gen_readme_tables.py`; a
-test fails if they differ from the committed JSON. The numbers previously shown here came from
-synthetic data, evaluated on training text, with a proxy LM that silently ran on a local CPU; they
-are kept, marked invalid, in [`benchmarks/results/legacy_smoke/`](benchmarks/results/legacy_smoke/).
-
-**Scale and setup.** Sections 1-4 come from one run of the suite at commit `603a983` on
-the default dataset (`python -m tokenisers.data --preset small`): a 52.5 MB train split (11,102
-documents: FineWeb-Edu English 50%, FineWeb-2 in 10 languages 30%, StarCoder code in 6 languages
-20%; no fallback source was needed) with held-out val (3.1 MB) and test (3.1 MB) splits. Tokka and
-intrinsic results exist for V = 16,384 (sections 1 and 2) and V = 32,768 / 65,536 (section 4);
-the proxy LM (section 3) ran at V = 16,384 only, on a Colab T4 GPU with the default 10 MB byte
-budget and 3 seeds, and again with the big proxy LM (100 MB budget, 3 seeds) on a Colab L4: LMs
-trained at commit `6d260c2` on a job prepared from an uncommitted tree at `3186c1b` (section 3).
-In sections 1-5, tokenizer training and every other step ran locally on an Intel Core Ultra 7
-155H (22 threads, no GPU, 15 GB RAM shared with a desktop session). Runs whose arguments include
-`--skip-memory-check` started after the desktop's memory use had grown: the preflight estimate
-(4.2 GiB) exceeded the 3.0 GiB it then allowed, so they ran inside a hard 4 GiB cgroup limit
-(`systemd-run -p MemoryMax=4G`) instead, above the measured 2.9 GiB peak. Section 5 re-times the
-same tokenizers on a Colab CPU runtime and on one pinned laptop core. Sections 6 and 7 use other
-text and machines. The tokenizer swap (section 6) trains its tokenizers on FineWeb documents decoded
-from the speedrun's GPT-2 shards (`kjj0/fineweb10B-gpt2`), not on the default dataset: the first
-50 MB, locally, except the `_sp300` tokenizers, trained on the first 300 MB on a Colab L4. Its LMs
-trained on a Colab A100. FLORES+ (section 7) ran locally: it retrains its intrinsic tier on the
-default 52.5 MB split and loads its swap tier, `_sp300` included, from the swap's prepared jobs.
-Each section's header lists the exact arguments, data sizes, backend and commit. Known limitations
-are listed after section 7.
+Tables generated from `benchmarks/results/*/` by `scripts/gen_readme_tables.py`. Default dataset: 52.5 MB train (FineWeb-Edu 50%, FineWeb-2 30%, StarCoder 20%), held-out val/test 3.1 MB each. Tokenizer training ran locally (Intel Core Ultra 7 155H, 15 GB RAM); proxy LMs on Colab GPUs; the GPT-2 swap on Colab A100. Each section's generated header lists exact arguments, data sizes, backend and commit.
 
 ### 1. Tokka-Bench (natural languages + code, held-out test split)
 <!-- BEGIN GENERATED: tokka -->
@@ -381,21 +240,6 @@ Morph F1 by language:
 | `wp_bpe_scp` | 16384 | 1.621 | 61,702,144 | 3.015 ± 0.008 | 2.802 ± 0.009 | 3.161 ± 0.029 | **2.993 ± 0.015** |
 <!-- END GENERATED: colab_big -->
 
-Setup of this run: `--preset big --resume --concurrency 1` from commit `6d260c2` on one Colab L4 (22 GB);
-the 33 runs (11 tokenizers x 3 seeds) trained one after another. The job it resumed (the tokenizers, the
-choice of LM text from the pool, and the encoded ids: all of the LMs' training data) was prepared with
-`--prepare-only` at commit `3186c1b` from a tree with uncommitted changes (`meta.job_prepared`,
-`git_dirty: true`); the LM text pool code was committed only afterwards (`c0d0c7f`, `35c661e`), so the
-code that drew and encoded the LM text is not tied to any commit. Model: 8 layers, d_model 512, 8 heads,
-FFN 2048, sequence length 512; 100 MB byte budget per run; seeds 0, 1, 2. Measured wall time: 5 h 03 min
-from launch (20:51 IST) to the result on the laptop (01:54:38 IST). Of that, uploading the job took
-7 min 20 s and training plus evaluation on the VM 17,699.8 s (4 h 55 min, `meta.lm_seconds`), a mean of
-536 s (8.9 min) per run; the run files do not record per-run time. Two earlier launches of the same job
-ran out of GPU memory, with `--concurrency 3` (processes at 9.1, 7.1 and 5.1 GiB) and with
-`--concurrency 2` (one process at 11.1 GiB, the other at 9.1 GiB and asking for 2 GiB more). The
-failing allocation is the fp32 logits of one 64 x 512 x 16,384 batch (2 GiB). The preset now defaults
-to `--concurrency 1`.
-
 ##### Small vs big proxy LM
 <!-- BEGIN GENERATED: colab_compare -->
 - the 11 tokenizers both proxy-LM tiers trained; small LM: d_model=128, n_layers=2, 10,000,000-byte budget, seeds [0, 1, 2], `Tesla T4`; big LM: d_model=512, n_layers=8, 100,000,000-byte budget, seeds [0, 1, 2], `NVIDIA L4`
@@ -418,80 +262,24 @@ to `--concurrency 1`.
 | `wp_bpe_scp` | 11 | +0.632 ± 0.021 | 11 | +0.444 ± 0.009 |
 <!-- END GENERATED: colab_compare -->
 
-The seeds vary only the LMs' initialization: every seed trains on the same LM text in the same order,
-so these standard errors measure initialization noise on this one text sample, not the variance from
-drawing other training text, and the separations below hold for this sample only.
-With the small LM, the four tokenizers ahead of `bpe_frequency` are within about two standard errors
-of it, so the order of the top five is not resolved by 3 seeds. With the big LM, `wp_bpe_ppig`,
-`wp_bpe_pig`, `wp_bpe_npmi` and `super_bpe` beat `bpe_frequency` by several standard errors; among the
-three wp_bpe variants, neighbouring means differ by less than two standard errors of their difference,
-so their order is not resolved. Below `bpe_frequency` the order changes: `morpheme_bpe` and
-`unigram_lm` move from clearly worse to within one standard error of it, and `length_penalized` drops
-from 6th to 9th.
+With the small LM, the top five are within about two standard errors of each other. With the big LM, `wp_bpe_ppig`, `wp_bpe_pig`, `wp_bpe_npmi` and `super_bpe` beat `bpe_frequency` by several standard errors, though the three wp_bpe variants' mutual order is not resolved.
 
-#### Big proxy LM: settings and how to run
+<details><summary>Big proxy LM: how to run</summary>
 
-`--preset big` selects a larger proxy LM (same architecture as above): 8 layers, d_model 512, 8 heads,
-FFN 2048, sequence length 512 (~25M non-embedding parameters, ~8.4M embedding parameters at V = 16,384).
-One hyperparameter set for every tokenizer: AdamW lr 6e-4, weight decay 0.1, warmup 2% of steps then
-cosine decay, gradient clip 1.0, 64 x 512 = 32,768 tokens per step, bf16 autocast when the GPU supports
-it, 100 MB byte budget per run, seeds 0/1/2. Default GPU L4; 11 variants (wordpiece_pmi, wp_bpe_base and
-wp_bpe_ft are left out); `--concurrency N` (variant, seed) runs share the GPU as separate processes, each
-writing its own result file (default 1: on the L4, 2 and 3 ran out of memory). Results go to
-`benchmarks/results/colab_big/`. Explicit flags override the preset.
-
-LM text. A 100 MB budget needs 110 MB of LM text (budget + 10%, each document used once), but the
-tokenizers stay the ones trained on the 52.5 MB default train split. The preset therefore adds an LM text
-pool (`--lm-text-bytes 120000000`, `DataPipeline.lm_pool`): the train split of the dataset with the same
-sources, revisions, seed and split rule but a 120 MB train budget (cached under its own key next to the
-default dataset), minus every default train/val/test document by sha256. The LM trains on 110.0 MB drawn
-from the train split plus the pool (62.1 MB of it from the pool). At runtime the CLI checks that this text
-shares no document with val or test, and that every variant's encoded LM text covers the budget. BPB is
-measured on the same val split as the small tier. The pool's provenance (its dataset manifest, document
-and byte counts) is in `meta.lm_text` of the results.
+`--preset big`: 8 layers, d_model 512, 8 heads, FFN 2048, seq 512 (~25M non-embedding params). AdamW lr 6e-4, wd 0.1, 2% warmup + cosine, 100 MB byte budget, seeds 0/1/2, default GPU L4, `--concurrency 1`. The 100 MB budget draws from the train split plus an LM text pool (document-disjoint from val/test).
 
 ```bash
-# 1. Locally: pool, tokenizers, encodings into the job dir; no LM training.
 uv run python -m tokenisers.benchmarks.colab --preset big --prepare-only --skip-memory-check
-# 2. On Colab (L4): uploads the job, trains, downloads each finished run as it lands.
 uv run python -m tokenisers.benchmarks.colab --preset big --resume
 ```
 
-Without `--prepare-only` one command does both steps. The job (`config.json` and one compressed `.npz` of
-token ids per tokenizer) is kept in `benchmarks/results/colab_big/job/` (gitignored; `--job-dir` moves
-it). If a run fails or is interrupted, re-run it with `--resume`: no tokenizer training or encoding, and
-the finished (variant, seed) run files already downloaded are uploaded to the new session and not
-retrained. `--resume` refuses a job prepared with different model, training or data arguments;
-`--concurrency` may change (e.g. lower it after an out-of-memory error). Ctrl-C or `kill <pid>` stops
-the Colab session before the CLI exits (a job started with `&` from a script ignores SIGINT; use `kill`).
-`--gpu none` runs on a CPU runtime (for a smoke test with toy sizes).
+Use `--resume` to continue after interruptions. `--gpu none` for CPU smoke tests.
 
-Measured on the laptop (full scale, `--prepare-only`): 372 s and 3.2 GiB peak RSS with the pool
-downloaded from Hugging Face (~3 min of that; the pool's dataset is 135 MB on disk), 254 s and 3.5 GiB
-once cached (tokenizer training 104 s, encoding 144 s). Every tokenizer reproduces the committed V = 16,384
-small-tier run exactly (validation bytes/token per domain identical). The job is 463 MB (11 files of
-41-47 MB). Smoke test on a Colab CPU runtime through the same code path (`--preset big --gpu none`,
-d_model 32, 1 layer, 200 KB budget, bpe_frequency + bpe_dropout_p0.1, 2 seeds, `--concurrency 2`): the
-first session was dropped after the two bpe_frequency runs had been downloaded; `--resume` uploaded them
-into a new session, which trained the two missing runs (11 min on the VM: one wave of two concurrent
-runs, as in the first session) and returned the full result.
-
-Upload: the job uploads these pre-encoded ids, about 5 min at ~1.5 MB/s (again after each resume into a
-new session). The alternative, uploading the LM text (~38 MB compressed) and saved tokenizers and encoding
-on the VM after building the extension there (as `benchmarks/throughput.py` does), would take ~4 min
-(~1 min build, ~2 min encoding, under a minute of upload) and needs a clean git tree and more code, so it
-is not used.
-
-GPU time: the estimate made before the run (~1.3B training tokens at ~230 MFLOP per token, about 2-4 h
-of L4 time at 20-40 TFLOPS sustained in bf16) was low. The measured run trained 1.33 billion tokens in
-4 h 55 min including evaluation (about 75,000 tokens/s) at concurrency 1. Compute units used were not
-recorded. The default `--timeout` is 6 h (this run took 5 h 03 min); a job past it stops, and
-`--resume` continues it.
+</details>
 
 ### 4. Larger Vocabularies (V = 32,768 and 65,536)
 
-Same train and test data as sections 1 and 2; only `--vocab-size` differs. The proxy LM was not run at
-these sizes.
+Same data as sections 1-2; only `--vocab-size` differs. No proxy LM at these sizes.
 
 <details><summary>Tokka-Bench, V = 32,768</summary>
 
@@ -679,25 +467,13 @@ Morph F1 by language:
 
 ### 5. Throughput Re-measured (Colab CPU and a pinned laptop core)
 
-The MB/s columns of sections 2 and 4 come from the full suite runs on the shared laptop. Here the
-same tokenizers (all 13 variants at the three sizes, retrained with the same code, data and
-parameters; each reproduced the bytes/token and vocabulary size of sections 2 and 4 exactly) are
-timed again with the same `IntrinsicEvaluator.benchmark_throughput` on the same held-out
-documents, in two full passes over all tokenizers so the run-to-run spread is measured. Each
-tokenizer is saved, reloaded on the measuring machine and must produce token ids identical
-(sha256) to the original on every document before it is timed. The three measurements are
-compared under Known limitations.
+Same tokenizers as sections 2 and 4, re-timed on a Colab CPU runtime and on one pinned laptop core (`taskset -c 3`). Two full passes measure run-to-run spread. Compare MB/s within one table, not across tables.
 
 ```bash
-# Train, save and verify all tokenizers once into a job directory, then time them.
 uv run python -m tokenisers.benchmarks.throughput --job-dir /tmp/tp --prepare-only
-uv run python -m tokenisers.benchmarks.throughput --job-dir /tmp/tp --colab   # Colab CPU runtime
-taskset -c 3 uv run python -m tokenisers.benchmarks.throughput --job-dir /tmp/tp  # one laptop core
+uv run python -m tokenisers.benchmarks.throughput --job-dir /tmp/tp --colab   # Colab CPU
+taskset -c 3 uv run python -m tokenisers.benchmarks.throughput --job-dir /tmp/tp  # pinned laptop core
 ```
-
-`--colab` creates a CPU runtime (no accelerator), uploads the saved tokenizers, the documents and
-`git archive HEAD` (so it refuses uncommitted code changes), builds and installs the native
-extension on the VM, and runs the job there detached, polled like the proxy-LM job.
 
 **Colab CPU runtime:**
 
@@ -751,7 +527,7 @@ extension on the VM, and runs the job there detached, polled like the proxy-LM j
 | `unigram_lm` | 65536 | 7.06 / 6.73 | 66.36 / 65.75 |
 <!-- END GENERATED: throughput_colab -->
 
-**Laptop, pinned to one performance core (re-run):**
+**Laptop, pinned to one performance core:**
 
 <!-- BEGIN GENERATED: throughput_local -->
 - local, pinned to CPU 3 (max 4800 MHz, governor powersave, SMT sibling(s) 3-4): Intel(R) Core(TM) Ultra 7 155H, 15.1 GiB RAM, Python 3.13.17, glibc 2.44; commit `893cb9b516`; generated 2026-10-30T15:06:11Z
@@ -805,74 +581,13 @@ extension on the VM, and runs the job there detached, polled like the proxy-LM j
 
 ### 6. Tokenizer Swap on llm.c's GPT-2 (124M) Recipe
 
-How much does the tokenizer matter when everything else is fixed? `python -m
-tokenisers.benchmarks.nanogpt_swap` trains GPT-2 small (12 layers, 12 heads x 64, d = 768, context
-1024, learned positions, pre-LayerNorm, GELU, tied embeddings, no dropout) with llm.c's PyTorch
-recipe once per tokenizer and scores validation bits per byte on the same text. The trainer is
-[`vendor/llmc/train_gpt2_swap.py`](vendor/llmc/): llm.c's `train_gpt2.py` at `f1e2ace`, changed
-only inside delimited `SWAP` blocks; the hyperparameters are those of llm.c's
-`scripts/pyrun_gpt2_124M.sh` (AdamW (0.9, 0.95), lr 6e-4, weight decay 0.1 on 2-D weights, grad
-clip 1.0, 524,288 tokens per step, bf16 autocast, SDPA flash attention, `torch.compile`). Identical
-for every tokenizer, the only changes are: the vocabulary (tokenizer + one document separator,
-padded to a multiple of 128; padded ids are kept out of the softmax as in llm.c's CUDA trainer),
-600 steps with the warmup scaled by the same fraction (700 of 18,865 -> 22) and the same cosine
-decay to 0, the micro-batch (gradient accumulation keeps 524,288 tokens per step), val BPB on the
-whole val set every 50 steps (`--eval-every`; 100 in the committed run) and after the last, data
-paths and a result file. A test checks that the run arguments differ from llm.c's script only in
-those fields and that the trainer differs from llm.c's file only inside `SWAP` blocks.
-
-**Tokenizers (12).** GPT-2 (tiktoken, 50,257 with `<|endoftext|>`, the baseline); TokenMonster
-`englishcode-50256` and `englishcode-32000` (`consistent` mode, as in @alexjc's TokenMonster
-speedrun record); and our 9 variants `bpe_frequency`, `wp_bpe_pig`, `wp_bpe_ppig`, `wp_bpe_npmi`,
-`super_bpe`, `unigram_lm`, `length_penalized`, `morpheme_bpe` (SIGMORPHON train-split lexicon) and
-`mdl_bits`, trained with the suite's default parameters at 50,256 tokens on the first 50 MB of
-FineWeb train documents, so that with the separator they have 50,257 like GPT-2. Each tokenizer
-gets one separator id, placed between documents exactly where GPT-2's shards have `<|endoftext|>`.
-Every prebuilt TokenMonster `englishcode` vocabulary NFD-normalizes its input and so is lossy
-(decode(encode(x)) != x on 1,053 of the 14,982 val documents; capcode also turns U+0130 into "I");
-the benchmark uses the closest lossless variant: the `nocapcode` vocabulary of the same size and
-mode with the normalization flag cleared (same tokens and ids). Every tokenizer must reproduce
-every val document exactly before it is trained. On the val text GPT-2 gives 4.44 bytes per token,
-TokenMonster 5.32 (50,256) and 4.95 (32,000), `super_bpe` 5.03, and the other 8 of ours 2.70-2.75:
-their pre-tokenizer isolates every whitespace run as its own token, so at 524,288 tokens per step
-they see about 40% fewer bytes than GPT-2.
-
-**Data.** The text is the speedrun's own pre-tokenized GPT-2 FineWeb shards
-(`kjj0/fineweb10B-gpt2`), decoded back to documents and re-encoded by each tokenizer into llm.c
-`.bin` files. Val = the 14,982 complete documents (46.5 MB) in the speedrun's val window (the first
-20 x 524,288 GPT-2 tokens of `fineweb_val_000000.bin`); BPB = NLL in bits over every val token
-(separators included) / UTF-8 bytes of those documents, with the last window padded and masked, so
-every tokenizer is scored on the same bytes. Train = the train-shard documents in order (one pass,
-no repeats), minus any document whose sha256 equals a val document's; each tokenizer's stream
-holds 600 x 524,288 tokens plus 1%. A tokenizer with more bytes per token therefore sees more text
-in the same 600 steps: compute and tokens per step are fixed, text is not. The step at which a
-curve first reaches the speedrun's target (3.28 nats per GPT-2 token, converted to BPB with GPT-2's
-bytes per token on this val text) is reported; at 600 of llm.c's ~19,000 steps it is not expected
-to be reached.
+Trains GPT-2 small (124M params, llm.c's recipe at `f1e2ace`) once per tokenizer on the speedrun's FineWeb shards (`kjj0/fineweb10B-gpt2`), 600 steps on a Colab A100. Hyperparameters identical across tokenizers (AdamW lr 6e-4, 524,288 tokens/step, bf16, `torch.compile`); only the vocabulary differs. Twelve tokenizers: GPT-2 (tiktoken), TokenMonster 50k/32k, and our 9 variants at V = 50,256 trained on the first 50 MB of FineWeb train documents.
 
 ```bash
-uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap --prepare-only  # local CPU: tokenizers
-uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap --pilot --gpu L4  # ~20 timed steps
-uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap --gpu L4  # 12 x 600 steps, one session
-uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap --gpu L4 --resume  # after a drop
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap --prepare-only
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap --gpu A100
+uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap --gpu A100 --resume  # after a drop
 ```
-
-One Colab GPU session (L4, A100 or H100; a T4 has no bf16) runs the tokenizers one after another;
-each finished tokenizer's result file is downloaded on the next poll, and `--resume` uploads the
-finished ones to a new session so they are not retrained. The VM builds the native extension from
-`git archive HEAD`, downloads and decodes the shards and encodes the text; only the saved
-tokenizers and the code are uploaded.
-
-Pilot timings (`--pilot`: 20 steps of GPT-2 and `bpe_frequency`, val encoding of all 12, projected
-full-run time): [L4](benchmarks/results/nanogpt_swap/pilot_l4.md),
-[A100](benchmarks/results/nanogpt_swap/pilot_a100.md).
-
-Results: one run of all 12 tokenizers in one Colab A100 session (`--gpu A100 --eval-every 100`),
-rendered from [`nanogpt_swap.json`](benchmarks/results/nanogpt_swap/nanogpt_swap.json); every run's
-per-step train loss and lr are in
-[`nanogpt_swap_steps.csv`](benchmarks/results/nanogpt_swap/nanogpt_swap_steps.csv). A 3x peak lr
-(`--lr 1.8e-3`) was stopped after GPT-2, which it made worse at every val pass:
-[note](benchmarks/results/nanogpt_swap_lr1p8e-3/README.md).
 
 <!-- BEGIN GENERATED: nanogpt_swap -->
 - NVIDIA A100-SXM4-40GB, 40960 MiB, 580.82.07, torch 2.11.0+cu130, Colab session `tokenisers-swap_job-4c6b4d48`; commit `ceb11bac38`, tokenizers prepared at commit `a04d3c3ff3`; generated 2026-11-01T02:01:33Z
@@ -907,18 +622,7 @@ Findings (one seed per tokenizer: the seed-to-seed spread is not measured here):
 - Early training: after 600 steps GPT-2 is at 5.18 nats per token on val, far from the speedrun's target of 3.28; no tokenizer reaches the target. The ranking at this budget need not hold for longer training.
 <!-- END GENERATED: nanogpt_swap -->
 
-**Space-prefix retrain.** The 8 whitespace-isolating variants above (all of ours but `super_bpe`)
-retrained with `pretokenizer="space_prefix"` as `<variant>_sp`: the same 50 MB of training text,
-parameters, size and lexicon, but a word carries the space before it, so that space no longer
-costs a token of its own. They run as a separate job with the same recipe, data source and val documents,
-and the table compares each with its whitespace run above (GPT-2's row for reference).
-
-```bash
-uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap-sp --prepare-only --tokenizers \
-  bpe_frequency_sp wp_bpe_pig_sp wp_bpe_ppig_sp wp_bpe_npmi_sp unigram_lm_sp length_penalized_sp morpheme_bpe_sp mdl_bits_sp
-uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap-sp --gpu A100 --steps 600 --eval-every 100 \
-  --output-dir benchmarks/results/nanogpt_swap_sp
-```
+**Space-prefix retrain.** The 8 whitespace-isolating variants retrained with `pretokenizer="space_prefix"` — same text, parameters and size, but a word carries the space before it. Separate job, same recipe and val documents.
 
 <!-- BEGIN GENERATED: nanogpt_swap_sp -->
 - space-prefix run: NVIDIA A100-SXM4-40GB, 40960 MiB, 580.82.07, commit `2df09a7847`, generated 2026-11-01T10:53:38Z; whitespace run: NVIDIA A100-SXM4-40GB, 40960 MiB, 580.82.07
@@ -937,26 +641,7 @@ uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir /tmp/swap-sp --gpu
 | `gpt2` (reference) | 4.436 | | 1.6851 | | |
 <!-- END GENERATED: nanogpt_swap_sp -->
 
-**Pre-split and data-scaling ablation.** Two follow-ups to the space-prefix retrain in one job of six
-tokenizers, with the same recipe (600 steps, lr 6e-4, val every 100), train stream and val
-documents: three variants retrained with `pretokenizer="gpt2"` (`<variant>_g2`: GPT-2's exact regex
-pre-split, the same 50 MB of text), and three space-prefix variants trained on 300 MB instead of 50
-(`<variant>_sp300`: the first train documents up to 300 MB, an extension of the same ordered stream
-whose first documents are the 50 MB, checked by sha256 like their disjointness from val). Training
-takes about 60-75 bytes of RAM per byte of text, about 20 GB at 300 MB, so `train_tokenizers` trains
-those on a Colab VM (default L4, 53 GB RAM) and downloads each tokenizer as it finishes. All 8 `_g2`
-tokenizers are prepared locally in a pool, and any three of them make the job with any three
-`_sp300`:
-
-```bash
-uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir POOL_G2 --prepare-only --tokenizers bpe_frequency_g2 \
-  wp_bpe_pig_g2 wp_bpe_ppig_g2 wp_bpe_npmi_g2 unigram_lm_g2 length_penalized_g2 morpheme_bpe_g2 mdl_bits_g2
-uv run python -m tokenisers.benchmarks.nanogpt_swap.train_tokenizers --job-dir POOL_SP300 --variants A B C  # Colab L4
-uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir JOB --prepare-only --from-pool POOL_G2 POOL_SP300 \
-  --tokenizers X_g2 Y_g2 Z_g2 A_sp300 B_sp300 C_sp300
-uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir JOB --gpu A100 --steps 600 --eval-every 100 \
-  --output-dir benchmarks/results/nanogpt_swap_ablation
-```
+**Pre-split and data-scaling ablation.** Three variants with `pretokenizer="gpt2"` (50 MB) and three space-prefix variants trained on 300 MB instead of 50. Same recipe, same val documents.
 
 <!-- BEGIN GENERATED: nanogpt_swap_ablation -->
 - ablation run: NVIDIA A100-SXM4-40GB, 40960 MiB, 580.82.07, commit `950506beba`, generated 2026-11-01T16:28:54Z
@@ -976,40 +661,11 @@ uv run python -m tokenisers.benchmarks.nanogpt_swap --job-dir JOB --gpu A100 --s
 
 ### 7. Cross-lingual Tokenization Parity (FLORES+)
 
-How many more tokens does the same content cost in another language? `python -m
-tokenisers.benchmarks.flores` encodes the parallel FLORES+ sentences
-([`openlanguagedata/flores_plus`](https://huggingface.co/datasets/openlanguagedata/flores_plus), CC BY-SA
-4.0, pinned revision) one sentence at a time, with no separator, and reports each language's
-**premium**: its token count divided by English's on the same sentences (Petrov et al. 2023,
-[Language Model Tokenizers Introduce Unfairness Between Languages](https://arxiv.org/abs/2305.15425)).
-Only the devtest split (1,012 sentences per language) is read; dev is never read, and nothing is
-trained or tuned on FLORES+. The languages are English, the 10 FineWeb-2 languages of the training
-mix ("in-mix") and 7 in no tokenizer's training mix ("out-of-mix": Korean, Thai, Tamil, Amharic,
-Greek, Hebrew, Bengali). Two tiers of tokenizers:
-
-- **intrinsic**: the 13 variants at V = 16,384 / 32,768 / 65,536, retrained exactly as for the
-  intrinsic results of sections 2 and 4 (same 52.5 MB train split with 30% FineWeb-2 text,
-  parameters and SIGMORPHON lexicon; training is deterministic). The run checks each retrained
-  tokenizer's test-split bytes/token against the committed leaderboard.
-- **GPT-2 swap**: the tokenizers of section 6 and its follow-ups, loaded read-only from their prepared
-  job directories exactly as the swap job loads them: GPT-2's own (trained by OpenAI on WebText), the
-  two prebuilt TokenMonster English+code vocabularies (50,256 and 32,000 tokens; not trained on
-  FineWeb), and our 9 whitespace variants with their 8 `_sp`, 8 `_g2` and 8 `_sp300` retrains, trained
-  on English FineWeb text at 50,256 tokens.
+Encodes parallel FLORES+ devtest sentences (1,012 per language) and reports the **premium**: each language's token count divided by English's (Petrov et al. 2023). Languages: English, 10 in-mix FineWeb-2 languages, 7 out-of-mix. Two tokenizer tiers: intrinsic (13 variants at V = 16k/32k/64k, 30% multilingual mix) and GPT-2 swap (English-centric).
 
 ```bash
-# FLORES+ is gated (approved automatically): accept its terms on Hugging Face with the account whose
-# token is used. The TokenMonster vocabularies need the tokenmonster package.
 uv run --with tokenmonster==1.1.12 python -m tokenisers.benchmarks.flores --skip-memory-check
 ```
-
-The files are cached in the data pipeline's cache dir (`flores_plus-<revision>/devtest/`);
-`--flores-dir` reads a local copy instead, and `--vocab-sizes` or `--swap-jobs` with no value skips
-that tier. The committed run trained inside a 5 GiB `systemd-run -p MemoryMax=` scope (hence
-`--skip-memory-check`). Every tokenizer's per-language numbers are in
-[`flores_by_language.csv`](benchmarks/results/flores/flores_by_language.csv), the provenance
-(dataset revision and file hashes, training records, job directories and hashes) in
-[`flores.json`](benchmarks/results/flores/flores.json).
 
 <!-- BEGIN GENERATED: flores -->
 - FLORES+ `openlanguagedata/flores_plus` at `1147e2dc59f3` (CC BY-SA 4.0), devtest split only: 1,012 parallel sentences per language, each encoded on its own with no separator; never used for training
@@ -1142,55 +798,10 @@ Findings:
 
 ### Known limitations
 
-- **One scale, one split.** Sections 1-5 and the intrinsic tier of section 7 use one 52.5 MB train
-  split built with split seed 0; the 100 / 200 MB presets were not run. The tokenizer swap (section
-  6) trains its tokenizers on other text: the first 50 MB of FineWeb train documents (300 MB for
-  `_sp300`). Tokenizer training is deterministic, so only the LMs have seeds: 3 per tokenizer for
-  the proxy LM (mean ± sample sd), one per tokenizer for the swap (llm.c's fixed seed).
-- **PMI-ranked variants barely compress.** `wordpiece_pmi`, `wp_bpe_ft` and `wp_bpe_base` encode
-  held-out text at ~1.01–1.03 bytes per token and use 282–1,050 of their 16,384 tokens on it (tokka
-  "unique tokens used"): their scores rank rare pairs highest, so the vocabulary fills with long
-  tokens that hardly recur. `wp_bpe_scp` sits in between (~2.0 macro bytes/token). These are the
-  scorers' behaviour as specified, not failed runs; their proxy-LM BPB is correspondingly poor.
-- **No duplicate variants at this scale.** The fingerprint check found no byte-identical tokenizers
-  among the 13 variants at any size, so all 13 are reported. `wordpiece_pmi` and `wp_bpe_ft` are
-  distinct but nearly identical in every metric.
-- **Not benchmarked.** `unigram_sampling` and `byte_entropy` are implemented but not in the suite.
-  BPE-dropout appears only in section 3, as `bpe_dropout_p0.1`: the `bpe_frequency` tokenizer with
-  dropout p = 0.1 on the LM's training ids (validation ids deterministic).
-- **Proxy LM.** A 2-layer, d_model = 128, NoPE Transformer trained on 10 MB per tokenizer; rankings
-  at this scale need not carry over to real LMs. Its training documents come from the split the
-  tokenizers were trained on; only the val split it is scored on is held out. With 3 seeds, the
-  macro BPB of the top five (2.854–2.892) differ by about the seed-to-seed spread (sd up to 0.029),
-  so their order is not significant; the gaps to `unigram_lm` and below are larger. The big proxy LM
-  (8 layers, d_model = 512, 100 MB per tokenizer, 11 of the variants) separates four tokenizers from
-  `bpe_frequency` and reorders the ones below it (section 3, small vs big proxy LM); it is still a
-  proxy: ~33M parameters trained on 27-62M tokens. In both tiers the seeds vary only the LM's
-  initialization (one fixed sample of LM text, in a fixed order), so the standard errors leave out
-  data-sampling variance and the separations hold for that sample only.
-- **Morphology.** Morph F1 uses SIGMORPHON 2022 gold for 5 languages (eng, fra, hun, rus, spa).
-  `morpheme_bpe` is trained with a lexicon from the SIGMORPHON train split (gold test words
-  removed), i.e. with supervision the other variants do not get.
-- **Throughput.** Single-threaded encode/decode, one call per document, median of 5 timed passes
-  over the 3.1 MB test split. MB/s depend on the machine and its load; three measurements of the
-  same tokenizers exist:
-  - *Sections 2 and 4*: the full-suite runs on the shared laptop, unpinned, with the desktop
-    session active. Two runs of the V = 65,536 suite differed by up to 1.7x (1.55x encode, 1.71x
-    decode; the first overlapped a busier desktop and the start of another benchmark job; the
-    committed numbers are from the second, and all other metrics were identical).
-  - *Section 5, laptop*: the same tokenizers re-timed pinned to one performance core
-    (`taskset -c 3`, 4.8 GHz max, `powersave` governor, no system settings changed; the desktop
-    session and the Colab job's 30 s status polls ran on the other cores). Its two passes differ by a median of 1.02x and at most 1.15x
-    (encode) / 1.13x (decode). Against sections 2 and 4 it is a median 1.07x faster at encoding
-    and 1.18x at decoding, and up to 1.5x / 2.0x faster in the V = 65,536 table.
-  - *Section 5, Colab*: a CPU runtime whose 2 vCPUs are one AMD EPYC 7B12 core with 2 hyperthreads
-    (KVM). It was not quieter than the pinned laptop: the median pass-to-pass spread is the same
-    (1.03x encode, 1.02x decode) but single cells differ by up to 1.50x / 1.52x between its two
-    passes (`wp_bpe_ft` at V = 16,384; 10 of 39 tokenizers differ by more than 1.2x in encode or
-    decode). The cause was not isolated: the core's two hyperthreads also run the Jupyter kernel
-    that answers the job's status polls, and the host is shared. Its MB/s are a median 0.85x
-    (encode) / 0.84x (decode) of the pinned laptop's.
-
-  Compare MB/s between tokenizers within one table and one pass, not across tables, and treat a
-  difference smaller than the table's spread as noise. The pinned laptop table has the smallest
-  spread.
+- **One scale, one split.** Sections 1-5 use one 52.5 MB train split (seed 0). The swap (section 6) trains on different text. Tokenizer training is deterministic; only LMs have seeds.
+- **PMI-ranked variants barely compress.** `wordpiece_pmi`, `wp_bpe_ft`, `wp_bpe_base` encode at ~1.01-1.03 bytes/token using 282-1,050 of 16,384 tokens. This is the scorers' intended behaviour.
+- **No duplicate variants.** The fingerprint check found no byte-identical tokenizers among the 13 variants at any size.
+- **Not benchmarked.** `unigram_sampling` and `byte_entropy` are implemented but not in the suite. BPE-dropout appears only in section 3.
+- **Proxy LM.** A NoPE Transformer (no positional encoding); rankings at this scale need not carry to real LMs. With 3 seeds, the top five of the small LM are within noise; the big LM resolves four above `bpe_frequency` but not their mutual order.
+- **Morphology.** Morph F1 uses SIGMORPHON 2022 gold for 5 languages. `morpheme_bpe` has supervision the others do not.
+- **Throughput.** Single-threaded, load-dependent. Three measurements exist (sections 2/4, section 5 laptop, section 5 Colab); compare within one table only. The pinned-laptop table has the smallest run-to-run spread (median 1.02x).
