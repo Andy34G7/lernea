@@ -111,7 +111,7 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--allow-local-fallback", action="store_true",
                         help="If Colab fails, run locally and record the fallback in the results")
     parser.add_argument("--preset", choices=["small", "big"], default="small",
-                        help="small: the default tier above; big: 8x512 LM, 100 MB budget, L4, 11 variants, "
+                        help="small: the default tier above; big: 8x512 LM, 100 MB budget, L4, 12 variants, "
                              "concurrency 1, output benchmarks/results/colab_big (explicit flags override)")
     parser.add_argument("--concurrency", type=int, default=1,
                         help="(variant, seed) runs trained at once on the one GPU, as separate processes")
