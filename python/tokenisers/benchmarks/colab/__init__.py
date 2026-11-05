@@ -80,7 +80,7 @@ try:
 except OSError:
     out["log_tail"] = ""
 runs = os.path.join(d, "runs")
-out["runs"] = sorted(f for f in os.listdir(runs) if f.endswith(".json")) if os.path.isdir(runs) else []
+out["runs"] = sorted(f for f in os.listdir(runs) if f.endswith((".json", ".pt"))) if os.path.isdir(runs) else []
 print({marker!r} + json.dumps(out))
 """
 
@@ -264,7 +264,8 @@ class ColabOrchestrator:
         if files is None:
             files = [job_dir / "config.json", *sorted(job_dir.glob("*.npz"))]
         uploads: List[Path] = [script, *map(Path, files)]
-        done_runs = sorted((job_dir / "runs").glob("*.json"))  # from an earlier, dropped session: not retrained
+        done_runs = sorted(f for f in (job_dir / "runs").iterdir()
+                          if f.suffix in (".json", ".pt")) if (job_dir / "runs").is_dir() else []
         control = job_dir / "control.py"
         control.write_text(CONTROL_SCRIPT.format(remote_dir=REMOTE_DIR, marker=STATUS_MARKER, script=script.name),
                            encoding="utf-8")

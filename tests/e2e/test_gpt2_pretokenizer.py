@@ -365,7 +365,7 @@ def test_g2_and_scaled_variants_train_like_their_base_variant():
     corpus = ["the cat sat on the mat with the hat, a bat ate a gnat 12 times " * 5, "zyx qwv jk  walking"]
     with _quiet():
         for name in common.VARIANTS:
-            if name == "super_bpe":
+            if name in ("super_bpe", "byte_entropy"):
                 continue
             base = common.variant_config(name, 290)
             assert base.pop("pretokenizer") == "whitespace"

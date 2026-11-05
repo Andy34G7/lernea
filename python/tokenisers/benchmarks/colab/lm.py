@@ -151,8 +151,12 @@ class ByteBudgetTrainer:
         batch_size: int = 8,
         token_bytes: Optional[np.ndarray] = None,
         log_every: int = 10,
+        grad_accum_steps: int = 1,
     ) -> List[Dict[str, float]]:
         """Returns the training curve: one entry per ``log_every`` steps plus the first and last."""
+        if batch_size % grad_accum_steps != 0:
+            raise ValueError(f"batch_size ({batch_size}) must be divisible by grad_accum_steps ({grad_accum_steps})")
+        micro_batch = batch_size // grad_accum_steps
         ids = np.asarray(token_ids, dtype=np.int64)
         if len(ids) < seq_len + 1:
             ids = np.resize(ids, seq_len + 1)
@@ -179,19 +183,23 @@ class ByteBudgetTrainer:
                     self.epochs = float(math.floor(self.epochs) + 1)
                 starts.append(window * seq_len)
                 window += 1
-            batch = np.stack([ids[s : s + seq_len + 1] for s in starts])
-            t = torch.from_numpy(batch).to(self.device)
             lr = self._lr_at(step, total_steps, warmup)
             for g in self.optimizer.param_groups:
                 g["lr"] = lr
 
             self.optimizer.zero_grad(set_to_none=True)
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=self.bf16):
-                logits = self.model(t[:, :-1])
-                loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)).float(), t[:, 1:].reshape(-1))
-            loss_val = float(loss.item())
+            accum_loss = 0.0
+            for ai in range(grad_accum_steps):
+                mb_starts = starts[ai * micro_batch : (ai + 1) * micro_batch]
+                batch = np.stack([ids[s : s + seq_len + 1] for s in mb_starts])
+                t = torch.from_numpy(batch).to(self.device)
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=self.bf16):
+                    logits = self.model(t[:, :-1])
+                    loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)).float(), t[:, 1:].reshape(-1))
+                (loss / grad_accum_steps).backward()
+                accum_loss += float(loss.item())
+            loss_val = accum_loss / grad_accum_steps
             self.step_loss(loss_val)
-            loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
 
@@ -333,7 +341,8 @@ def _run_one(job_dir: str, name: str, seed: int, device: Optional[str] = None) -
                                 weight_decay=tr.get("weight_decay", 0.01), warmup_frac=tr.get("warmup_frac"),
                                 bf16=bf16)
     curve = trainer.train_on_token_stream(
-        train_ids, seq_len=tr["seq_len"], batch_size=tr["batch_size"], token_bytes=token_bytes
+        train_ids, seq_len=tr["seq_len"], batch_size=tr["batch_size"], token_bytes=token_bytes,
+        grad_accum_steps=tr.get("grad_accum_steps", 1),
     )
     ev = BpbEvaluator()
     val = {
