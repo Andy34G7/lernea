@@ -500,7 +500,8 @@ def run_job(job_dir: str) -> Dict[str, Any]:
             "train_docs_decoded": len(source.train), "train_bytes_decoded": sum(source.train_bytes),
             "train_docs_dropped_as_val": source.dropped_as_val, "shards": [src["val_shard"], *source.shards_used]}
     result = {"backend": backend, "timings": timings, "data": data, "seconds": round(time.time() - t_job, 1),
-              "runs": sorted(p.name for p in runs.iterdir() if p.suffix in (".json", ".pt"))}
+              "runs": sorted(p.stem for p in runs.glob("*.json")),
+              "checkpoints": sorted(p.stem for p in runs.glob("*.pt"))}
     write_json_atomic(job / "result.json", result)
     return result
 

@@ -293,7 +293,8 @@ def variant_config(name: str, vocab_size: int, pretokenizer: Any = None) -> Dict
     if base == "byte_entropy":
         if pretokenizer is not None:
             raise ValueError("byte_entropy has no pre-tokenizer modes")
-        return {"class": "ByteEntropyTokenizer"}
+        return {"class": "ByteEntropyTokenizer", "entropy_threshold": 4.2, "min_patch_len": 2,
+                "max_patch_len": 16, "context_order": 3, "smoothing_alpha": 0.05, "max_contexts": None}
     raise ValueError(f"unknown variant {name!r}")
 
 
