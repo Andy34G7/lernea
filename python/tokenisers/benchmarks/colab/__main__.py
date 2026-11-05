@@ -32,13 +32,14 @@ from tokenisers.data import DataPipeline
 
 DOMAINS = ("english", "multilingual", "code")
 DROPOUT_VARIANT = "bpe_dropout_p0.1"
+SAMPLING_VARIANT = "unigram_sampling"
 # --preset big: defaults only, so any explicit flag still wins. The small tier is the parser's defaults.
 # 64 x 512 = 32,768 tokens per step; warmup 2% of steps, cosine decay (ByteBudgetTrainer), bf16 on CUDA.
 BIG_PRESET: Dict[str, Any] = {
     "n_layers": 8, "d_model": 512, "n_heads": 8, "d_ffn": 2048, "seq_len": 512, "batch_size": 64,
     "lr": 6e-4, "weight_decay": 0.1, "warmup_frac": 0.02, "bf16": True, "byte_budget": 100_000_000,
-    # concurrency 1: on the 22 GB L4, 3 and 2 concurrent runs ran out of GPU memory (one run reached 11.1 GiB).
-    "gpu": "L4", "concurrency": 1, "seeds": [0, 1, 2], "output_dir": "benchmarks/results/colab_big",
+    "grad_accum_steps": 4,  # micro_batch=16: logits 16x512x16384 = 0.5 GiB instead of 2 GiB
+    "gpu": "L4", "concurrency": 2, "seeds": [0, 1, 2], "output_dir": "benchmarks/results/colab_big",
     # LM text: the train split plus an LM text pool up to 120 MB in all (budget + 10% needs 110 MB).
     # The job (~0.9 GB of ids) is kept on disk, not in a tmpfs /tmp, so a failed run can be resumed.
     "lm_text_bytes": 120_000_000, "job_dir": Path("benchmarks/results/colab_big/job"),
@@ -49,9 +50,15 @@ BIG_PRESET: Dict[str, Any] = {
 }
 
 
-def _encode_docs(tok: Any, docs: List[str], dtype: Any, dropout: float | None = None) -> np.ndarray:
-    """Ids of every document, concatenated. With ``dropout``, document i uses BPE-dropout seed i."""
-    kw = (lambda i: {"dropout": dropout, "seed": i}) if dropout else (lambda i: {})
+def _encode_docs(tok: Any, docs: List[str], dtype: Any, dropout: float | None = None,
+                  sample: bool = False) -> np.ndarray:
+    """Ids of every document, concatenated. With ``dropout`` or ``sample``, document i uses seed i."""
+    if dropout:
+        kw = lambda i: {"dropout": dropout, "seed": i}
+    elif sample:
+        kw = lambda i: {"sample": True, "seed": i}
+    else:
+        kw = lambda i: {}
     parts = [np.asarray(tok.encode(d, **kw(i)), dtype=dtype) for i, d in enumerate(docs)]
     return np.concatenate(parts) if parts else np.zeros(0, dtype=dtype)
 
@@ -111,9 +118,14 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--warmup-frac", type=float, default=None,
                         help="Warmup as a fraction of steps (default: 10%% of steps, at most 200)")
+    parser.add_argument("--grad-accum-steps", type=int, default=1,
+                        help="Gradient accumulation steps: splits batch_size into micro-batches to reduce "
+                             "peak GPU memory (batch_size must be divisible by this value)")
     parser.add_argument("--bf16", action="store_true", help="bf16 autocast when the GPU supports it")
     parser.add_argument("--no-dropout-variant", action="store_true",
                         help=f"Skip {DROPOUT_VARIANT} (bpe_frequency trained on BPE-dropout encodings)")
+    parser.add_argument("--no-sampling-variant", action="store_true",
+                        help=f"Skip {SAMPLING_VARIANT} (unigram_lm trained on sampled encodings)")
     parser.add_argument("--lm-text-bytes", type=int, default=None,
                         help="LM text = the train split plus an LM text pool (same sources and mix, disjoint "
                              "from val/test; DataPipeline.lm_pool) up to about this many bytes. Default: the "
@@ -158,12 +170,15 @@ def _prepare(args: argparse.Namespace, ds: Any, job_dir: Path, spec: Dict[str, A
     unique = {n: t for n, t in models.items() if n not in duplicates}
     if not args.no_dropout_variant and "bpe_frequency" in unique:
         unique[DROPOUT_VARIANT] = unique["bpe_frequency"]
+    if not args.no_sampling_variant and "unigram_lm" in unique:
+        unique[SAMPLING_VARIANT] = unique["unigram_lm"]
     print(f"Encoding {lm_text['bytes']:,} bytes of LM text ({lm_text['pool_bytes']:,} from the pool) per tokenizer")
     for name, tok in unique.items():
         dtype = np.uint16 if tok.vocab_size <= 65536 else np.uint32
         dropout = 0.1 if name == DROPOUT_VARIANT else None
+        sample = name == SAMPLING_VARIANT
         token_bytes = _token_bytes(tok)
-        arrays = {"train": _encode_docs(tok, lm_docs, dtype, dropout), "token_bytes": token_bytes}
+        arrays = {"train": _encode_docs(tok, lm_docs, dtype, dropout, sample=sample), "token_bytes": token_bytes}
         for d, texts in val.items():
             arrays[f"val_{d}"] = _encode_docs(tok, texts, dtype)
         lm_bytes = int(token_bytes[arrays["train"]].sum())
@@ -192,14 +207,16 @@ def main(argv: List[str] | None = None) -> None:
     lm = {"d_model": args.d_model, "n_layers": args.n_layers, "n_heads": args.n_heads,
           "d_ffn": args.d_ffn, "max_seq_len": args.seq_len}
     train_cfg = {"byte_budget": args.byte_budget, "seq_len": args.seq_len, "batch_size": args.batch_size,
-                 "lr": args.lr, "eval_stride": max(1, args.seq_len // 2)}
+                 "lr": args.lr, "eval_stride": max(1, args.seq_len // 2),
+                 "grad_accum_steps": args.grad_accum_steps}
     if args.preset != "small" or args.weight_decay != 0.01 or args.warmup_frac is not None or args.bf16:
         train_cfg.update(weight_decay=args.weight_decay, warmup_frac=args.warmup_frac, bf16=args.bf16)
     # Everything the prepared job depends on; --resume refuses a job prepared with other values.
     spec = {"lm": lm, "train": train_cfg, "seeds": args.seeds, "domains": list(DOMAINS),
             "data": {"vocab_size": args.vocab_size, "train_bytes": args.train_bytes, "data_seed": args.data_seed,
                      "offline": args.offline, "lm_text_bytes": args.lm_text_bytes, "variants": args.variants,
-                     "dropout_variant": not args.no_dropout_variant}}
+                     "dropout_variant": not args.no_dropout_variant,
+                     "sampling_variant": not args.no_sampling_variant}}
 
     job_dir = args.job_dir or Path(tempfile.mkdtemp(prefix="tokenisers-bpb-"))
     config_path = job_dir / "config.json"
@@ -255,9 +272,18 @@ def main(argv: List[str] | None = None) -> None:
         train=train_cfg, byte_budget=args.byte_budget,
         seeds=args.seeds, val_domains=list(DOMAINS), lm_train_docs=prep["lm_text"]["docs"], lm_text=prep["lm_text"],
         lm_seconds=result["seconds"], morphology=prep["morphology"], job_prepared=prep["provenance"],
-        variants_extra={DROPOUT_VARIANT: "bpe_frequency tokenizer; LM train ids encoded with BPE-dropout p=0.1, "
-                                         "validation ids deterministic"}
-        if DROPOUT_VARIANT in cfg["tokenizers"] else {},
+        variants_extra={
+            **(
+                {DROPOUT_VARIANT: "bpe_frequency tokenizer; LM train ids encoded with BPE-dropout p=0.1, "
+                                  "validation ids deterministic"}
+                if DROPOUT_VARIANT in cfg["tokenizers"] else {}
+            ),
+            **(
+                {SAMPLING_VARIANT: "unigram_lm tokenizer; LM train ids encoded with FFBS sampling, "
+                                   "validation ids deterministic (greedy Viterbi)"}
+                if SAMPLING_VARIANT in cfg["tokenizers"] else {}
+            ),
+        },
     )
     doc = {"meta": meta, "models": result["models"]}
     out = Path(args.output_dir)

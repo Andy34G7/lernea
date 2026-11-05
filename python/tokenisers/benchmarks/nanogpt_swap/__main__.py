@@ -487,6 +487,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument("--timeout", type=float, default=30 * 3600, help="Colab job wall-clock limit (s)")
     parser.add_argument("--poll-interval", type=float, default=60.0)
     parser.add_argument("--colab-bin", default=None)
+    parser.add_argument("--save-checkpoints", action="store_true",
+                        help="Save model state_dict after training (runs/<name>.pt alongside the result JSON)")
     parser.add_argument("--output-dir", type=Path, default=REPO / "benchmarks" / "results" / "nanogpt_swap")
     args = parser.parse_args(argv)
     if args.gpu not in GPUS:
@@ -524,7 +526,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     cfg.update(train=train, trainer_args=recipe_args(steps, eval_every, args.lr), mbs=args.mbs or DEFAULT_MBS[args.gpu],
                mode="pilot" if args.pilot else "full", gpu=args.gpu,
                launched={k: start[k] for k in ("git_commit", "git_dirty")},  # stamped on each run (--resume)
-               eval_docs=args.pilot_eval_docs if args.pilot else None)
+               eval_docs=args.pilot_eval_docs if args.pilot else None,
+               save_checkpoint=args.save_checkpoints)
     # The job's config.json keeps every prepared tokenizer (a later --resume runs them all); the VM
     # gets its own config.json with only this run's.
     (run_dir / "config.json").write_text(json.dumps(cfg, indent=1), encoding="utf-8")

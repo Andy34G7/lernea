@@ -57,6 +57,7 @@ VARIANTS: Tuple[str, ...] = (
     "super_bpe",
     "morpheme_bpe",
     "unigram_lm",
+    "byte_entropy",
 )
 
 # "<variant>_sp": the variant retrained with pretokenizer="space_prefix" (a word takes the one space
@@ -65,7 +66,7 @@ VARIANTS: Tuple[str, ...] = (
 # MB, which the benchmark that trains it records; the parameters are the same. SuperBPE has no
 # pre-tokenizer modes.
 PRETOKENIZER_SUFFIXES: Dict[str, str] = {"sp": "space_prefix", "g2": "gpt2"}
-SPACE_PREFIX_VARIANTS: Dict[str, str] = {f"{v}_sp": v for v in VARIANTS if v != "super_bpe"}
+SPACE_PREFIX_VARIANTS: Dict[str, str] = {f"{v}_sp": v for v in VARIANTS if v not in ("super_bpe", "byte_entropy")}
 
 
 def parse_variant(name: str) -> Tuple[str, str, Optional[int]]:
@@ -73,7 +74,7 @@ def parse_variant(name: str) -> Tuple[str, str, Optional[int]]:
     ("mdl_bits", "whitespace", None), ``"mdl_bits_g2"`` -> (..., "gpt2", None), ``"mdl_bits_sp300"``
     -> (..., "space_prefix", 300). Raises ValueError for an unknown name."""
     m = re.fullmatch(r"(.+)_(sp|g2)([1-9][0-9]*)?", name)
-    if m and m[1] in VARIANTS and m[1] != "super_bpe":
+    if m and m[1] in VARIANTS and m[1] not in ("super_bpe", "byte_entropy"):
         return m[1], PRETOKENIZER_SUFFIXES[m[2]], int(m[3]) if m[3] else None
     if name in VARIANTS:
         return name, "whitespace", None
@@ -289,6 +290,10 @@ def variant_config(name: str, vocab_size: int, pretokenizer: Any = None) -> Dict
                 "lambda_weight": MORPHEME_LAMBDA, **pretok}
     if base == "unigram_lm":
         return {"class": "UnigramTokenizer", "num_iterations": 10, "shrinking_factor": 0.75, **pretok}
+    if base == "byte_entropy":
+        if pretokenizer is not None:
+            raise ValueError("byte_entropy has no pre-tokenizer modes")
+        return {"class": "ByteEntropyTokenizer"}
     raise ValueError(f"unknown variant {name!r}")
 
 

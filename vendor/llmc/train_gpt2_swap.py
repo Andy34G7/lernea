@@ -924,8 +924,10 @@ if __name__ == "__main__":
     timings = timings[-20:]
     print0(f"final {len(timings)} iters avg: {np.mean(timings)*1000:.3f}ms")
     print0(f"peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB")
-    # >>> SWAP: final record
+    # >>> SWAP: save checkpoint and final record
     if SWAP is not None:
+        if SWAP.get("checkpoint_path"):
+            torch.save(raw_model.state_dict(), SWAP["checkpoint_path"])
         SWAP_RESULT.update(done=True, params=sum(p.numel() for p in raw_model.parameters()),
                            grad_accum_steps=grad_accum_steps, torch=torch.__version__, device=device,
                            gpu=torch.cuda.get_device_name() if device_type == "cuda" else None,

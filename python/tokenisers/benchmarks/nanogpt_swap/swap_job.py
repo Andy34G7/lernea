@@ -330,6 +330,8 @@ def run_trainer(job: Path, cfg: Dict[str, Any], run: Path, vocab_size: int, val_
     restarts."""
     settings = {"vocab_size": vocab_size, "padded_vocab_size": padded_vocab(vocab_size), "val_bytes": val_bytes,
                 "result_path": str(run / "trainer.json")}
+    if cfg.get("save_checkpoint"):
+        settings["checkpoint_path"] = str(run / "checkpoint.pt")
     (run / "swap.json").write_text(json.dumps(settings))
     env = {**os.environ, "SWAP_CONFIG": str(run / "swap.json"), **cfg.get("trainer_env", {})}
     for k in ("RANK", "LOCAL_RANK", "WORLD_SIZE"):  # one process, no DDP
@@ -485,6 +487,9 @@ def run_job(job_dir: str) -> Dict[str, Any]:
             record["trainer"] = run_trainer(job, cfg, run, tok.n_vocab + 1, val_bytes)
             ev = record["trainer"]["evals"][-1]
             log(f"{name}: step {ev['step']} val_bpb {ev['val_bpb']:.4f} ({ev['val_loss']:.4f} nats/token)")
+            ckpt = run / "checkpoint.pt"
+            if ckpt.exists():
+                shutil.move(str(ckpt), str(runs / f"{name}.pt"))
             shutil.rmtree(run / "log", ignore_errors=True)
             for f in ("train.bin", "val.bin"):
                 (run / f).unlink()
@@ -495,7 +500,7 @@ def run_job(job_dir: str) -> Dict[str, Any]:
             "train_docs_decoded": len(source.train), "train_bytes_decoded": sum(source.train_bytes),
             "train_docs_dropped_as_val": source.dropped_as_val, "shards": [src["val_shard"], *source.shards_used]}
     result = {"backend": backend, "timings": timings, "data": data, "seconds": round(time.time() - t_job, 1),
-              "runs": sorted(p.stem for p in runs.glob("*.json"))}
+              "runs": sorted(p.name for p in runs.iterdir() if p.suffix in (".json", ".pt"))}
     write_json_atomic(job / "result.json", result)
     return result
 
