@@ -1,4 +1,4 @@
-# Tokenizers
+# Lernea
 
 Rust (PyO3/maturin) + Python research platform for subword tokenization algorithms. Trains, evaluates and compares 13+ tokenizer variants across compression, intrinsic quality, proxy-LM BPB, GPT-2 swap and cross-lingual parity (FLORES+).
 
