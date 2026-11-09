@@ -31,8 +31,8 @@ logger = logging.getLogger("tokenisers.dashboard")
 REPO_ROOT = Path(__file__).resolve().parents[3]
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-# The server trains tokenizers on demand, so it only ever listens on loopback.
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
+PUBLIC_HOSTS = ("0.0.0.0",)
 MIN_VOCAB_SIZE = 260
 MAX_VOCAB_SIZE = 1000          # matches the playground's number input
 CACHE_ENTRIES = 4              # trained tokenizer sets kept (LRU)
@@ -645,7 +645,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _origin_ok(self) -> bool:
-        """Reject DNS-rebinding (foreign Host) and cross-site requests (foreign Origin)."""
+        """On loopback: reject DNS-rebinding and cross-site requests. In public mode: allow all origins."""
+        if getattr(self.server, "public", False):
+            return True
         port = self.server.server_address[1]
         allowed = {f"{h}:{port}" for h in LOOPBACK_HOSTS}
         origin = self.headers.get("Origin")
@@ -658,6 +660,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not self._origin_ok():
             return
         path = self.path.split("?")[0]
+
+        if path == "/healthz":
+            self._send(HTTPStatus.OK, b"ok", "text/plain")
+            return
 
         if path == "/api/benchmarks":
             try:
@@ -790,15 +796,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 class DashboardServer:
-    """ThreadingHTTPServer on loopback with lifecycle controls."""
+    """ThreadingHTTPServer with lifecycle controls. Loopback by default; ``0.0.0.0`` for public deploy."""
+
+    ALLOWED_HOSTS = LOOPBACK_HOSTS + PUBLIC_HOSTS
 
     def __init__(self, host: str = "127.0.0.1", port: int = 8765, offline: bool = False) -> None:
-        if host not in LOOPBACK_HOSTS:
-            raise ValueError(f"dashboard binds loopback only ({', '.join(LOOPBACK_HOSTS)}), got {host!r}; use an SSH tunnel for remote access")
+        if host not in self.ALLOWED_HOSTS:
+            raise ValueError(f"host must be one of {self.ALLOWED_HOSTS}, got {host!r}")
         self.host = host
         self.port = port
         self.server = ThreadingHTTPServer((host, port), DashboardHandler)
         self.server.tokenizer_cache = TokenizerCache(offline=offline)  # type: ignore[attr-defined]
+        self.server.public = host in PUBLIC_HOSTS  # type: ignore[attr-defined]
         self._thread: Optional[threading.Thread] = None
 
     def start(self, blocking: bool = True) -> None:

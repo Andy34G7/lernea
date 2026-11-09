@@ -334,9 +334,15 @@ def test_run_suite_stub_removed(dashboard_server: str) -> None:
     assert status == 404
 
 
-def test_server_refuses_non_loopback_bind() -> None:
+def test_server_refuses_unknown_host_bind() -> None:
     with pytest.raises(ValueError):
-        DashboardServer(host="0.0.0.0", port=find_free_port())
+        DashboardServer(host="192.168.1.1", port=find_free_port())
+
+
+def test_server_allows_public_bind() -> None:
+    srv = DashboardServer(host="0.0.0.0", port=find_free_port())
+    assert srv.server.public is True
+    srv.server.server_close()
 
 
 def test_tokenizer_cache_is_bounded_lru(monkeypatch) -> None:

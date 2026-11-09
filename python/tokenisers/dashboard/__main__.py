@@ -7,10 +7,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import webbrowser
 
-from tokenisers.dashboard.server import LOOPBACK_HOSTS, start_server
+from tokenisers.dashboard.server import DashboardServer, start_server
 
 
 def main() -> None:
@@ -20,15 +21,15 @@ def main() -> None:
     )
     parser.add_argument(
         "--host",
-        default="127.0.0.1",
-        choices=LOOPBACK_HOSTS,
-        help="Loopback interface to bind (default: 127.0.0.1); use an SSH tunnel for remote access",
+        default=os.environ.get("HOST", "127.0.0.1"),
+        choices=DashboardServer.ALLOWED_HOSTS,
+        help="Interface to bind (default: 127.0.0.1, or HOST env var; 0.0.0.0 for public deploy)",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=8765,
-        help="Port number to bind (default: 8765)",
+        default=int(os.environ.get("PORT", "8765")),
+        help="Port number to bind (default: 8765, or PORT env var)",
     )
     parser.add_argument(
         "--offline",
