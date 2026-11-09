@@ -28,7 +28,7 @@ from tokenisers.benchmarks.report import (colab_compare_stats, render_colab, ren
 logger = logging.getLogger("tokenisers.dashboard")
 
 # Determine repository root
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(os.environ["REPO_ROOT"]) if "REPO_ROOT" in os.environ else Path(__file__).resolve().parents[3]
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
