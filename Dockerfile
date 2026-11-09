@@ -26,6 +26,7 @@ COPY python/ python/
 COPY benchmarks/results/ benchmarks/results/
 
 ENV HOST=0.0.0.0
+ENV REPO_ROOT=/app
 EXPOSE 10000
 
 CMD ["python", "-m", "tokenisers.dashboard"]
