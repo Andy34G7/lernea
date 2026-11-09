@@ -11,7 +11,7 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY python/ python/
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
 COPY benchmarks/results/ benchmarks/results/
 
 RUN pip install --no-cache-dir maturin && \
