@@ -22,10 +22,11 @@ Rust (PyO3/maturin) + Python research platform for subword tokenization algorith
 │   ├── models.py                   # Python API (BpeTokenizer, UnigramTokenizer, etc.)
 │   ├── wrapper.py                  # HuggingFace PreTrainedTokenizer subclass
 │   ├── data/                       # Dataset pipeline (FineWeb-Edu, FineWeb-2, StarCoder, SIGMORPHON)
-│   ├── dashboard/                  # Interactive web dashboard & REST API
+│   ├── dashboard/                  # Static site build: writes site/data.js from benchmarks/results
 │   └── benchmarks/                 # Tokka-Bench, intrinsic, proxy-LM, FLORES+, throughput, GPT-2 swap
 ├── vendor/tokka-bench/             # Vendored reference suite
 ├── benchmarks/results/             # Generated JSON, CSV and Markdown leaderboards
+├── site/                           # Static results page: index.html, style.css, app.js, data.js
 └── tests/e2e/                      # E2E & adversarial tests
 ```
 
@@ -79,8 +80,9 @@ cargo test --workspace
 uv run maturin develop --release
 uv run pytest tests/e2e/ -v
 
-# 2. Dashboard (http://127.0.0.1:8765)
-uv run python -m tokenisers.dashboard --port 8765
+# 2. Results site (static; deployed to GitHub Pages from site/)
+uv run python -m tokenisers.dashboard           # rewrites site/data.js (--skip-playground keeps the playground block)
+python -m http.server -d site 8765              # preview at http://127.0.0.1:8765
 
 # 3. Prepare corpus (FineWeb-Edu + FineWeb-2 + code, document-disjoint train/val/test)
 uv run python -m tokenisers.data --preset small --sigmorphon eng fra hun rus spa

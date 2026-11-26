@@ -139,8 +139,9 @@ section > p, section > ul, section > dl, .fold > ul { max-width: 72ch; }
 .bad { color: var(--bad); }
 .sd { color: var(--muted); font-size: 0.9em; white-space: nowrap; }
 
-.scope { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin: 24px 0 8px; max-width: none; }
-.scope div { background: var(--surface); padding: 14px 16px; }
+.scope { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin: 24px 0 8px; max-width: none; }
+/* Hairlines drawn by each cell, so an empty last cell in a wrapped row shows no grey block */
+.scope div { padding: 14px 16px; box-shadow: 1px 0 0 var(--border), 0 1px 0 var(--border); }
 .scope dt { font-size: 13px; color: var(--text-2); }
 .scope dd { margin: 2px 0 0; font-size: 22px; font-weight: 620; letter-spacing: -0.01em; }
 .scope dd small { display: block; font-size: 13px; font-weight: 400; color: var(--text-2); letter-spacing: 0; }
@@ -351,3 +352,4 @@ footer { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-b
 .pair > * { min-width: 0; }
 .pair .note { margin: 0 0 6px; }
 #levels td:last-child { white-space: nowrap; }
+#levels td:nth-child(2) { min-width: 240px; }
