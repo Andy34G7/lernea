@@ -1,7 +1,5 @@
-"""
-Tokenisers Lab Interactive Benchmark Dashboard and Intelligence API.
-"""
+"""Static site build for the Lernea benchmark page (see build.py)."""
 
-from tokenisers.dashboard.server import DashboardServer, create_server, start_server
+from tokenisers.dashboard.build import build_site, load_benchmark_data
 
-__all__ = ["DashboardServer", "create_server", "start_server"]
+__all__ = ["build_site", "load_benchmark_data"]
