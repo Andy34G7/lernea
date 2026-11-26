@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Lernea: subword tokeniser benchmarks</title>
+  <meta name="description" content="Benchmark results for 13 subword tokenisation algorithms: compression, vocabulary use, throughput, language-model loss and cross-lingual cost." />
+  <meta name="color-scheme" content="light dark" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M11 8v16h11' fill='none' stroke='%23fff' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  <script>
+    try { const t = localStorage.getItem('lernea-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}
+  </script>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+  <script defer src="data.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="topbar">
+    <a class="brand" href="#about">Lernea</a>
+    <label class="jump">
+      <span class="sr">Jump to section</span>
+      <select id="jump" aria-label="Jump to section"></select>
+    </label>
+    <a class="top-link" href="https://github.com/Andy34G7/lernea">Source</a>
+    <button type="button" id="theme" class="icon-btn" aria-label="Switch between light and dark theme" title="Light / dark">
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18V3z" fill="currentColor" /><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8" /></svg>
+    </button>
+  </header>
+
+  <div class="layout">
+    <nav class="toc" aria-label="Sections"><ol id="toc"></ol></nav>
+
+    <main id="main">
+      <noscript><p class="notice">This page draws its charts and tables with JavaScript. The same numbers are in the README of the repository.</p></noscript>
+      <p class="notice" id="load-error" hidden></p>
+
+      <!-- 01 -->
+      <section id="about" data-nav="Overview">
+        <h1>Lernea</h1>
+        <p class="lede">Benchmark results for 13 subword tokenisation algorithms, trained on the same text and compared on the same held-out text.</p>
+        <p>The algorithms are byte-level BPE with ten different merge scores, a two-stage SuperBPE, a morpheme-guided BPE and a Unigram language model. All are implemented in one Rust library with Python bindings. This page reports what was measured, in order of cost: from counting tokens to training GPT-2 small.</p>
+        <dl class="scope" id="scope"></dl>
+        <h3>What was measured</h3>
+        <div class="table-wrap"><table class="plain" id="levels">
+          <thead><tr><th>Level</th><th>Question</th><th>Model trained</th><th>Vocabulary</th></tr></thead>
+          <tbody>
+            <tr><td><a href="#compression">Compression</a></td><td>How much text one token covers, in 17 natural and programming languages</td><td>None</td><td>16,384 / 32,768 / 65,536</td></tr>
+            <tr><td><a href="#intrinsic">Intrinsic</a></td><td>How evenly the vocabulary is used; whether cuts fall on morpheme and identifier boundaries</td><td>None</td><td>16,384 / 32,768 / 65,536</td></tr>
+            <tr><td><a href="#throughput">Throughput</a></td><td>Encode and decode speed on one core</td><td>None</td><td>16,384 / 32,768 / 65,536</td></tr>
+            <tr><td><a href="#proxy">Proxy LM</a></td><td>Validation bits per byte of a small Transformer trained on a fixed number of bytes</td><td>2 sizes, 3 seeds each</td><td>16,384</td></tr>
+            <tr><td><a href="#swap">GPT-2 swap</a></td><td>Validation bits per byte of GPT-2 small after 600 steps, one run per tokeniser</td><td>GPT-2 small (124M)</td><td>≈ 50k (one 32k)</td></tr>
+            <tr><td><a href="#flores">FLORES+</a></td><td>How many more tokens the same sentences cost in 17 other languages than in English</td><td>None</td><td>all of the above</td></tr>
+          </tbody>
+        </table></div>
+        <p class="note">Every chart has its full table and the provenance of its run (arguments, data sizes, hardware, commit) folded underneath it.</p>
+      </section>
+
+      <!-- 02 -->
+      <section id="variants" data-nav="Variants">
+        <h2>Which tokenisers are compared?</h2>
+        <p>Every tokeniser starts from the 256 byte values, so any UTF-8 text encodes and decodes exactly and there is no unknown token. Before merges are learned, text is cut into pre-tokens, and no token crosses a pre-token boundary. The default pre-tokeniser isolates every whitespace run: “the cat” becomes “the”, “ ”, “cat”.</p>
+        <p>The bottom-up variants share one training loop: score every adjacent pair \((u, v)\), merge the highest-scoring pair into a new token everywhere, repeat until the vocabulary has \(V\) tokens. They differ only in the score. Open a row for its formula and defaults.</p>
+        <div class="legend" id="family-legend" aria-label="Algorithm families"></div>
+        <div id="variant-list" class="variant-list"></div>
+        <p class="note">Also implemented and not benchmarked: Unigram sampling (forward-filtering backward-sampling over the Unigram lattice) and byte-entropy patching (a new patch starts where a byte-level Markov model's predictive entropy exceeds a threshold). BPE-dropout appears only in the proxy LM.</p>
+      </section>
+
+      <!-- 03 -->
+      <section id="metrics" data-nav="Metrics">
+        <h2>How to read the numbers</h2>
+        <p>An arrow after a metric gives its direction: ↑ higher is better, ↓ lower is better. Bold marks the best value in a column.</p>
+        <dl class="defs">
+          <dt>Bytes per token ↑</dt><dd>UTF-8 bytes of held-out text divided by the number of tokens. More bytes per token means shorter sequences: more text per context window and per training step.</dd>
+          <dt>Fertility ↓</dt><dd>Tokens per word. Words are whitespace-separated, except Chinese and Japanese, which are counted per character.</dd>
+          <dt>Word split % ↓ · Continued % ↓</dt><dd>Share of words that become two or more tokens, and share of tokens that continue a word instead of starting one.</dd>
+          <dt>Rényi efficiency ↑</dt><dd>\(E_\alpha = H_\alpha(p) / \log_2 |V|\), where \(p\) is the token distribution on held-out text. 1 means every token is used equally often; a larger \(\alpha\) penalises a few very frequent tokens more. Zouhar et al. (2023) proposed \(\alpha = 2.5\) as a predictor of downstream quality.</dd>
+          <dt>Gini ↓ · Active fraction ↑</dt><dd>Inequality of token frequencies on held-out text (0 = all equal), and the share of the vocabulary that occurs there at all.</dd>
+          <dt>Morph F1 ↑</dt><dd>For each SIGMORPHON 2022 gold word, the offsets where the tokeniser cuts are compared with the gold morpheme boundaries. F1 per word, averaged per language, then over the 5 languages.</dd>
+          <dt>Identifier F1 ↑</dt><dd>The same on identifiers mined from held-out code. Gold cuts are at <code>_</code> and <code>-</code> runs, camelCase humps and acronym ends.</dd>
+          <dt>Bits per byte (BPB) ↓</dt><dd>A language model's total negative log-likelihood of the validation tokens, in bits, divided by the UTF-8 bytes of that text. Per-token perplexity cannot be compared across tokenisers, because a tokeniser with longer tokens makes fewer, harder predictions. BPB charges every tokeniser for the same bytes.</dd>
+          <dt>GPT-2-equivalent steps ↑</dt><dd>The first step at which GPT-2's own smoothed train BPB reaches a tokeniser's final validation BPB: how many of GPT-2's steps buy the same loss.</dd>
+          <dt>Tokenisation premium ↓</dt><dd>Tokens spent on a language's sentences divided by tokens spent on the same sentences in English. 1.0 is parity; 2.0 means the same content costs twice the tokens.</dd>
+        </dl>
+      </section>
+
+      <!-- 04 -->
+      <section id="overall" data-nav="Overall">
+        <h2>How do the variants compare overall?</h2>
+        <p class="finding" id="overall-finding"></p>
+        <figure>
+          <figcaption><b>Compression against language-model loss.</b> <span id="scatter-sub"></span></figcaption>
+          <div class="pair">
+            <div id="scatter" class="chart"></div>
+            <div><p class="note" id="scatter-zoom-sub"></p><div id="scatter-zoom" class="chart"></div></div>
+          </div>
+        </figure>
+        <h3>All metrics at V = 16,384</h3>
+        <p class="note">One row per variant. Click a column header to sort. Shading is by rank within the column.</p>
+        <div class="table-wrap"><table class="data shaded" id="overall-table"></table></div>
+        <h3>Best value per metric</h3>
+        <p class="note">The margin to the runner-up is given next to each value, with what limits the comparison.</p>
+        <div class="table-wrap"><table class="plain" id="best-table"></table></div>
+      </section>
+
+      <!-- 05 -->
+      <section id="compression" data-nav="Compression">
+        <h2>How much text does one token cover?</h2>
+        <p>Each tokeniser encodes held-out text in 11 natural languages and 6 programming languages (Tokka-Bench definitions). No model is trained.</p>
+        <p class="finding" id="tokka-finding"></p>
+        <div class="controls">
+          <label>Metric <select id="tokka-metric">
+            <option value="bytes_per_token">Bytes per token ↑</option>
+            <option value="subword_fertility">Fertility ↓</option>
+            <option value="word_split_pct">Word split % ↓</option>
+            <option value="continued_word_rate">Continued % ↓</option>
+            <option value="unique_tokens">Unique tokens used</option>
+          </select></label>
+          <label>Vocabulary <select class="vocab-select" data-for="tokka"></select></label>
+        </div>
+        <figure>
+          <figcaption><b id="tokka-chart-title"></b> <span id="tokka-chart-sub"></span></figcaption>
+          <div id="tokka-chart" class="chart"></div>
+        </figure>
+        <figure>
+          <figcaption><b>By language.</b> Shaded by rank within each column, so one script does not wash out the others. Scroll sideways on a narrow screen.</figcaption>
+          <div class="table-wrap"><table class="heat" id="tokka-heat"></table></div>
+          <div class="heat-key"><span id="tokka-lo">worse</span><span class="ramp"></span><span id="tokka-hi">better</span></div>
+        </figure>
+        <details class="fold"><summary>Table: macro and micro averages</summary>
+          <div class="table-wrap"><table class="data" id="tokka-table"></table></div>
+        </details>
+        <ul class="caveats">
+          <li>Compression is a property of the tokeniser, separate from language-model loss. The PMI-ranked variants and SuperBPE sit at the two ends; see <a href="#variants">their entries</a> for why.</li>
+          <li>SuperBPE tokens can span several words, so its fertility and split rates are measured across words where the others are measured within them.</li>
+        </ul>
+        <div id="tokka-prov"></div>
+      </section>
+
+      <!-- 06 -->
+      <section id="intrinsic" data-nav="Intrinsic">
+        <h2>How is the vocabulary used?</h2>
+        <p>Token statistics on the held-out test split, and agreement of token boundaries with morpheme boundaries (SIGMORPHON 2022 gold, 5 languages) and with code-identifier parts. No model is trained.</p>
+        <p class="finding" id="intrinsic-finding"></p>
+        <div class="controls">
+          <label>Metric <select id="intrinsic-metric"></select></label>
+          <label>Vocabulary <select class="vocab-select" data-for="intrinsic"></select></label>
+        </div>
+        <figure>
+          <figcaption><b id="intrinsic-chart-title"></b> <span id="intrinsic-chart-sub"></span></figcaption>
+          <div id="intrinsic-chart" class="chart"></div>
+        </figure>
+        <figure>
+          <figcaption><b>Morph F1 by language.</b> Gold word counts under each language code.</figcaption>
+          <div class="table-wrap"><table class="heat" id="morph-heat"></table></div>
+          <div class="heat-key"><span>lower</span><span class="ramp"></span><span>higher</span></div>
+        </figure>
+        <details class="fold"><summary>Table: all intrinsic metrics</summary>
+          <div class="table-wrap"><table class="data shaded" id="intrinsic-table"></table></div>
+        </details>
+        <ul class="caveats">
+          <li>Rényi efficiency says how evenly tokens are used. Read it next to bytes per token: a tokeniser close to raw bytes also uses its tokens evenly.</li>
+          <li><code>morpheme_bpe</code> is trained with a SIGMORPHON train-split lexicon (gold test words removed). The other tokenisers get no such supervision.</li>
+          <li>The MB/s columns in the table come from an unpinned laptop run with one pass. The next section re-measures them.</li>
+        </ul>
+        <div id="intrinsic-prov"></div>
+      </section>
+
+      <!-- 07 -->
+      <section id="throughput" data-nav="Throughput">
+        <h2>How fast do they encode and decode?</h2>
+        <p>Single-threaded speed, one call per document over the held-out test split. Each number is the median of 5 timed passes after 1 warm-up. The same tokenisers were timed in three settings.</p>
+        <p class="finding" id="tp-finding"></p>
+        <div class="controls">
+          <div class="seg" role="group" aria-label="Direction" id="tp-dir">
+            <button type="button" data-v="encode_mb_per_sec" aria-pressed="true">Encode</button>
+            <button type="button" data-v="decode_mb_per_sec" aria-pressed="false">Decode</button>
+          </div>
+          <label>Vocabulary <select class="vocab-select" data-for="tp"></select></label>
+        </div>
+        <figure>
+          <figcaption><b id="tp-chart-title"></b> Higher is better. Rows ordered by the pinned-core run.</figcaption>
+          <div id="tp-chart" class="chart"></div>
+        </figure>
+        <details class="fold"><summary>Table: every pass, with run-to-run spread</summary>
+          <div class="table-wrap"><table class="data" id="tp-table"></table></div>
+        </details>
+        <ul class="caveats" id="tp-facts"></ul>
+        <ul class="caveats">
+          <li>Compare tokenisers within one setting. The settings differ in CPU (Intel laptop core, AMD server core) and in load.</li>
+          <li>A difference smaller than a setting's run-to-run spread is noise.</li>
+        </ul>
+        <div id="tp-prov"></div>
+      </section>
+
+      <!-- 08 -->
+      <section id="proxy" data-nav="Proxy LM">
+        <h2>Which tokeniser gives a small language model the lowest loss?</h2>
+        <p>A causal Transformer is trained from scratch on the same number of UTF-8 bytes for every tokeniser, then scored in bits per byte on held-out English, multilingual and code text. Two model sizes, 3 seeds each, V = 16,384.</p>
+        <p class="finding" id="proxy-finding"></p>
+        <div class="controls">
+          <div class="seg" role="group" aria-label="Model size" id="proxy-tier">
+            <button type="button" data-v="proxy_small" aria-pressed="true">Small LM</button>
+            <button type="button" data-v="proxy_big" aria-pressed="false">Big LM</button>
+          </div>
+        </div>
+        <p class="note" id="proxy-sub"></p>
+        <figure>
+          <figcaption><b>Macro validation BPB.</b> Mean of 3 seeds; the whisker is ± 1 sample standard deviation. Lower is better. The line marks <code>bpe_frequency</code>.</figcaption>
+          <div id="proxy-chart" class="chart"></div>
+          <p class="note" id="proxy-offscale"></p>
+        </figure>
+        <figure>
+          <figcaption><b>Rank with the small LM against rank with the big LM.</b> Rank 1 is the lowest BPB. Only tokenisers trained in both sizes.</figcaption>
+          <div id="rank-chart" class="chart"></div>
+        </figure>
+        <figure>
+          <figcaption><b>Train BPB against bytes of text consumed.</b> 9-step rolling mean. Hover or tap a name to follow one curve.</figcaption>
+          <div id="proxy-curves" class="chart"></div>
+        </figure>
+        <details class="fold"><summary>Table: BPB by domain</summary>
+          <div class="table-wrap"><table class="data" id="proxy-table"></table></div>
+        </details>
+        <details class="fold"><summary>Table: small LM against big LM</summary>
+          <div class="table-wrap"><table class="data" id="compare-table"></table></div>
+        </details>
+        <ul class="caveats">
+          <li id="proxy-margin"></li>
+          <li>Both models are proxies: no positional encoding (order comes only from the causal mask), ReLU feed-forward layers, tied embeddings. Rankings at this scale need not carry over to larger models.</li>
+          <li>The seeds change only the model's initialisation. Every seed sees the same text in the same order, so the standard deviation leaves out data-sampling variance.</li>
+          <li><code>bpe_dropout_p0.1</code> is the <code>bpe_frequency</code> vocabulary with dropout applied to the LM's training ids only.</li>
+        </ul>
+        <div id="proxy-prov"></div>
+      </section>
+
+      <!-- 09 -->
+      <section id="vocab" data-nav="Vocabulary size">
+        <h2>What changes with a larger vocabulary?</h2>
+        <p>The compression and intrinsic suites were repeated at V = 32,768 and V = 65,536 on the same train and test splits.</p>
+        <p class="finding" id="vocab-finding"></p>
+        <div class="controls">
+          <label>Metric <select id="vocab-metric"></select></label>
+        </div>
+        <figure>
+          <figcaption><b id="vocab-chart-title"></b> One line per variant. Hover or tap a name to follow one line.</figcaption>
+          <div id="vocab-chart" class="chart"></div>
+        </figure>
+        <details class="fold"><summary>Table: value at each vocabulary size</summary>
+          <div class="table-wrap"><table class="data" id="vocab-table"></table></div>
+        </details>
+      </section>
+
+      <!-- 10 -->
+      <section id="swap" data-nav="GPT-2 swap">
+        <h2>What happens when GPT-2 is trained with each tokeniser?</h2>
+        <p>GPT-2 small (124M parameters) is trained with llm.c's recipe. Everything is fixed except the tokeniser: the same steps, the same tokens per step, the same validation bytes. GPT-2's own tokeniser and two TokenMonster vocabularies run alongside ours.</p>
+        <p class="finding" id="swap-finding"></p>
+        <p class="note" id="swap-sub"></p>
+        <figure>
+          <figcaption><b>Final validation BPB.</b> Lower is better. The line marks GPT-2's own tokeniser.</figcaption>
+          <div id="swap-chart" class="chart"></div>
+        </figure>
+        <div class="controls">
+          <div class="seg" role="group" aria-label="Curve" id="swap-mode">
+            <button type="button" data-v="val" aria-pressed="true">Validation</button>
+            <button type="button" data-v="train" aria-pressed="false">Train, smoothed</button>
+          </div>
+        </div>
+        <figure>
+          <figcaption><b>BPB against training step.</b> <span id="swap-curve-sub"></span></figcaption>
+          <div id="swap-curves" class="chart"></div>
+        </figure>
+        <details class="fold"><summary>Table: final BPB, bytes per token, speed</summary>
+          <div class="table-wrap"><table class="data" id="swap-table"></table></div>
+        </details>
+        <ul class="caveats" id="swap-caveats"></ul>
+
+        <h3>Rerun with a GPT-2-style space prefix</h3>
+        <p>Our default pre-tokeniser makes every whitespace run its own token, so each step holds less text than GPT-2's. The rerun attaches one leading space to the following word, as GPT-2 does, and changes nothing else.</p>
+        <div id="sp-body"></div>
+
+        <h3>Ablation: pre-split rule and training text</h3>
+        <p>Two further arms for five variants: GPT-2's exact regex split, and the space prefix with 300 MB of tokeniser training text in place of 50 MB.</p>
+        <div id="abl-body"></div>
+
+        <h3>Negative result: peak learning rate 1.8e-3</h3>
+        <p>One run of GPT-2's own tokeniser at three times the recipe's learning rate. The sweep was stopped after it.</p>
+        <div id="lr-body"></div>
+        <div id="swap-prov"></div>
+      </section>
+
+      <!-- 11 -->
+      <section id="flores" data-nav="FLORES+">
+        <h2>How much more do other languages cost than English?</h2>
+        <p>FLORES+ is professionally translated parallel text, so every language carries the same content. The premium is the tokens a tokeniser spends on a language divided by the tokens it spends on the same sentences in English. In-mix languages are part of the tokenisers' training mix; out-of-mix languages are in no tokeniser's training text.</p>
+        <p class="finding" id="flores-finding"></p>
+        <div class="controls">
+          <label>Tokenisers <select id="flores-tier"></select></label>
+        </div>
+        <figure>
+          <figcaption><b>Mean premium, in-mix and out-of-mix.</b> <span id="flores-sub"></span> Lower is better; 1.0 is parity with English.</figcaption>
+          <div id="flores-chart" class="chart"></div>
+        </figure>
+        <figure>
+          <figcaption><b>Premium by language.</b> Shaded by rank within each column. The first row is the UTF-8 byte ratio to English: the premium of a tokeniser with one token per byte.</figcaption>
+          <div class="table-wrap"><table class="heat" id="flores-heat"></table></div>
+          <div class="heat-key"><span>higher premium</span><span class="ramp"></span><span>lower premium</span></div>
+        </figure>
+        <details class="fold"><summary>Table: mean, maximum and share at premium ≤ 1.5</summary>
+          <div class="table-wrap"><table class="data" id="flores-table"></table></div>
+        </details>
+        <details class="fold"><summary>Findings generated from the result file</summary>
+          <ul class="caveats" id="flores-notes"></ul>
+        </details>
+        <ul class="caveats">
+          <li id="flores-caveat"></li>
+          <li>The GPT-2-swap tokenisers learned their merges on English-centric text. Their premium reflects that text, whatever the merge score.</li>
+          <li>Bytes or characters per token are not comparable across scripts, because UTF-8 spends 1 to 3 bytes per character. The premium is.</li>
+        </ul>
+        <div id="flores-prov"></div>
+      </section>
+
+      <!-- 12 -->
+      <section id="limits" data-nav="Limitations">
+        <h2>Known limitations</h2>
+        <ul class="limits">
+          <li><b>One scale, one split.</b> The compression, intrinsic, throughput and proxy-LM results use one 52.5 MB train split (seed 0). The GPT-2 swap trains on different text. Tokeniser training is deterministic; only the language models have seeds.</li>
+          <li><b>PMI-ranked variants barely compress.</b> <code>wordpiece_pmi</code>, <code>wp_bpe_ft</code> and <code>wp_bpe_base</code> encode at about 1.01 to 1.03 bytes per token and use a few hundred to about a thousand of their 16,384 tokens. This is the behaviour their scores define.</li>
+          <li><b>No duplicate variants.</b> A fingerprint check found no byte-identical tokenisers among the 13 variants at any size.</li>
+          <li><b>Not benchmarked.</b> Unigram sampling and byte-entropy patching are implemented and absent from the suite. BPE-dropout appears only in the proxy LM.</li>
+          <li><b>Proxy LM.</b> The model has no positional encoding. With 3 seeds, the top five of the small LM are within noise; the big LM separates four variants from <code>bpe_frequency</code> and leaves their mutual order open.</li>
+          <li><b>Morphology.</b> Morph F1 uses SIGMORPHON 2022 gold for 5 languages. <code>morpheme_bpe</code> has supervision the others do not.</li>
+          <li><b>Throughput.</b> Single-threaded and load-dependent. Three measurements exist; compare within one setting only.</li>
+          <li><b>GPT-2 swap.</b> 600 steps is early training, with one run per tokeniser and no seed spread.</li>
+        </ul>
+      </section>
+
+      <!-- 13 -->
+      <section id="playground" data-nav="Playground">
+        <h2>See the segmentations</h2>
+        <p>Five sample texts, encoded by every variant at three small vocabulary sizes. Hover or tap a token for its id and byte length.</p>
+        <p class="note" id="pg-note"></p>
+        <div class="controls">
+          <label>Sample <select id="pg-sample"></select></label>
+          <div class="seg" role="group" aria-label="Vocabulary size" id="pg-vocab"></div>
+        </div>
+        <pre class="sample" id="pg-text"></pre>
+        <figure>
+          <figcaption><b>Tokens used for this sample.</b> Fewer tokens means more bytes per token.</figcaption>
+          <div id="pg-chart" class="chart"></div>
+        </figure>
+        <div id="pg-list" class="tok-list"></div>
+      </section>
+
+      <footer>
+        <span>Lernea · <a href="https://github.com/Andy34G7/lernea">github.com/Andy34G7/lernea</a></span>
+        <span id="built"></span>
+      </footer>
+    </main>
+  </div>
+
+  <div id="tip" role="tooltip" hidden></div>
+</body>
+</html>

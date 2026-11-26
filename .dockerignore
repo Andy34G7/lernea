@@ -1,8 +1,0 @@
-.git
-.claude
-target
-__pycache__
-*.pyc
-.pytest_cache
-.mypy_cache
-benchmarks/results/legacy_smoke
