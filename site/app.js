@@ -608,7 +608,7 @@
     if (r.length > 1) {
       const worst = r[r.length - 1];
       const above = r.filter(([, v]) => v > (M.bpe_frequency?.macro_avg?.bytes_per_token ?? Infinity)).length;
-      setHtml('tokka-finding', `At V = ${vLabel(state.vocab)}, macro bytes per token runs from ${worst[1].toFixed(2)} (${code(worst[0])}) to ${r[0][1].toFixed(2)} (${code(r[0][0])}). ${code('bpe_frequency')} is at ${txt(M.bpe_frequency?.macro_avg?.bytes_per_token, 2)}; ${above} of ${r.length} ${above === 1 ? 'variant covers' : 'variants cover'} more text per token than it does.`);
+      setHtml('tokka-finding', `At V = ${vLabel(state.vocab)}, macro bytes per token runs from ${worst[1].toFixed(2)} for ${code(worst[0])} to ${r[0][1].toFixed(2)} for ${code(r[0][0])}. ${code('bpe_frequency')} is at ${txt(M.bpe_frequency?.macro_avg?.bytes_per_token, 2)}; ${above} of the ${r.length} variants cover${above === 1 ? 's' : ''} more text per token than it does.`);
     }
   }
 
@@ -723,7 +723,7 @@
       const a = pr[0];
       const z = pr[pr.length - 1];
       const bpt = S[a.key]?.bytes_per_token;
-      setHtml('tp-finding', `On the pinned core at V = ${vLabel(state.vocab)}, ${word.toLowerCase()} speed runs from ${mean(z.local).toFixed(1)} MB/s (${code(z.key)}) to ${mean(a.local).toFixed(1)} MB/s (${code(a.key)})${isNum(bpt) ? `. ${code(a.key)} covers ${bpt.toFixed(2)} bytes per token, so its speed says little about its compression` : ''}.`);
+      setHtml('tp-finding', `On the pinned core at V = ${vLabel(state.vocab)}, ${word.toLowerCase()} speed runs from ${mean(z.local).toFixed(1)} MB/s for ${code(z.key)} to ${mean(a.local).toFixed(1)} MB/s for ${code(a.key)}${isNum(bpt) ? `. ${code(a.key)} covers ${bpt.toFixed(2)} bytes per token, so its speed says little about its compression` : ''}.`);
     }
   }
 

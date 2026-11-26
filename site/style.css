@@ -221,7 +221,8 @@ td.num, td.r { font-variant-numeric: tabular-nums; }
 td.best { font-weight: 700; }
 td.rank { color: var(--muted); width: 1%; }
 table.plain td { white-space: normal; vertical-align: top; }
-table.plain td:first-child { white-space: nowrap; font-weight: 600; }
+table.plain td:first-child { white-space: nowrap; font-weight: 500; }
+table.shaded th, table.shaded td { padding-inline: 9px; }
 /* First column stays in view while the rest scrolls */
 table.data th:nth-child(2), table.data td:nth-child(2), table.heat th:first-child, table.heat td:first-child {
   position: sticky; left: 0; z-index: 1; background: var(--surface); box-shadow: 1px 0 0 var(--grid);
@@ -233,8 +234,9 @@ th[aria-sort] .th-btn { color: var(--text); }
 th[aria-sort="ascending"] .th-btn::after { content: "▲"; font-size: 8px; }
 th[aria-sort="descending"] .th-btn::after { content: "▼"; font-size: 8px; }
 .dir { color: var(--muted); font-weight: 400; }
-table.heat td.cell { text-align: right; font-variant-numeric: tabular-nums; padding: 7px 9px; }
-table.heat th { text-align: right; padding: 7px 9px; }
+table.heat { font-size: 12.5px; }
+table.heat td.cell { text-align: right; font-variant-numeric: tabular-nums; padding: 7px 7px; }
+table.heat th { text-align: right; padding: 7px 7px; }
 table.heat th:first-child { text-align: left; }
 table.heat th small { display: block; font-weight: 400; color: var(--muted); }
 table.heat td.avg, table.heat th.avg { border-left: 1px solid var(--axis); font-weight: 600; }
@@ -293,7 +295,7 @@ details.prov li { margin-bottom: 6px; }
 .plot text { fill: var(--muted); font: 11.5px var(--sans); font-variant-numeric: tabular-nums; }
 .plot text.title { fill: var(--text-2); font-size: 12px; }
 .plot text.lbl { fill: var(--text-2); font: 11px var(--mono); }
-.plot path.s { fill: none; stroke: var(--c); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.plot path.s { fill: none; stroke: var(--c); stroke-width: 1.75; stroke-linejoin: round; stroke-linecap: round; }
 .plot.has-hl path.s { opacity: 0.16; }
 .plot.has-hl path.s.hl { opacity: 1; stroke-width: 2.6; }
 .plot circle.p { fill: var(--c); stroke: var(--surface); stroke-width: 2; }

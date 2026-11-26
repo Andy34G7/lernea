@@ -512,7 +512,8 @@ def compact(data: Dict[str, Any]) -> Dict[str, Any]:
     for key in ("proxy_small", "proxy_big"):
         for name, m in ((R[key]["data"] or {}).get("models") or {}).items():
             curve = m.get("curve") or []
-            smooth = _rolling([p["train_bpb"] for p in curve], 9)
+            # A window of about a tenth of the run: 14 raw step curves on one chart are not readable
+            smooth = _rolling([p["train_bpb"] for p in curve], max(9, len(curve) // 10 | 1))
             m["curve"] = [[curve[i]["bytes_consumed"] / 1e6, smooth[i]] for i in _thin(len(curve))]
             R[key]["data"]["models"][name] = {k: v for k, v in m.items() if k in _PROXY_KEEP}
     for key in ("swap", "swap_space_prefix"):
